@@ -1,0 +1,81 @@
+# Learn more about configuring your app at https://shopify.dev/docs/apps/tools/cli/configuration
+
+client_id = "f3c38e708010aaa3be8bcdc18e3e03a6"
+name = "Performance-improvement-app"
+application_url = "https://shopify.dev/apps/default-app-home"
+embedded = true
+
+[access_scopes]
+# Learn more at https://shopify.dev/docs/apps/tools/cli/configuration#access_scopes
+scopes = "write_metaobject_definitions,write_metaobjects,write_products"
+
+[product.metafields.app.demo_info]
+type = "single_line_text_field"
+name = "Demo Source Info"
+description = "Tracks products created by the Shopify app template for development"
+
+  [product.metafields.app.demo_info.access]
+  admin = "merchant_read_write"
+
+[metaobjects.app.example]
+name = "Example"
+description = "An example metaobject definition created by this template"
+
+  [metaobjects.app.example.access]
+  admin = "merchant_read_write"
+
+[metaobjects.app.example.fields.title]
+name = "Title"
+type = "single_line_text_field"
+required = true
+
+[metaobjects.app.example.fields.description]
+name = "Description"
+type = "multi_line_text_field"
+
+[[metaobject_definitions]]
+name = "Script"
+type = "script_injector_script"
+fields = [
+  { key = "name", type = "single_line_text_field", required = true },
+  { key = "code", type = "multi_line_text_field", required = true },
+  { key = "enabled", type = "boolean", required = true, default = true },
+  { key = "target_pages", type = "list.single_line_text_field" },
+  { key = "custom_page_handles", type = "list.single_line_text_field" },
+  { key = "position", type = "single_line_text_field" },
+  { key = "priority", type = "integer", required = true, default = 0 },
+  { key = "async", type = "boolean", default = false },
+  { key = "defer", type = "boolean", default = true }
+]
+
+  [[metaobject_definitions.access]]
+  admin = "merchant_read_write"
+
+[[metaobject_definitions]]
+name = "Config"
+type = "script_injector_config"
+fields = [
+  { key = "auto_inject", type = "boolean", default = false },
+  { key = "debug_mode", type = "boolean", default = false }
+]
+
+  [[metaobject_definitions.access]]
+  admin = "merchant_read_write"
+
+[webhooks]
+api_version = "2026-10"
+
+  [[webhooks.subscriptions]]
+  uri = "/webhooks/app/uninstalled"
+  topics = [ "app/uninstalled" ]
+
+  [[webhooks.subscriptions]]
+  uri = "/webhooks/app/scopes_update"
+  topics = [ "app/scopes_update" ]
+
+[auth]
+redirect_urls = [ "https://shopify.dev/apps/default-app-home/api/auth" ]
+
+[build]
+include_config_on_deploy = true
+automatically_update_urls_on_dev = true
