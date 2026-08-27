@@ -1,12 +1,23 @@
 import { authenticate } from '../shopify.server';
 import type { ScriptMetaobject, ScriptInput, GlobalConfig, GlobalConfigInput, ScriptsConnection } from '../types/script';
-import type { AppSession } from '@shopify/shopify-app-react-router';
 
 const SCRIPT_TYPE = 'script_injector_script';
 const CONFIG_TYPE = 'script_injector_config';
 
-const SCRIPT_TYPE = 'script_injector_script';
-const CONFIG_TYPE = 'script_injector_config';
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type AdminClient = any;
+// Accept either a request that still needs `authenticate.admin`, or an
+// already-resolved admin GraphQL client (e.g. the `admin` returned from
+// `authenticate.webhook`, which has no session token to re-authenticate).
+type RequestOrAdmin = Request | AdminClient;
+
+async function resolveAdmin(requestOrAdmin: RequestOrAdmin): Promise<AdminClient> {
+  if (requestOrAdmin && typeof (requestOrAdmin as AdminClient).graphql === 'function') {
+    return requestOrAdmin as AdminClient;
+  }
+  const { admin } = await authenticate.admin(requestOrAdmin as Request);
+  return admin;
+}
 
 const SCRIPT_FRAGMENT = `
   fragment ScriptFields on Metaobject {
@@ -63,8 +74,8 @@ function mapConfigFields(fields: Array<{ key: string; value: string }>): GlobalC
   };
 }
 
-export async function getScripts(session: AppSession): Promise<ScriptMetaobject[]> {
-  const { admin } = await authenticate.admin(session);
+export async function getScripts(request: RequestOrAdmin): Promise<ScriptMetaobject[]> {
+  const admin = await resolveAdmin(request);
   const response = await admin.graphql(
     `#graphql
     query GetScripts($first: Int!) {
@@ -100,8 +111,8 @@ export async function getScripts(session: AppSession): Promise<ScriptMetaobject[
   })) as ScriptMetaobject[];
 }
 
-export async function getScript(session: AppSession, id: string): Promise<ScriptMetaobject | null> {
-  const { admin } = await authenticate.admin(session);
+export async function getScript(request: Request, id: string): Promise<ScriptMetaobject | null> {
+  const admin = await resolveAdmin(request);
   const response = await admin.graphql(
     `#graphql
     query GetScript($id: ID!) {
@@ -127,8 +138,8 @@ export async function getScript(session: AppSession, id: string): Promise<Script
   } as ScriptMetaobject;
 }
 
-export async function createScript(session: AppSession, input: ScriptInput): Promise<ScriptMetaobject> {
-  const { admin } = await authenticate.admin(session);
+export async function createScript(request: Request, input: ScriptInput): Promise<ScriptMetaobject> {
+  const admin = await resolveAdmin(request);
 
   const fields = [
     { key: 'name', value: input.name },
@@ -183,8 +194,8 @@ export async function createScript(session: AppSession, input: ScriptInput): Pro
   } as ScriptMetaobject;
 }
 
-export async function updateScript(session: AppSession, id: string, input: Partial<ScriptInput>): Promise<ScriptMetaobject> {
-  const { admin } = await authenticate.admin(session);
+export async function updateScript(request: RequestOrAdmin, id: string, input: Partial<ScriptInput>): Promise<ScriptMetaobject> {
+  const admin = await resolveAdmin(request);
 
   const fields: Array<{ key: string; value: string }> = [];
   if (input.name !== undefined) fields.push({ key: 'name', value: input.name });
@@ -236,8 +247,8 @@ export async function updateScript(session: AppSession, id: string, input: Parti
   } as ScriptMetaobject;
 }
 
-export async function deleteScript(session: AppSession, id: string): Promise<void> {
-  const { admin } = await authenticate.admin(session);
+export async function deleteScript(request: RequestOrAdmin, id: string): Promise<void> {
+  const admin = await resolveAdmin(request);
   const response = await admin.graphql(
     `#graphql
     mutation DeleteScript($id: ID!) {
@@ -260,14 +271,14 @@ export async function deleteScript(session: AppSession, id: string): Promise<voi
   }
 }
 
-export async function reorderScripts(session: AppSession, scriptIds: string[]): Promise<void> {
+export async function reorderScripts(request: Request, scriptIds: string[]): Promise<void> {
   for (let i = 0; i < scriptIds.length; i++) {
-    await updateScript(session, scriptIds[i], { priority: i });
+    await updateScript(request, scriptIds[i], { priority: i });
   }
 }
 
-export async function getGlobalConfig(session: unknown): Promise<GlobalConfig> {
-  const { admin } = await authenticate.admin(session);
+export async function getGlobalConfig(request: RequestOrAdmin): Promise<GlobalConfig> {
+  const admin = await resolveAdmin(request);
   const response = await admin.graphql(
     `#graphql
     query GetConfig {
@@ -292,8 +303,8 @@ export async function getGlobalConfig(session: unknown): Promise<GlobalConfig> {
   return mapConfigFields(edge.node.fields);
 }
 
-export async function updateGlobalConfig(session: unknown, input: GlobalConfigInput): Promise<GlobalConfig> {
-  const { admin } = await authenticate.admin(session);
+export async function updateGlobalConfig(request: RequestOrAdmin, input: GlobalConfigInput): Promise<GlobalConfig> {
+  const admin = await resolveAdmin(request);
 
   const fields: Array<{ key: string; value: string }> = [];
   if (input.autoInject !== undefined) fields.push({ key: 'auto_inject', value: String(input.autoInject) });
@@ -364,15 +375,47 @@ export async function updateGlobalConfig(session: unknown, input: GlobalConfigIn
   return mapConfigFields(result.metaobject.fields);
 }
 
-export async function deleteAllScriptsForShop(session: unknown): Promise<void> {
-  const scripts = await getScripts(session);
+/**
+ * Ensure a config metaobject exists for the shop (onboarding).
+ * Returns the config plus whether it was just created (first install).
+ */
+export async function ensureGlobalConfig(
+  request: Request,
+): Promise<{ config: GlobalConfig; created: boolean }> {
+  const admin = await resolveAdmin(request);
+  const existing = await admin.graphql(
+    `#graphql
+    query GetConfigId {
+      metaobjects(first: 1, type: "${CONFIG_TYPE}") {
+        edges {
+          node { id }
+        }
+      }
+    }
+    `
+  );
+  const existingData = await existing.json();
+  const edge = existingData.data?.metaobjects?.edges?.[0];
+  if (edge?.node) {
+    return { config: await getGlobalConfig(request), created: false };
+  }
+
+  const config = await updateGlobalConfig(request, {
+    autoInject: false,
+    debugMode: false,
+  });
+  return { config, created: true };
+}
+
+export async function deleteAllScriptsForShop(request: RequestOrAdmin): Promise<void> {
+  const scripts = await getScripts(request);
   for (const script of scripts) {
-    await deleteScript(session, script.id);
+    await deleteScript(request, script.id);
   }
 }
 
-export async function deleteGlobalConfig(session: unknown): Promise<void> {
-  const { admin } = await authenticate.admin(session);
+export async function deleteGlobalConfig(request: RequestOrAdmin): Promise<void> {
+  const admin = await resolveAdmin(request);
   const response = await admin.graphql(
     `#graphql
     query GetConfigId {

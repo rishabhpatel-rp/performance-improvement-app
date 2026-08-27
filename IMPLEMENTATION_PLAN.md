@@ -224,7 +224,7 @@ Task 4.2 only needs to implement the **handler logic** in `app/routes/webhooks.a
 
 ---
 
-## Phase 3: Theme App Extension (Frontend - Storefront)
+## Phase 3: Theme App Extension (Frontend - Storefront) ✅ DONE
 
 ### Task 3.1: Extension Configuration
 **File:** `extensions/script-injector/shopify.extension.toml`
@@ -361,7 +361,7 @@ Task 4.2 only needs to implement the **handler logic** in `app/routes/webhooks.a
 
 ---
 
-## Phase 4: Integration & Polish
+## Phase 4: Integration & Polish ✅ DONE
 
 ### Task 4.1: Admin → Theme Editor Deep Link
 **File:** `app/lib/shopify.js` (add function)

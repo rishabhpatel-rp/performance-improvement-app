@@ -33,34 +33,68 @@ required = true
 name = "Description"
 type = "multi_line_text_field"
 
-[[metaobject_definitions]]
+[metaobjects.app.script_injector_script]
 name = "Script"
-type = "script_injector_script"
-fields = [
-  { key = "name", type = "single_line_text_field", required = true },
-  { key = "code", type = "multi_line_text_field", required = true },
-  { key = "enabled", type = "boolean", required = true, default = true },
-  { key = "target_pages", type = "list.single_line_text_field" },
-  { key = "custom_page_handles", type = "list.single_line_text_field" },
-  { key = "position", type = "single_line_text_field" },
-  { key = "priority", type = "integer", required = true, default = 0 },
-  { key = "async", type = "boolean", default = false },
-  { key = "defer", type = "boolean", default = true }
-]
+description = "Script injector script"
 
-  [[metaobject_definitions.access]]
-  admin = "merchant_read_write"
+[metaobjects.app.script_injector_script.access]
+admin = "merchant_read_write"
 
-[[metaobject_definitions]]
+[metaobjects.app.script_injector_script.fields.name]
+name = "Name"
+type = "single_line_text_field"
+required = true
+
+[metaobjects.app.script_injector_script.fields.code]
+name = "Code"
+type = "multi_line_text_field"
+required = true
+
+[metaobjects.app.script_injector_script.fields.enabled]
+name = "Enabled"
+type = "boolean"
+required = true
+
+[metaobjects.app.script_injector_script.fields.target_pages]
+name = "Target Pages"
+type = "list.single_line_text_field"
+
+[metaobjects.app.script_injector_script.fields.custom_page_handles]
+name = "Custom Page Handles"
+type = "list.single_line_text_field"
+
+[metaobjects.app.script_injector_script.fields.position]
+name = "Position"
+type = "single_line_text_field"
+
+
+
+[metaobjects.app.script_injector_script.fields.async]
+name = "Async"
+type = "boolean"
+
+
+[metaobjects.app.script_injector_script.fields.defer]
+name = "Defer"
+type = "boolean"
+
+
+[metaobjects.app.script_injector_config]
 name = "Config"
-type = "script_injector_config"
-fields = [
-  { key = "auto_inject", type = "boolean", default = false },
-  { key = "debug_mode", type = "boolean", default = false }
-]
+description = "Script injector config"
 
-  [[metaobject_definitions.access]]
-  admin = "merchant_read_write"
+[metaobjects.app.script_injector_config.access]
+admin = "merchant_read_write"
+
+[metaobjects.app.script_injector_config.fields.auto_inject]
+name = "Auto Inject"
+type = "boolean"
+
+
+[metaobjects.app.script_injector_config.fields.debug_mode]
+name = "Debug Mode"
+type = "boolean"
+
 
 [webhooks]
 api_version = "2026-10"

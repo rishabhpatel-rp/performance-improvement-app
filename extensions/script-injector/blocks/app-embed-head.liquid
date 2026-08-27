@@ -1,0 +1,47 @@
+{% comment %}
+  App Embed block (target: head). No settings — merchant enables this ONCE
+  in Theme Editor > App embeds. Every enabled 'head' script metaobject is
+  queried live and injected automatically. Adding/editing/deleting scripts
+  in the app admin requires no further theme-editor action.
+{% endcomment %}
+
+{% assign head_scripts = shop.metaobjects.script_injector_script.values
+  | where: 'enabled.value', true
+  | where: 'position.value', 'head'
+  | sort: 'priority.value' %}
+
+{% for script in head_scripts %}
+  {% assign target_pages = script.target_pages.value | split: ',' %}
+  {% assign current_page_match = false %}
+
+  {% if target_pages contains 'all' or target_pages contains template.name %}
+    {% assign current_page_match = true %}
+  {% elsif target_pages contains 'custom' %}
+    {% assign custom_handles = script.custom_page_handles.value | split: ',' %}
+    {% if custom_handles contains request.path %}
+      {% assign current_page_match = true %}
+    {% endif %}
+  {% endif %}
+
+  {% if current_page_match %}
+    <script
+      data-script-id="{{ script.id }}"
+      data-priority="{{ script.priority.value }}"
+      {% if script.async.value %}async{% endif %}
+      {% if script.defer.value %}defer{% endif %}
+      {% if content_for_header contains 'nonce-' %}
+        nonce="{{ content_for_header | split: 'nonce-' | last | split: '"' | first }}"
+      {% endif %}
+    >
+      {{ script.code.value }}
+    </script>
+  {% endif %}
+{% endfor %}
+
+{% schema %}
+{
+  "name": "Custom Head Scripts",
+  "target": "head",
+  "settings": []
+}
+{% endschema %}
