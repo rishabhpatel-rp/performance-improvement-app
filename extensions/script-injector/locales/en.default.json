@@ -1,49 +1,7 @@
 {
   "blocks": {
-    "head_script": {
-      "name": "Head Script",
-      "settings": {
-        "script_id": {
-          "label": "Script",
-          "info": "Select the script (created in the app admin) to inject into the <head> of this theme."
-        },
-        "custom_code": {
-          "label": "Custom Code",
-          "info": "Optional Liquid/JS override rendered alongside the selected script. Leave blank to use the script's saved code only."
-        }
-      }
-    },
-    "body_start_script": {
-      "name": "Body Start Script",
-      "settings": {
-        "script_id": {
-          "label": "Script",
-          "info": "Select the script to inject at the start of <body>, right after the opening tag."
-        },
-        "custom_code": {
-          "label": "Custom Code",
-          "info": "Optional Liquid/JS override rendered alongside the selected script."
-        }
-      }
-    },
-    "body_end_script": {
-      "name": "Body End Script",
-      "settings": {
-        "script_id": {
-          "label": "Script",
-          "info": "Select the script to inject at the end of <body>, right before the closing tag."
-        },
-        "custom_code": {
-          "label": "Custom Code",
-          "info": "Optional Liquid/JS override rendered alongside the selected script."
-        }
-      }
+    "performance_scripts": {
+      "name": "Performance Scripts"
     }
-  },
-  "errors": {
-    "script_not_found": "The selected script could not be found. It may have been deleted.",
-    "script_disabled": "This script is currently disabled and will not be injected.",
-    "position_mismatch": "This script's configured position does not match this block's placement.",
-    "invalid_code": "This script's code could not be rendered."
   }
 }

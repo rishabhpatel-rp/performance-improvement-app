@@ -1,6 +1,6 @@
 import { authenticate } from "../shopify.server";
 import db from "../db.server";
-import { deleteAllScriptsForShop, deleteGlobalConfig } from "../lib/metaobjects";
+import { deleteConfig } from "../lib/metaobjects";
 
 export const action = async ({ request }) => {
   const { shop, session, topic, admin } = await authenticate.webhook(request);
@@ -11,9 +11,8 @@ export const action = async ({ request }) => {
   // If this webhook already ran, the session may have been deleted previously.
   if (session && admin) {
     try {
-      await deleteAllScriptsForShop(admin);
-      await deleteGlobalConfig(admin);
-      console.log(`Cleaned up scripts + config metaobjects for ${shop}`);
+      await deleteConfig(admin);
+      console.log(`Cleaned up config metaobject for ${shop}`);
     } catch (err) {
       // Metaobjects may already be gone or the shop's access may have been
       // revoked by uninstall; don't block session cleanup on this.

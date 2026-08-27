@@ -5,9 +5,26 @@ name = "Performance-improvement-app"
 application_url = "https://shopify.dev/apps/default-app-home"
 embedded = true
 
+[build]
+automatically_update_urls_on_dev = true
+
+[webhooks]
+api_version = "2026-10"
+
+  [[webhooks.subscriptions]]
+  uri = "/webhooks/app/scopes_update"
+  topics = [ "app/scopes_update" ]
+
+  [[webhooks.subscriptions]]
+  uri = "/webhooks/app/uninstalled"
+  topics = [ "app/uninstalled" ]
+
 [access_scopes]
 # Learn more at https://shopify.dev/docs/apps/tools/cli/configuration#access_scopes
 scopes = "write_metaobject_definitions,write_metaobjects,write_products"
+
+[auth]
+redirect_urls = [ "https://shopify.dev/apps/default-app-home/api/auth" ]
 
 [product.metafields.app.demo_info]
 type = "single_line_text_field"
@@ -33,83 +50,34 @@ required = true
 name = "Description"
 type = "multi_line_text_field"
 
-[metaobjects.app.script_injector_script]
-name = "Script"
-description = "Script injector script"
-
-[metaobjects.app.script_injector_script.access]
-admin = "merchant_read_write"
-
-[metaobjects.app.script_injector_script.fields.name]
-name = "Name"
-type = "single_line_text_field"
-required = true
-
-[metaobjects.app.script_injector_script.fields.code]
-name = "Code"
-type = "multi_line_text_field"
-required = true
-
-[metaobjects.app.script_injector_script.fields.enabled]
-name = "Enabled"
-type = "boolean"
-required = true
-
-[metaobjects.app.script_injector_script.fields.target_pages]
-name = "Target Pages"
-type = "list.single_line_text_field"
-
-[metaobjects.app.script_injector_script.fields.custom_page_handles]
-name = "Custom Page Handles"
-type = "list.single_line_text_field"
-
-[metaobjects.app.script_injector_script.fields.position]
-name = "Position"
-type = "single_line_text_field"
-
-
-
-[metaobjects.app.script_injector_script.fields.async]
-name = "Async"
-type = "boolean"
-
-
-[metaobjects.app.script_injector_script.fields.defer]
-name = "Defer"
-type = "boolean"
-
-
 [metaobjects.app.script_injector_config]
 name = "Config"
-description = "Script injector config"
+description = "Script injector configuration"
 
-[metaobjects.app.script_injector_config.access]
-admin = "merchant_read_write"
+  [metaobjects.app.script_injector_config.access]
+  admin = "merchant_read_write"
+  storefront = "public_read"
 
-[metaobjects.app.script_injector_config.fields.auto_inject]
-name = "Auto Inject"
+[metaobjects.app.script_injector_config.fields.app_enabled]
+name = "App Enabled"
 type = "boolean"
 
+[metaobjects.app.script_injector_config.fields.script_1_enabled]
+name = "Script 1 Enabled"
+type = "boolean"
+
+[metaobjects.app.script_injector_config.fields.script_2_enabled]
+name = "Script 2 Enabled"
+type = "boolean"
+
+[metaobjects.app.script_injector_config.fields.script_3_enabled]
+name = "Script 3 Enabled"
+type = "boolean"
+
+[metaobjects.app.script_injector_config.fields.script_titles]
+name = "Script Titles"
+type = "list.single_line_text_field"
 
 [metaobjects.app.script_injector_config.fields.debug_mode]
 name = "Debug Mode"
 type = "boolean"
-
-
-[webhooks]
-api_version = "2026-10"
-
-  [[webhooks.subscriptions]]
-  uri = "/webhooks/app/uninstalled"
-  topics = [ "app/uninstalled" ]
-
-  [[webhooks.subscriptions]]
-  uri = "/webhooks/app/scopes_update"
-  topics = [ "app/scopes_update" ]
-
-[auth]
-redirect_urls = [ "https://shopify.dev/apps/default-app-home/api/auth" ]
-
-[build]
-include_config_on_deploy = true
-automatically_update_urls_on_dev = true

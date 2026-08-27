@@ -1,37 +1,42 @@
 import { useEffect } from "react";
-import { useLoaderData, useFetcher } from "react-router";
+import { useLoaderData, useFetcher, useRouteError } from "react-router";
 import { useAppBridge } from "@shopify/app-bridge-react";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../shopify.server";
 import { getThemeEditorDeepLink } from "../lib/shopify";
-import {
-  getGlobalConfig,
-  updateGlobalConfig,
-  deleteAllScriptsForShop,
-  deleteGlobalConfig,
-} from "../lib/metaobjects";
+import { getConfig, updateConfig, deleteConfig } from "../lib/metaobjects";
 
 export const loader = async ({ request }) => {
-  const { session } = await authenticate.admin(request);
-  const config = await getGlobalConfig(request);
+  const { admin, session } = await authenticate.admin(request);
+  const config = await getConfig(admin);
   return { config, shop: session.shop };
 };
 
 export const action = async ({ request }) => {
-  await authenticate.admin(request);
+  const { admin } = await authenticate.admin(request);
   const formData = await request.formData();
   const intent = formData.get("intent");
 
   if (intent === "reset") {
-    await deleteAllScriptsForShop(request);
-    await deleteGlobalConfig(request);
+    try {
+      await deleteConfig(admin);
+    } catch {
+      // Metaobject may not exist yet
+    }
     return { ok: true, reset: true };
   }
 
-  const autoInject = formData.get("autoInject") === "true";
   const debugMode = formData.get("debugMode") === "true";
-  const config = await updateGlobalConfig(request, { autoInject, debugMode });
-  return { ok: true, config };
+  try {
+    const config = await updateConfig(admin, { debugMode });
+    return { ok: true, config };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (msg.includes("No metaobject definition exists")) {
+      return { ok: true, config: { debugMode } };
+    }
+    throw err;
+  }
 };
 
 export default function Settings() {
@@ -51,10 +56,7 @@ export default function Settings() {
 
   const updateSetting = (key, value) => {
     fetcher.submit(
-      {
-        autoInject: String(key === "autoInject" ? value : current.autoInject),
-        debugMode: String(key === "debugMode" ? value : current.debugMode),
-      },
+      { debugMode: String(key === "debugMode" ? value : current.debugMode) },
       { method: "POST" },
     );
   };
@@ -75,11 +77,6 @@ export default function Settings() {
     <s-page heading="Settings" backAction="/app">
       <s-section heading="General">
         <s-stack direction="block" gap="base">
-          <s-switch
-            label="Auto-inject scripts on all pages"
-            checked={current.autoInject}
-            onChange={(e) => updateSetting("autoInject", e.target.checked)}
-          />
           <s-switch
             label="Debug mode"
             helpText="Adds console logging to injected scripts"
@@ -111,7 +108,7 @@ export default function Settings() {
 }
 
 export function ErrorBoundary() {
-  return boundary.error();
+  return boundary.error(useRouteError());
 }
 
 export const headers = (headersArgs) => {

@@ -1,57 +1,25 @@
-export type TargetPage =
-  | 'all'
-  | 'home'
-  | 'product'
-  | 'collection'
-  | 'cart'
-  | 'checkout'
-  | 'custom';
-
-export type Position = 'head' | 'body_start' | 'body_end';
-
-export interface ScriptMetaobject {
-  id: string;
-  name: string;
-  code: string;
-  enabled: boolean;
-  targetPages: TargetPage[];
-  customPageHandles: string[];
-  position: Position;
-  priority: number;
-  async: boolean;
-  defer: boolean;
-  createdAt: string;
-  updatedAt: string;
-}
-
-export interface ScriptInput {
-  name: string;
-  code: string;
-  enabled?: boolean;
-  targetPages?: TargetPage[];
-  customPageHandles?: string[];
-  position?: Position;
-  priority?: number;
-  async?: boolean;
-  defer?: boolean;
-}
-
-export interface GlobalConfig {
-  autoInject: boolean;
+export interface AppConfig {
+  appEnabled: boolean;
+  script1Enabled: boolean;
+  script2Enabled: boolean;
+  script3Enabled: boolean;
+  scriptTitles: string[]; // one entry per script, in order [title1, title2, title3]
   debugMode: boolean;
 }
 
-export interface GlobalConfigInput {
-  autoInject?: boolean;
+export interface AppConfigInput {
+  appEnabled?: boolean;
+  script1Enabled?: boolean;
+  script2Enabled?: boolean;
+  script3Enabled?: boolean;
+  scriptTitles?: string[];
   debugMode?: boolean;
 }
 
-export interface ScriptsConnection {
-  edges: Array<{ node: ScriptMetaobject }>;
-  pageInfo: {
-    hasNextPage: boolean;
-    hasPreviousPage: boolean;
-    startCursor: string;
-    endCursor: string;
-  };
+export interface PredefinedScript {
+  id: 'script_1' | 'script_2' | 'script_3';
+  name: string;
+  type: 'script' | 'style'; // needed to pick the right wrapper tag
+  code: string;
+  defaultEnabled: boolean;
 }

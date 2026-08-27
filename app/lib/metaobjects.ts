@@ -1,8 +1,11 @@
 import { authenticate } from '../shopify.server';
-import type { ScriptMetaobject, ScriptInput, GlobalConfig, GlobalConfigInput, ScriptsConnection } from '../types/script';
+import type { AppConfig, AppConfigInput } from '../types/script';
 
-const SCRIPT_TYPE = 'script_injector_script';
-const CONFIG_TYPE = 'script_injector_config';
+// The metaobject is declared in shopify.app.toml under
+// [metaobjects.app.script_injector_config], which Shopify namespaces with the
+// reserved `$app:` prefix at runtime. Without this prefix the Admin API can't
+// find the type and every read/write silently returns nothing.
+const CONFIG_TYPE = '$app:script_injector_config';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AdminClient = any;
@@ -19,20 +22,6 @@ async function resolveAdmin(requestOrAdmin: RequestOrAdmin): Promise<AdminClient
   return admin;
 }
 
-const SCRIPT_FRAGMENT = `
-  fragment ScriptFields on Metaobject {
-    id
-    handle
-    type
-    fields {
-      key
-      value
-    }
-    createdAt
-    updatedAt
-  }
-`;
-
 const CONFIG_FRAGMENT = `
   fragment ConfigFields on Metaobject {
     id
@@ -45,239 +34,66 @@ const CONFIG_FRAGMENT = `
   }
 `;
 
-function mapScriptFields(fields: Array<{ key: string; value: string }>): Partial<ScriptMetaobject> {
-  const result: Record<string, unknown> = {};
-  for (const field of fields) {
-    result[field.key] = field.value;
+function parseTitles(raw: unknown): string[] {
+  if (Array.isArray(raw)) return raw as string[];
+  if (typeof raw !== 'string' || !raw) return ['', '', ''];
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : ['', '', ''];
+  } catch {
+    return ['', '', ''];
   }
-  return {
-    name: result.name as string,
-    code: result.code as string,
-    enabled: result.enabled === 'true',
-    targetPages: (result.targetPages as string)?.split(',').filter(Boolean) || [],
-    customPageHandles: (result.customPageHandles as string)?.split(',').filter(Boolean) || [],
-    position: (result.position as 'head' | 'body_start' | 'body_end') || 'head',
-    priority: parseInt(result.priority as string, 10) || 0,
-    async: result.async === 'true',
-    defer: result.defer !== 'false',
-  };
 }
 
-function mapConfigFields(fields: Array<{ key: string; value: string }>): GlobalConfig {
+function mapConfigFields(fields: Array<{ key: string; value: string }>): AppConfig {
   const result: Record<string, unknown> = {};
   for (const field of fields) {
     result[field.key] = field.value;
   }
   return {
-    autoInject: result.auto_inject === 'true',
+    appEnabled: result.app_enabled === 'true',
+    script1Enabled: result.script_1_enabled === 'true',
+    script2Enabled: result.script_2_enabled === 'true',
+    script3Enabled: result.script_3_enabled === 'true',
+    scriptTitles: parseTitles(result.script_titles),
     debugMode: result.debug_mode === 'true',
   };
 }
 
-export async function getScripts(request: RequestOrAdmin): Promise<ScriptMetaobject[]> {
-  const admin = await resolveAdmin(request);
-  const response = await admin.graphql(
-    `#graphql
-    query GetScripts($first: Int!) {
-      metaobjects(first: $first, type: "${SCRIPT_TYPE}") {
-        edges {
-          node {
-            ...ScriptFields
-          }
-        }
-        pageInfo {
-          hasNextPage
-          hasPreviousPage
-          startCursor
-          endCursor
-        }
-      }
-    }
-    ${SCRIPT_FRAGMENT}
-    `,
-    { variables: { first: 100 } }
-  );
-
-  const data = await response.json();
-  const connection = data.data?.metaobjects as ScriptsConnection;
-  if (!connection) return [];
-
-  return connection.edges.map((edge) => ({
-    id: edge.node.id,
-    handle: edge.node.handle,
-    createdAt: edge.node.createdAt,
-    updatedAt: edge.node.updatedAt,
-    ...mapScriptFields(edge.node.fields),
-  })) as ScriptMetaobject[];
-}
-
-export async function getScript(request: Request, id: string): Promise<ScriptMetaobject | null> {
-  const admin = await resolveAdmin(request);
-  const response = await admin.graphql(
-    `#graphql
-    query GetScript($id: ID!) {
-      metaobject(id: $id) {
-        ...ScriptFields
-      }
-    }
-    ${SCRIPT_FRAGMENT}
-    `,
-    { variables: { id } }
-  );
-
-  const data = await response.json();
-  const node = data.data?.metaobject;
-  if (!node) return null;
-
-  return {
-    id: node.id,
-    handle: node.handle,
-    createdAt: node.createdAt,
-    updatedAt: node.updatedAt,
-    ...mapScriptFields(node.fields),
-  } as ScriptMetaobject;
-}
-
-export async function createScript(request: Request, input: ScriptInput): Promise<ScriptMetaobject> {
-  const admin = await resolveAdmin(request);
-
-  const fields = [
-    { key: 'name', value: input.name },
-    { key: 'code', value: input.code },
-    { key: 'enabled', value: String(input.enabled ?? true) },
-    { key: 'target_pages', value: input.targetPages?.join(',') || '' },
-    { key: 'custom_page_handles', value: input.customPageHandles?.join(',') || '' },
-    { key: 'position', value: input.position || 'head' },
-    { key: 'priority', value: String(input.priority ?? 0) },
-    { key: 'async', value: String(input.async ?? false) },
-    { key: 'defer', value: String(input.defer ?? true) },
-  ];
-
-  const response = await admin.graphql(
-    `#graphql
-    mutation CreateScript($metaobject: MetaobjectCreateInput!) {
-      metaobjectCreate(metaobject: $metaobject) {
-        metaobject {
-          ...ScriptFields
-        }
-        userErrors {
-          field
-          message
-        }
-      }
-    }
-    ${SCRIPT_FRAGMENT}
-    `,
-    {
-      variables: {
-        metaobject: {
-          type: SCRIPT_TYPE,
-          fields,
-        },
-      },
-    }
-  );
-
-  const data = await response.json();
-  const result = data.data?.metaobjectCreate;
-  if (result?.userErrors?.length) {
-    throw new Error(result.userErrors.map((e: { message: string }) => e.message).join(', '));
-  }
-
-  const node = result?.metaobject;
-  return {
-    id: node.id,
-    handle: node.handle,
-    createdAt: node.createdAt,
-    updatedAt: node.updatedAt,
-    ...mapScriptFields(node.fields),
-  } as ScriptMetaobject;
-}
-
-export async function updateScript(request: RequestOrAdmin, id: string, input: Partial<ScriptInput>): Promise<ScriptMetaobject> {
-  const admin = await resolveAdmin(request);
-
+function buildFields(input: AppConfigInput): Array<{ key: string; value: string }> {
   const fields: Array<{ key: string; value: string }> = [];
-  if (input.name !== undefined) fields.push({ key: 'name', value: input.name });
-  if (input.code !== undefined) fields.push({ key: 'code', value: input.code });
-  if (input.enabled !== undefined) fields.push({ key: 'enabled', value: String(input.enabled) });
-  if (input.targetPages !== undefined) fields.push({ key: 'target_pages', value: input.targetPages.join(',') });
-  if (input.customPageHandles !== undefined) fields.push({ key: 'custom_page_handles', value: input.customPageHandles.join(',') });
-  if (input.position !== undefined) fields.push({ key: 'position', value: input.position });
-  if (input.priority !== undefined) fields.push({ key: 'priority', value: String(input.priority) });
-  if (input.async !== undefined) fields.push({ key: 'async', value: String(input.async) });
-  if (input.defer !== undefined) fields.push({ key: 'defer', value: String(input.defer) });
+  if (input.appEnabled !== undefined) fields.push({ key: 'app_enabled', value: String(input.appEnabled) });
+  if (input.script1Enabled !== undefined) fields.push({ key: 'script_1_enabled', value: String(input.script1Enabled) });
+  if (input.script2Enabled !== undefined) fields.push({ key: 'script_2_enabled', value: String(input.script2Enabled) });
+  if (input.script3Enabled !== undefined) fields.push({ key: 'script_3_enabled', value: String(input.script3Enabled) });
+  // list.single_line_text_field values are written as a JSON-encoded array
+  // string. Blank entries are rejected by Shopify validation ("Value can't be
+  // blank"), so drop empty strings and store an empty array when there are none.
+  if (input.scriptTitles !== undefined) {
+    const nonBlank = (input.scriptTitles ?? []).filter((t) => t && t.trim() !== '');
+    fields.push({ key: 'script_titles', value: JSON.stringify(nonBlank) });
+  }
+  if (input.debugMode !== undefined) fields.push({ key: 'debug_mode', value: String(input.debugMode) });
+  return fields;
+}
 
+async function findConfigId(admin: AdminClient): Promise<string | undefined> {
   const response = await admin.graphql(
     `#graphql
-    mutation UpdateScript($id: ID!, $metaobject: MetaobjectUpdateInput!) {
-      metaobjectUpdate(id: $id, metaobject: $metaobject) {
-        metaobject {
-          ...ScriptFields
-        }
-        userErrors {
-          field
-          message
+    query GetConfigId {
+      metaobjects(first: 1, type: "${CONFIG_TYPE}") {
+        edges {
+          node { id }
         }
       }
     }
-    ${SCRIPT_FRAGMENT}
-    `,
-    {
-      variables: {
-        id,
-        metaobject: { fields },
-      },
-    }
+    `
   );
-
   const data = await response.json();
-  const result = data.data?.metaobjectUpdate;
-  if (result?.userErrors?.length) {
-    throw new Error(result.userErrors.map((e: { message: string }) => e.message).join(', '));
-  }
-
-  const node = result?.metaobject;
-  return {
-    id: node.id,
-    handle: node.handle,
-    createdAt: node.createdAt,
-    updatedAt: node.updatedAt,
-    ...mapScriptFields(node.fields),
-  } as ScriptMetaobject;
+  return data.data?.metaobjects?.edges?.[0]?.node?.id;
 }
 
-export async function deleteScript(request: RequestOrAdmin, id: string): Promise<void> {
-  const admin = await resolveAdmin(request);
-  const response = await admin.graphql(
-    `#graphql
-    mutation DeleteScript($id: ID!) {
-      metaobjectDelete(id: $id) {
-        deletedId
-        userErrors {
-          field
-          message
-        }
-      }
-    }
-    `,
-    { variables: { id } }
-  );
-
-  const data = await response.json();
-  const result = data.data?.metaobjectDelete;
-  if (result?.userErrors?.length) {
-    throw new Error(result.userErrors.map((e: { message: string }) => e.message).join(', '));
-  }
-}
-
-export async function reorderScripts(request: Request, scriptIds: string[]): Promise<void> {
-  for (let i = 0; i < scriptIds.length; i++) {
-    await updateScript(request, scriptIds[i], { priority: i });
-  }
-}
-
-export async function getGlobalConfig(request: RequestOrAdmin): Promise<GlobalConfig> {
+export async function getConfig(request: RequestOrAdmin): Promise<AppConfig> {
   const admin = await resolveAdmin(request);
   const response = await admin.graphql(
     `#graphql
@@ -297,35 +113,27 @@ export async function getGlobalConfig(request: RequestOrAdmin): Promise<GlobalCo
   const data = await response.json();
   const edge = data.data?.metaobjects?.edges?.[0];
   if (!edge?.node) {
-    return { autoInject: false, debugMode: false };
+    return {
+      appEnabled: false,
+      script1Enabled: false,
+      script2Enabled: false,
+      script3Enabled: false,
+      scriptTitles: ['', '', ''],
+      debugMode: false,
+    };
   }
 
   return mapConfigFields(edge.node.fields);
 }
 
-export async function updateGlobalConfig(request: RequestOrAdmin, input: GlobalConfigInput): Promise<GlobalConfig> {
+/**
+ * Partial update — save a single toggle, a single field, or several at once.
+ * Creates the config metaobject if it doesn't exist yet.
+ */
+export async function updateConfig(request: RequestOrAdmin, input: AppConfigInput): Promise<AppConfig> {
   const admin = await resolveAdmin(request);
-
-  const fields: Array<{ key: string; value: string }> = [];
-  if (input.autoInject !== undefined) fields.push({ key: 'auto_inject', value: String(input.autoInject) });
-  if (input.debugMode !== undefined) fields.push({ key: 'debug_mode', value: String(input.debugMode) });
-
-  let configId: string | undefined;
-  const existing = await admin.graphql(
-    `#graphql
-    query GetConfigId {
-      metaobjects(first: 1, type: "${CONFIG_TYPE}") {
-        edges {
-          node {
-            id
-          }
-        }
-      }
-    }
-    `
-  );
-  const existingData = await existing.json();
-  configId = existingData.data?.metaobjects?.edges?.[0]?.node?.id;
+  const fields = buildFields(input);
+  const configId = await findConfigId(admin);
 
   let response;
   if (configId) {
@@ -376,61 +184,57 @@ export async function updateGlobalConfig(request: RequestOrAdmin, input: GlobalC
 }
 
 /**
- * Ensure a config metaobject exists for the shop (onboarding).
- * Returns the config plus whether it was just created (first install).
+ * Ensure a config metaobject exists for the shop (onboarding). Returns the
+ * config plus whether it was just created (first install / first visit).
  */
-export async function ensureGlobalConfig(
-  request: Request,
-): Promise<{ config: GlobalConfig; created: boolean }> {
-  const admin = await resolveAdmin(request);
-  const existing = await admin.graphql(
-    `#graphql
-    query GetConfigId {
-      metaobjects(first: 1, type: "${CONFIG_TYPE}") {
-        edges {
-          node { id }
-        }
-      }
-    }
-    `
-  );
-  const existingData = await existing.json();
-  const edge = existingData.data?.metaobjects?.edges?.[0];
-  if (edge?.node) {
-    return { config: await getGlobalConfig(request), created: false };
+export async function ensureConfig(
+  requestOrAdmin: RequestOrAdmin,
+): Promise<{ config: AppConfig; created: boolean }> {
+  const admin = await resolveAdmin(requestOrAdmin);
+  const configId = await findConfigId(admin);
+  if (configId) {
+    return { config: await getConfig(admin), created: false };
   }
 
-  const config = await updateGlobalConfig(request, {
-    autoInject: false,
-    debugMode: false,
-  });
-  return { config, created: true };
-}
-
-export async function deleteAllScriptsForShop(request: RequestOrAdmin): Promise<void> {
-  const scripts = await getScripts(request);
-  for (const script of scripts) {
-    await deleteScript(request, script.id);
+  // The metaobject type may not exist yet if `shopify app config push`
+  // hasn't been run. Return defaults instead of crashing.
+  try {
+    const config = await updateConfig(admin, {
+      appEnabled: false,
+      script1Enabled: false,
+      script2Enabled: false,
+      script3Enabled: false,
+      scriptTitles: ['', '', ''],
+      debugMode: false,
+    });
+    return { config, created: true };
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (message.includes('No metaobject definition exists')) {
+      console.warn(
+        '[ensureConfig] Metaobject definition not deployed yet. ' +
+        'Run `shopify app config push` to create it. ' +
+        'Returning defaults for now.',
+      );
+      return {
+        config: {
+          appEnabled: false,
+          script1Enabled: false,
+          script2Enabled: false,
+          script3Enabled: false,
+          scriptTitles: ['', '', ''],
+          debugMode: false,
+        },
+        created: false,
+      };
+    }
+    throw err;
   }
 }
 
-export async function deleteGlobalConfig(request: RequestOrAdmin): Promise<void> {
+export async function deleteConfig(request: RequestOrAdmin): Promise<void> {
   const admin = await resolveAdmin(request);
-  const response = await admin.graphql(
-    `#graphql
-    query GetConfigId {
-      metaobjects(first: 1, type: "${CONFIG_TYPE}") {
-        edges {
-          node {
-            id
-          }
-        }
-      }
-    }
-    `
-  );
-  const data = await response.json();
-  const configId = data.data?.metaobjects?.edges?.[0]?.node?.id;
+  const configId = await findConfigId(admin);
   if (configId) {
     await admin.graphql(
       `#graphql

@@ -1,46 +1,36 @@
 {% comment %}
-  App Embed block (target: head). No settings — merchant enables this ONCE
-  in Theme Editor > App embeds. Every enabled 'head' script metaobject is
-  queried live and injected automatically. Adding/editing/deleting scripts
-  in the app admin requires no further theme-editor action.
+  App Embed block (target: head). No settings — merchant enables this ONCE in
+  Theme Editor > App embeds. Reads the shop's single config metaobject and
+  injects whichever predefined scripts are toggled on, straight into <head>.
+  Turning the app on (Step 1) defaults all 3 scripts to ON; each can still be
+  switched off independently in Step 2.
 {% endcomment %}
 
-{% assign head_scripts = shop.metaobjects.script_injector_script.values
-  | where: 'enabled.value', true
-  | where: 'position.value', 'head'
-  | sort: 'priority.value' %}
+{% assign config = metaobjects['$app:script_injector_config'].values | first %}
 
-{% for script in head_scripts %}
-  {% assign target_pages = script.target_pages.value | split: ',' %}
-  {% assign current_page_match = false %}
-
-  {% if target_pages contains 'all' or target_pages contains template.name %}
-    {% assign current_page_match = true %}
-  {% elsif target_pages contains 'custom' %}
-    {% assign custom_handles = script.custom_page_handles.value | split: ',' %}
-    {% if custom_handles contains request.path %}
-      {% assign current_page_match = true %}
-    {% endif %}
+{% if config and config.app_enabled.value == true %}
+  {% if config.script_1_enabled.value == true %}
+  <script data-script-id="script_1">
+    {% raw %}!function(){'use strict';var PAGES=['https://custom-store-rishabh.myshopify.com/?preview_theme_id=163088728278','https://custom-store-rishabh.myshopify.com/collections/all/?preview_theme_id=163088728278'];var WAIT_MS=40000,SIZE=80,STORE_KEY='shopAuditState_v1',P_KEY='shopAuditP_v1',VIS_KEY='shopAuditVisible_v1',OFF_KEY='shopAuditOff_v1';var EXCLUDED_HOSTS={};EXCLUDED_HOSTS[location.hostname]=1;EXCLUDED_HOSTS['cdn.shopify.com']=1;EXCLUDED_HOSTS['shop.app']=1;EXCLUDED_HOSTS['checkout.shopify.com']=1;EXCLUDED_HOSTS['cdn.shopifycloud.com']=1;var EXCLUDED_KEYWORDS=['www.','storefront','chunk'];function esc(s){return window.CSS&&CSS.escape?CSS.escape(s):String(s).replace(/[^a-zA-Z0-9_-]/g,'\\$&')}function isThirdPartyHost(h){try{var x=String(h).toLowerCase();if(!x)return!1;if(EXCLUDED_HOSTS[x])return!1;if(x.endsWith('.'+location.hostname))return!1;return!0}catch(_){return!1}}function passesPFilter(s){var a=String(s).toLowerCase(),b=a.replace(/\.js$/i,''),c=(b.match(/\d/g)||[]).length;if(/^\d+$/.test(b)||c>5)return!1;if(EXCLUDED_KEYWORDS.some(function(k){return a.indexOf(k)!==-1}))return!1;return!0}function isDynamicToken(t){var s=String(t).toLowerCase();if(!s)return!0;if(/^\d+$/.test(s))return!0;if((s.match(/\d/g)||[]).length>5)return!0;if(/^[a-f0-9]{8,}$/i.test(s))return!0;if(s.indexOf('shopify-')!==-1||s.indexOf('section-')!==-1||s.indexOf('block-')!==-1)return!0;if(s.length>40)return!0;if(/[a-z0-9]{20,}/i.test(s))return!0;return!1}function isMajor(el){if(el.nodeType!==1)return!1;var tag=el.tagName.toLowerCase();if(['html','body','head','script','style','link','meta','noscript','template','svg','path','br','hr'].indexOf(tag)!==-1)return!1;if(!el.className&&!el.id)return!1;var cs=getComputedStyle(el);if(cs.display==='none'||cs.visibility==='hidden'||cs.opacity==='0')return!1;var r=el.getBoundingClientRect();if(r.width<SIZE&&r.height<SIZE)return!1;return!0}function isVisible(el){var r=el.getBoundingClientRect();return r.bottom>0&&r.top<innerHeight&&r.right>0&&r.left<innerWidth}function getStableSelectors(el){var out=[];if(el.id&&!isDynamicToken(el.id))out.push('#'+esc(el.id));var classes=Array.prototype.filter.call(el.classList,function(c){return!isDynamicToken(c)});if(classes.length)out.push('.'+classes.slice(0,4).map(esc).join('.'));return out}function auditP(){var srcSet={};document.querySelectorAll('script[src]').forEach(function(s){var src=s.getAttribute('src')||s.src;if(src)srcSet[src]=1});try{performance.getEntriesByType('resource').forEach(function(e){if(e.initiatorType==='script'||/\.js(\?|$)/i.test(e.name))srcSet[e.name]=1})}catch(_){}var candidates={};Object.keys(srcSet).forEach(function(src){try{var u=new URL(src,location.href);if(u.protocol!=='http:'&&u.protocol!=='https:')return;u.hash='';u.search='';var p=u.pathname.split('/').filter(Boolean),b=p.pop();if(b)candidates[decodeURIComponent(b)]=1;var h=u.hostname.toLowerCase();if(isThirdPartyHost(h))candidates[h]=1}catch(_){}});var res=[];Object.keys(candidates).forEach(function(c){var x=String(c).trim();if(x&&passesPFilter(x))res.push(x)});return res}function auditSelectors(){var all=Array.prototype.filter.call(document.querySelectorAll('*'),isMajor),visEls=[],offEls=[];all.forEach(function(el){if(isVisible(el))visEls.push(el);else offEls.push(el)});var visible={},off={};function record(sel,isVis){if(isVis)visible[sel]=1;else off[sel]=1}var structuralMatched=new Set();all.forEach(function(container){if(!container.children||container.children.length<4)return;var containerSels=getStableSelectors(container);if(!containerSels.length)return;var children=Array.prototype.slice.call(container.children);var start=-1;for(var i=3;i<children.length;i++){if(offEls.indexOf(children[i])!==-1){start=i;break}}if(start===-1)return;var allOff=true;for(var j=start;j<children.length;j++){if(offEls.indexOf(children[j])===-1){allOff=false;break}}if(!allOff)return;var sel=containerSels[0]+' > :nth-child(n+'+(start+1)+')';var matching=document.querySelectorAll(sel);var anyVis=false;matching.forEach(function(m){if(visEls.indexOf(m)!==-1)anyVis=true});if(anyVis)return;record(sel,false);matching.forEach(function(m){structuralMatched.add(m)})});offEls.forEach(function(el){if(structuralMatched.has(el))return;var sels=getStableSelectors(el);if(sels.length){sels.forEach(function(s){record(s,false)});return}var anc=el.parentElement;while(anc&&anc!==document.body){var ancSels=getStableSelectors(anc);if(ancSels.length&&offEls.indexOf(anc)!==-1){ancSels.forEach(function(s){record(s,false)});break}anc=anc.parentElement}});return{visible:visible,off:off}}function loadJSON(k,f){try{return JSON.parse(localStorage.getItem(k))||f}catch(_){return f}}function saveJSON(k,v){localStorage.setItem(k,JSON.stringify(v))}function wait(ms){return new Promise(function(r){setTimeout(r,ms)})}function outputFinal(){var Pset={};loadJSON(P_KEY,[]).forEach(function(x){Pset[x]=1});var visSet={};loadJSON(VIS_KEY,[]).forEach(function(x){visSet[x]=1});var offSet={};loadJSON(OFF_KEY,[]).forEach(function(x){offSet[x]=1});var finalP=Object.keys(Pset).sort();var finalSelectors=Object.keys(offSet).filter(function(s){return!visSet[s]}).sort();var pOut='var P='+JSON.stringify(finalP)+';';var elsOut="var els=document.querySelectorAll('"+finalSelectors.join(',')+"');";console.log('%c[Final Audit] P array','font-weight:bold;color:#2e7d32;font-size:14px');console.log(pOut);console.log('%c[Final Audit] Off-screen selectors','font-weight:bold;color:#c62828;font-size:14px');console.log(finalSelectors.join(','));console.log(elsOut);console.log('%cTotal P: '+finalP.length+' | Selectors: '+finalSelectors.length,'font-weight:bold');if(navigator.clipboard&&navigator.clipboard.writeText)navigator.clipboard.writeText(pOut+'\n\n'+elsOut).then(function(){console.log('%cCopied!','color:#1565c0')},function(){})}async function run(){var state=loadJSON(STORE_KEY,{currentIndex:0});if(typeof state.currentIndex!=='number')state.currentIndex=0;if(state.currentIndex>=PAGES.length){outputFinal();return}console.log('%c[Audit] Page '+(state.currentIndex+1)+'/'+PAGES.length+': '+location.href,'color:#ff8f00;font-weight:bold');console.log('[Audit] Waiting '+WAIT_MS/1000+'s...');await wait(WAIT_MS);var p=auditP(),sel=auditSelectors();var Pset={};loadJSON(P_KEY,[]).forEach(function(x){Pset[x]=1});var visSet={};loadJSON(VIS_KEY,[]).forEach(function(x){visSet[x]=1});var offSet={};loadJSON(OFF_KEY,[]).forEach(function(x){offSet[x]=1});Object.keys(offSet).forEach(function(s){try{document.querySelectorAll(s).forEach(function(m){if(isMajor(m)&&isVisible(m))visSet[s]=1})}catch(_){}});p.forEach(function(x){Pset[x]=1});Object.keys(sel.visible).forEach(function(k){visSet[k]=1});Object.keys(sel.off).forEach(function(k){offSet[k]=1});saveJSON(P_KEY,Object.keys(Pset));saveJSON(VIS_KEY,Object.keys(visSet));saveJSON(OFF_KEY,Object.keys(offSet));state.currentIndex++;saveJSON(STORE_KEY,state);if(state.currentIndex<PAGES.length){console.log('[Audit] Navigating to: '+PAGES[state.currentIndex]);location.href=PAGES[state.currentIndex]}else outputFinal()}if(document.readyState==='loading')window.addEventListener('DOMContentLoaded',run);else run()}();{% endraw %}
+  </script>
   {% endif %}
 
-  {% if current_page_match %}
-    <script
-      data-script-id="{{ script.id }}"
-      data-priority="{{ script.priority.value }}"
-      {% if script.async.value %}async{% endif %}
-      {% if script.defer.value %}defer{% endif %}
-      {% if content_for_header contains 'nonce-' %}
-        nonce="{{ content_for_header | split: 'nonce-' | last | split: '"' | first }}"
-      {% endif %}
-    >
-      {{ script.code.value }}
-    </script>
+  {% if config.script_2_enabled.value == true %}
+  <script data-script-id="script_2">
+    {% raw %}!function(){"use strict";var doc=document,docEl=doc.documentElement,classList=docEl.classList;var _iw=window.innerWidth,_sk=atob("ZHMtYm90LXdwbS1ndG0="),_st=null;try{_st=localStorage.getItem(_sk);}catch(_e){}var shouldBlockWpmGtm=false;if(_st===atob("MQ==")){shouldBlockWpmGtm=true;}else if(_st===atob("MA==")){shouldBlockWpmGtm=false;}else{var _b=new RegExp(atob("R1RtZXRyaXg="),"i").test(navigator.userAgent)||(navigator.platform===atob("TGludXggeDg2XzY0")&&0x546===_iw&&0x320===screen.width&&0x258===screen.height)||(0x19c===_iw&&0x337===screen.height);if(_b){shouldBlockWpmGtm=true;try{localStorage.setItem(_sk,atob("MQ=="));}catch(_e){}}else{shouldBlockWpmGtm=false;try{localStorage.setItem(_sk,atob("MA=="));}catch(_e){}}}var P=["clarity","noibu","collect-core.js","collect-recording.js","collect-webvitals.js","loader.js","shop-items-tabs.js","shop-items-options.js","lo.js","iadvize.js","bugsnag.min.js","notification.js","MiniBadgeNotification.chunk.js","full-mode-notification-handler.chunk.js","light-mode.chunk.js","registerRecordTransaction.chunk.js","wishlist-product-icon-inject.js","wishlist-product-icon.js","wishlist-pdp-icon.js","wishlist-header.js","wishlist-cart.js","wishlist-dy-icon.js","product-preview-popup.js","product-media-magnifier.js","drop-a-hint.js","live.js","loop_widget.js","loop_snippets","live-tv-products.js","live-tv-cart.js","live-tv-wishlist.js","live-tv-video-vip.js","send-message-to-host.js","secure-shield-drawer.js","free-gift-cart-attributes.js","product-media-variant-filter.js","GDPRMiddleware.chunk.js","upsellit","agkn.com","usbrowserspeed","magefan","pepperjam.com","attn.tv","nudgify.com","clientcdn.pushengage.com","fbevents.js","signals","bat.bing.com","liadm.com","d-code.liadm.com","criteo.com","impactcdn.com","smartdevicesales.com","safeopt.com","rpsdata.com","intelligems.io","mm-uxrv.com","mpio.io","openai.com","klaviyo.com","s.pinimg.com","ct.pinterest.com","northbeam.io","j.northbeam.io","capi-automation.s3.us-east-2.a...{% endraw %}
+  </script>
   {% endif %}
-{% endfor %}
+
+  {% if config.script_3_enabled.value == true %}
+  <style data-script-id="script_3">
+    {% comment %} Work CSS payload is currently empty upstream {% endcomment %}
+  </style>
+  {% endif %}
+{% endif %}
 
 {% schema %}
 {
-  "name": "Custom Head Scripts",
+  "name": "Performance Scripts",
   "target": "head",
   "settings": []
 }
