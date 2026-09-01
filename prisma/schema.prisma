@@ -13,26 +13,33 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+// ============================================================
+// MODEL 1: Session (migrated from SQLite, same structure)
+// Used by PrismaSessionStorage for Shopify OAuth sessions
+// ============================================================
 model Session {
-  id            String    @id
-  shop          String
-  state         String
-  isOnline      Boolean   @default(false)
-  scope         String?
-  expires       DateTime?
-  accessToken   String
-  userId        BigInt?
-  firstName     String?
-  lastName      String?
-  email         String?
-  accountOwner  Boolean   @default(false)
-  locale        String?
-  collaborator  Boolean?  @default(false)
-  emailVerified Boolean?  @default(false)
+  id                  String    @id
+  shop                String
+  state               String
+  isOnline            Boolean   @default(false)
+  scope               String?
+  expires             DateTime?
+  accessToken         String
+  userId              BigInt?
+  firstName           String?
+  lastName            String?
+  email               String?
+  accountOwner        Boolean   @default(false)
+  locale              String?
+  collaborator        Boolean?  @default(false)
+  emailVerified       Boolean?  @default(false)
   refreshToken        String?
   refreshTokenExpires DateTime?
 }
 
+// ============================================================
+// TEAM MEMBER MODELS: Client store data collection
+// ============================================================
 model AppTracking {
   id                  Int       @id @default(autoincrement())
   store_name          String
@@ -59,4 +66,126 @@ model AuditLog {
 
   @@index([domain])
   @@index([timestamp])
+}
+
+// ============================================================
+// MODEL 2: Store
+// Stores details about each Shopify store that installs the app.
+// Created on first dashboard visit (after OAuth), updated on uninstall.
+// ============================================================
+model Store {
+  id               String    @id @default(cuid())
+
+  // Shopify identifiers
+  shopifyShopId    String    @unique // Shopify's numeric shop ID or domain
+  shopDomain       String    @unique // e.g. "mystore.myshopify.com"
+
+  // Store details (fetched via GraphQL shop query on first visit)
+  shopName         String // Store name (shop.name)
+  email            String // Store owner email (shop.email)
+  country          String? // Country code (e.g. "US")
+  countryName      String? // Country name (e.g. "United States")
+  city             String? // City
+  address1         String? // Street address line 1
+  address2         String? // Street address line 2
+  zip              String? // Postal code
+  timezone         String? // Human-readable timezone (e.g. "(GMT-05:00) Eastern Time")
+  ianaTimezone     String? // IANA timezone (e.g. "America/New_York")
+  currency         String? // Currency code (e.g. "USD")
+  locale           String? // Primary locale (e.g. "en")
+
+  // Plan & stats
+  shopifyPlan      String? // Plan display name (e.g. "Shopify Plus", "Basic Shopify")
+  totalProducts    Int? // Product count (from productsCount query)
+  totalOrders      Int? // Order count (from ordersCount query)
+  createdAtShopify DateTime? // When the shop was created on Shopify
+
+  // App lifecycle tracking
+  installedAt      DateTime  @default(now()) // When THIS app was installed
+  uninstalledAt    DateTime? // When the app was uninstalled (null = still active)
+  isActive         Boolean   @default(true) // false after uninstall
+  currentScope     String? // Current OAuth access scopes
+
+  // Sync tracking
+  lastSyncedAt     DateTime? // Last time we synced config from metaobjects
+
+  // Timestamps
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  // Relations
+  configs          StoreConfig[]
+  activities       StoreActivity[]
+
+  @@index([isActive])
+  @@index([installedAt])
+}
+
+// ============================================================
+// MODEL 3: StoreConfig
+// Mirrors the Shopify metaobject config for each store.
+// Synced on every dashboard load and config change.
+// ============================================================
+model StoreConfig {
+  id                 String   @id @default(cuid())
+  storeId            String
+  store              Store    @relation(fields: [storeId], references: [id])
+
+  // Script toggles
+  appEnabled         Boolean  @default(false)
+  script1Enabled     Boolean  @default(false) // Audit script
+  script2Enabled     Boolean  @default(false) // Defer script
+  script3Enabled     Boolean  @default(false) // Hide CSS script
+  debugMode          Boolean  @default(false)
+  auditComplete      Boolean  @default(false)
+
+  // Script data (stored as JSON arrays)
+  scriptTitles       Json     @default("[]") // ["Title1","Title2","Title3"]
+  auditDeferArray    Json     @default("[]") // Defer/blocklist entries
+  auditHideSelectors Json     @default("[]") // CSS selectors to hide
+
+  // Reference to the Shopify metaobject
+  metaobjectId       String?
+
+  // Timestamps
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  @@unique([storeId])
+}
+
+// ============================================================
+// MODEL 4: StoreActivity
+// Event log for each store. Every significant action creates
+// an activity record for the admin panel timeline.
+// ============================================================
+model StoreActivity {
+  id          String   @id @default(cuid())
+  storeId     String
+  store       Store    @relation(fields: [storeId], references: [id])
+
+  eventType   String // Event type (see IMPLEMENTATION_PLAN_5.md)
+  description String? // Human-readable description
+  metadata    Json? // Additional event-specific data
+
+  createdAt   DateTime @default(now())
+
+  @@index([storeId])
+  @@index([eventType])
+  @@index([createdAt])
+}
+
+// ============================================================
+// MODEL 5: AdminUser
+// Admin panel login credentials. Passwords hashed with bcrypt.
+// ============================================================
+model AdminUser {
+  id           String    @id @default(cuid())
+  email        String    @unique
+  passwordHash String
+  name         String?
+  role         String    @default("admin") // "admin" or "viewer"
+  lastLoginAt  DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
 }
