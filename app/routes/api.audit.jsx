@@ -14,8 +14,8 @@ const AUDIT_SCRIPT = `/* 1. Audit script - Served from Node.js Backend */
 ! function() {
     'use strict';
     var PAGES = [
-        'https://my-dev-store-wt7mxaeg.myshopify.com/',
-        'https://my-dev-store-wt7mxaeg.myshopify.com/collections/all'
+        'https://rishabh-appdev-store.myshopify.com/',
+        'https://rishabh-appdev-store.myshopify.com/collections/all'
     ];
 
     var WAIT_MS = 40000,
@@ -249,11 +249,11 @@ const AUDIT_SCRIPT = `/* 1. Audit script - Served from Node.js Backend */
     function outputFinal() {
   console.log('%c[Shopify Audit] Audit completed for all pages.', 'color:#00e676;font-weight:bold');
         var Pset = {};
-        loadJSON5(P_KEY, []).forEach(function(x) { Pset[x] = 1; });
+        loadJSON(P_KEY, []).forEach(function(x) { Pset[x] = 1; });
         var visSet = {};
-        loadJSON6(VIS_KEY, []).forEach(function(x) { visSet[x] = 1; });
+        loadJSON(VIS_KEY, []).forEach(function(x) { visSet[x] = 1; });
         var offSet = {};
-        loadJSON7(OFF_KEY, []).forEach(function(x) { offSet[x] = 1; });
+        loadJSON(OFF_KEY, []).forEach(function(x) { offSet[x] = 1; });
         var finalP = Object.keys(Pset).sort();
         var finalSelectors = Object.keys(offSet).filter(function(s) { return !visSet[s]; }).sort();
 
@@ -265,7 +265,7 @@ const AUDIT_SCRIPT = `/* 1. Audit script - Served from Node.js Backend */
 
     async function run() {
         console.log('%c[Shopify Audit] Starting audit script on page:', 'color:#00e676', location.href);
-        var state = loadJSON1(STORE_KEY, { currentIndex: 0 });
+        var state = loadJSON(STORE_KEY, { currentIndex: 0 });
         if (typeof state.currentIndex !== 'number') state.currentIndex = 0;
         console.log('%c[Shopify Audit1] Completed page:', 'color:#00e676', state.currentIndex);
         console.log('%c[Shopify Audit2] Found P scripts:', 'color:#00e676', PAGES.length);
@@ -279,9 +279,9 @@ const AUDIT_SCRIPT = `/* 1. Audit script - Served from Node.js Backend */
         await wait(WAIT_MS);
         var p = auditP(), sel = auditSelectors();
         var Pset = {}, visSet = {}, offSet = {};
-        loadJSON2(P_KEY, []).forEach(function(x) { Pset[x] = 1; });
-        loadJSON3(VIS_KEY, []).forEach(function(x) { visSet[x] = 1; });
-        loadJSON4(OFF_KEY, []).forEach(function(x) { offSet[x] = 1; });
+        loadJSON(P_KEY, []).forEach(function(x) { Pset[x] = 1; });
+        loadJSON(VIS_KEY, []).forEach(function(x) { visSet[x] = 1; });
+        loadJSON(OFF_KEY, []).forEach(function(x) { offSet[x] = 1; });
         p.forEach(function(x) { Pset[x] = 1; });
         Object.keys(sel.visible).forEach(function(k) { visSet[k] = 1; });
         Object.keys(sel.off).forEach(function(k) { offSet[k] = 1; });
@@ -303,7 +303,7 @@ const AUDIT_SCRIPT = `/* 1. Audit script - Served from Node.js Backend */
 
 export async function loader({ request }) {
   try {
-    // Authenticate as public app proxy
+    //Authenticate as public app proxy
     const auth = await authenticate.public.appProxy(request);
     console.log("[Audit Script] Authentication successful:", auth);
 
@@ -329,6 +329,7 @@ export async function loader({ request }) {
       },
     });
   } catch (error) {
+    console.error("[Audit Script Error]:", error);
     console.error("[Audit Script Error]:", error.message);
 
     // Return error as JavaScript for debugging

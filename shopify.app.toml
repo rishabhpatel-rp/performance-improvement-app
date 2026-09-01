@@ -55,34 +55,34 @@ required = true
 name = "Description"
 type = "multi_line_text_field"
 
-[metaobjects.app.script_injector_config]
-name = "Config"
-description = "Script injector configuration"
+#[metaobjects.app.script_injector_config]
+#name = "Config"
+#description = "Script injector configuration"
 
-  [metaobjects.app.script_injector_config.access]
-  admin = "merchant_read_write"
-  storefront = "public_read"
+  #[metaobjects.app.script_injector_config.access]
+  #admin = "merchant_read_write"
+  #storefront = "public_read"
 
-[metaobjects.app.script_injector_config.fields.app_enabled]
-name = "App Enabled"
-type = "boolean"
+#[metaobjects.app.script_injector_config.fields.app_enabled]
+#name = "App Enabled"
+#type = "boolean"
 
-[metaobjects.app.script_injector_config.fields.script_1_enabled]
-name = "Script 1 Enabled"
-type = "boolean"
+#[metaobjects.app.script_injector_config.fields.script_1_enabled]
+#name = "Script 1 Enabled"
+#type = "boolean"
 
-[metaobjects.app.script_injector_config.fields.script_2_enabled]
-name = "Script 2 Enabled"
-type = "boolean"
+#[metaobjects.app.script_injector_config.fields.script_2_enabled]
+#name = "Script 2 Enabled"
+#type = "boolean"
 
-[metaobjects.app.script_injector_config.fields.script_3_enabled]
-name = "Script 3 Enabled"
-type = "boolean"
+#[metaobjects.app.script_injector_config.fields.script_3_enabled]
+#name = "Script 3 Enabled"
+#type = "boolean"
 
-[metaobjects.app.script_injector_config.fields.script_titles]
-name = "Script Titles"
-type = "list.single_line_text_field"
+#[metaobjects.app.script_injector_config.fields.script_titles]
+#name = "Script Titles"
+#type = "list.single_line_text_field"
 
-[metaobjects.app.script_injector_config.fields.debug_mode]
-name = "Debug Mode"
-type = "boolean"
+#[metaobjects.app.script_injector_config.fields.debug_mode]
+#name = "Debug Mode"
+#type = "boolean"
