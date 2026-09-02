@@ -19,7 +19,7 @@ module.exports = {
     commonjs: true,
     es6: true,
   },
-  ignorePatterns: ["!**/.server", "!**/.client", "extensions/script-injector/assets/**"],
+  ignorePatterns: ["!**/.server", "!**/.client", "extensions/script-injector/assets/**", "admin-panel/**"],
 
   // Base config
   extends: ["eslint:recommended"],

@@ -5,7 +5,7 @@
  */
 export default function WizardNavigation({ currentStep, maxStep, onChange, onDone }) {
   const isFirst = currentStep === 1;
-  const isLast = currentStep === 3;
+  const isLast = currentStep >= maxStep;
   // On Step 1, "Continue" is disabled until the app is enabled (maxStep > 1).
   const canContinue = maxStep >= currentStep + 1;
 
