@@ -31,10 +31,7 @@ interface SyncConfigInput {
   script2Enabled: boolean;
   script3Enabled: boolean;
   debugMode: boolean;
-  auditComplete: boolean;
   scriptTitles: string[];
-  auditDeferArray: string[];
-  auditHideSelectors: string[];
   metaobjectId?: string;
 }
 
@@ -218,10 +215,7 @@ export async function syncConfigToDatabase(
       script2Enabled: config.script2Enabled,
       script3Enabled: config.script3Enabled,
       debugMode: config.debugMode,
-      auditComplete: config.auditComplete,
       scriptTitles: config.scriptTitles,
-      auditDeferArray: config.auditDeferArray,
-      auditHideSelectors: config.auditHideSelectors,
       metaobjectId: config.metaobjectId,
     },
     update: {
@@ -230,10 +224,7 @@ export async function syncConfigToDatabase(
       script2Enabled: config.script2Enabled,
       script3Enabled: config.script3Enabled,
       debugMode: config.debugMode,
-      auditComplete: config.auditComplete,
       scriptTitles: config.scriptTitles,
-      auditDeferArray: config.auditDeferArray,
-      auditHideSelectors: config.auditHideSelectors,
       metaobjectId: config.metaobjectId,
     },
   });

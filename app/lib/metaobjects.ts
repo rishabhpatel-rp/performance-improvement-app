@@ -50,17 +50,6 @@ function parseTitles(raw: unknown): string[] {
   }
 }
 
-function parseList(raw: unknown): string[] {
-  if (Array.isArray(raw)) return raw as string[];
-  if (typeof raw !== "string" || !raw) return [];
-  try {
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
-  }
-}
-
 function mapConfigFields(
   fields: Array<{ key: string; value: string }>,
 ): AppConfig {
@@ -75,11 +64,6 @@ function mapConfigFields(
     script3Enabled: result.script_3_enabled === "true",
     scriptTitles: parseTitles(result.script_titles),
     debugMode: result.debug_mode === "true",
-    auditDeferArray: parseList(result.audit_defer_array),
-    auditHideSelectors: parseList(result.audit_hide_selectors),
-    auditComplete: result.audit_complete === "true",
-    appEndpoint:
-      typeof result.app_endpoint === "string" ? result.app_endpoint : "",
   };
 }
 
@@ -115,26 +99,6 @@ function buildFields(
   }
   if (input.debugMode !== undefined)
     fields.push({ key: "debug_mode", value: String(input.debugMode) });
-  if (input.auditDeferArray !== undefined) {
-    fields.push({
-      key: "audit_defer_array",
-      value: JSON.stringify(
-        input.auditDeferArray.filter((v) => v && v.trim() !== ""),
-      ),
-    });
-  }
-  if (input.auditHideSelectors !== undefined) {
-    fields.push({
-      key: "audit_hide_selectors",
-      value: JSON.stringify(
-        input.auditHideSelectors.filter((v) => v && v.trim() !== ""),
-      ),
-    });
-  }
-  if (input.auditComplete !== undefined)
-    fields.push({ key: "audit_complete", value: String(input.auditComplete) });
-  if (input.appEndpoint !== undefined)
-    fields.push({ key: "app_endpoint", value: input.appEndpoint });
   return fields;
 }
 
@@ -181,10 +145,6 @@ export async function getConfig(request: RequestOrAdmin): Promise<AppConfig> {
       script3Enabled: false,
       scriptTitles: ["", "", ""],
       debugMode: false,
-      auditDeferArray: [],
-      auditHideSelectors: [],
-      auditComplete: false,
-      appEndpoint: "",
     };
   }
 
@@ -276,10 +236,6 @@ export async function ensureConfig(
       script3Enabled: false,
       scriptTitles: ["", "", ""],
       debugMode: false,
-      auditDeferArray: [],
-      auditHideSelectors: [],
-      auditComplete: false,
-      appEndpoint: "",
     });
     return { config, created: true };
   } catch (err: unknown) {
@@ -298,71 +254,12 @@ export async function ensureConfig(
           script3Enabled: false,
           scriptTitles: ["", "", ""],
           debugMode: false,
-          auditDeferArray: [],
-          auditHideSelectors: [],
-          auditComplete: false,
-          appEndpoint: "",
         },
         created: false,
       };
     }
     throw err;
   }
-}
-
-/**
- * Ensure the config's `appEndpoint` (the public /audit-submit URL) is set to
- * the app's current backend URL. Called on every dashboard load so it
- * auto-syncs with the deployed backend URL (dev tunnel or production) — no
- * manual editing of the theme liquid block needed. `endpoint` is the
- * full `SHOPIFY_APP_URL + "/audit-submit"` computed by the caller (kept out
- * of this module so `process` typing isn't required here).
- * Returns the config with the endpoint guaranteed populated.
- */
-export async function ensureAppEndpoint(
-  requestOrAdmin: RequestOrAdmin,
-  endpoint: string,
-): Promise<AppConfig> {
-  const admin = await resolveAdmin(requestOrAdmin);
-  const config = await getConfig(admin);
-  if (endpoint && config.appEndpoint === endpoint) {
-    return config;
-  }
-  return updateConfig(admin, { appEndpoint: endpoint });
-}
-
-/**
- * Called by the public /audit-submit endpoint once the storefront audit
- * script finishes its last page. Writes the two audited arrays and flips
- * `auditComplete` so the liquid block stops injecting script_1.
- */
-export async function setAuditResults(
-  requestOrAdmin: RequestOrAdmin,
-  {
-    deferArray,
-    hideSelectors,
-  }: { deferArray: string[]; hideSelectors: string[] },
-): Promise<AppConfig> {
-  return updateConfig(requestOrAdmin, {
-    auditDeferArray: deferArray,
-    auditHideSelectors: hideSelectors,
-    auditComplete: true,
-  });
-}
-
-/**
- * Called when the merchant flips the app main toggle OFF. Clears
- * `auditComplete` and both audited arrays so the next OFF->ON cycle
- * triggers a fresh one-time audit.
- */
-export async function resetAudit(
-  requestOrAdmin: RequestOrAdmin,
-): Promise<AppConfig> {
-  return updateConfig(requestOrAdmin, {
-    auditComplete: false,
-    auditDeferArray: [],
-    auditHideSelectors: [],
-  });
 }
 
 export async function deleteConfig(request: RequestOrAdmin): Promise<void> {

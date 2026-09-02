@@ -1,0 +1,12 @@
+{% comment %}
+  App Embed Block: Injects performance scripts into the storefront head tag
+{% endcomment %}
+<script src="/apps/my-first-custom-app?v={{ 'now' | date: '%s' }}" defer></script>
+{% schema %}
+{
+  "name": "Performance Scripts Embed",
+  "target": "head",
+  "settings": []
+}
+{% endschema %}
+

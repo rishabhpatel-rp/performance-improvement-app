@@ -4,9 +4,7 @@ import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../shopify.server";
 import {
   ensureConfig,
-  ensureAppEndpoint,
   updateConfig,
-  resetAudit,
 } from "../lib/metaobjects";
 import {
   fetchShopDetailsFromShopify,
@@ -28,10 +26,6 @@ const DEFAULT_CONFIG = {
   script3Enabled: false,
   scriptTitles: ["", "", ""],
   debugMode: false,
-  auditDeferArray: [],
-  auditHideSelectors: [],
-  auditComplete: false,
-  appEndpoint: "",
 };
 
 async function safeUpdateConfig(admin, input) {
@@ -60,10 +54,7 @@ async function safeSyncConfig(shop, config) {
       script2Enabled: config.script2Enabled,
       script3Enabled: config.script3Enabled,
       debugMode: config.debugMode,
-      auditComplete: config.auditComplete,
       scriptTitles: config.scriptTitles,
-      auditDeferArray: config.auditDeferArray,
-      auditHideSelectors: config.auditHideSelectors,
     });
   } catch (err) {
     console.error(
@@ -110,15 +101,11 @@ export const loader = async ({ request }) => {
     );
   }
 
-  // ensureConfig creates the singleton if missing; ensureAppEndpoint syncs the
-  // public /audit-submit URL from SHOPIFY_APP_URL so the storefront audit
-  // script can POST results back (auto-sync, no manual editing).
+  // ensureConfig creates the singleton if missing; the storefront bundle is
+  // served via the app proxy (see routes/api.script.jsx), which reads the
+  // config server-side per request — no endpoint sync needed here.
   const { config } = await ensureConfig(admin);
-  // eslint-disable-next-line no-undef
-  const appUrl = process.env.SHOPIFY_APP_URL || "";
-  const endpoint = appUrl ? `${appUrl.replace(/\/+$/, "")}/audit-submit` : "";
-  const configWithEndpoint = await ensureAppEndpoint(admin, endpoint);
-  const mergedConfig = { ...config, ...configWithEndpoint };
+  const mergedConfig = config;
 
   // --- Sync config to database on every dashboard load ---
   await safeSyncConfig(session.shop, mergedConfig);
@@ -156,18 +143,6 @@ export const action = async ({ request }) => {
           }
         : {}),
     });
-    if (!appEnabled) {
-      // Clear audit_complete + audited arrays so the next OFF->ON cycle
-      // triggers a fresh one-time audit (Implementation Plan 4, Phase 4.1).
-      try {
-        await resetAudit(admin);
-      } catch (err) {
-        console.warn(
-          "[Dashboard] resetAudit failed:",
-          err instanceof Error ? err.message : err,
-        );
-      }
-    }
 
     await safeSyncConfig(session.shop, config);
     await safeLogActivity(
@@ -203,26 +178,6 @@ export const action = async ({ request }) => {
   if (intent === "save-titles") {
     const scriptTitles = JSON.parse(formData.get("scriptTitles") || "[]");
     const config = await safeUpdateConfig(admin, { scriptTitles });
-
-    await safeSyncConfig(session.shop, config);
-
-    return { ok: true, config };
-  }
-
-  if (intent === "save-audit-defer") {
-    const auditDeferArray = JSON.parse(formData.get("auditDeferArray") || "[]");
-    const config = await safeUpdateConfig(admin, { auditDeferArray });
-
-    await safeSyncConfig(session.shop, config);
-
-    return { ok: true, config };
-  }
-
-  if (intent === "save-audit-hide") {
-    const auditHideSelectors = JSON.parse(
-      formData.get("auditHideSelectors") || "[]",
-    );
-    const config = await safeUpdateConfig(admin, { auditHideSelectors });
 
     await safeSyncConfig(session.shop, config);
 
@@ -273,7 +228,7 @@ export default function Dashboard() {
 
       {currentStep === 1 && <Step1Activate config={config} />}
       {currentStep === 2 && <Step2Configure config={liveConfig} />}
-      {currentStep === 3 && <Step3Titles config={config} />}
+      {currentStep === 3 && <Step3Titles />}
 
       <WizardNavigation
         currentStep={currentStep}

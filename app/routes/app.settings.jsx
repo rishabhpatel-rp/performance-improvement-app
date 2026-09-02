@@ -17,10 +17,7 @@ async function safeSyncConfig(shop, config) {
       script2Enabled: config.script2Enabled,
       script3Enabled: config.script3Enabled,
       debugMode: config.debugMode,
-      auditComplete: config.auditComplete,
       scriptTitles: config.scriptTitles,
-      auditDeferArray: config.auditDeferArray,
-      auditHideSelectors: config.auditHideSelectors,
     });
   } catch (err) {
     console.error(
@@ -69,10 +66,7 @@ export const action = async ({ request }) => {
       script2Enabled: false,
       script3Enabled: false,
       debugMode: false,
-      auditComplete: false,
       scriptTitles: [],
-      auditDeferArray: [],
-      auditHideSelectors: [],
     };
     await safeSyncConfig(session.shop, resetConfig);
     await safeLogActivity(session.shop, "config_changed", "All data reset", {
@@ -105,10 +99,7 @@ export const action = async ({ request }) => {
         script2Enabled: false,
         script3Enabled: false,
         debugMode,
-        auditComplete: false,
         scriptTitles: [],
-        auditDeferArray: [],
-        auditHideSelectors: [],
       });
       return { ok: true, config: fallbackConfig };
     }

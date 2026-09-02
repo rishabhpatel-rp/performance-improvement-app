@@ -21,13 +21,13 @@ api_version = "2026-10"
 
 [access_scopes]
 # Learn more at https://shopify.dev/docs/apps/tools/cli/configuration#access_scopes
-scopes = "write_app_proxy,write_metaobject_definitions,write_metaobjects,write_products,read_products,read_orders,read_locales"
+scopes = "write_app_proxy,write_metaobject_definitions,write_metaobjects,write_products"
 
 [auth]
 redirect_urls = [ "https://shopify.dev/apps/default-app-home/api/auth" ]
 
 [app_proxy]
-url = "/api/audit"
+url = "https://shopify.dev/apps/default-app-home/api/audit"
 subpath = "my-first-custom-app"
 prefix = "apps"
 
@@ -61,7 +61,6 @@ description = "Script injector configuration"
 
   [metaobjects.app.script_injector_config.access]
   admin = "merchant_read_write"
-  storefront = "public_read"
 
 [metaobjects.app.script_injector_config.fields.app_enabled]
 name = "App Enabled"
@@ -86,20 +85,3 @@ type = "list.single_line_text_field"
 [metaobjects.app.script_injector_config.fields.debug_mode]
 name = "Debug Mode"
 type = "boolean"
-
-[metaobjects.app.script_injector_config.fields.audit_defer_array]
-name = "Audit Defer Array"
-type = "list.single_line_text_field"
-
-[metaobjects.app.script_injector_config.fields.audit_hide_selectors]
-name = "Audit Hide Selectors"
-type = "list.single_line_text_field"
-
-[metaobjects.app.script_injector_config.fields.audit_complete]
-name = "Audit Complete"
-type = "boolean"
-
-[metaobjects.app.script_injector_config.fields.app_endpoint]
-name = "App Endpoint"
-description = "Public /audit-submit URL of this app. Auto-populated from SHOPIFY_APP_URL on dashboard load; read by the storefront audit script (storefront public_read)."
-type = "url"
