@@ -1,26 +1,32 @@
 import Link from "next/link";
 import { getDashboardStats, type DashboardStats } from "@/lib/queries";
+import { getDemoMode } from "@/lib/demo-mode";
 import StatsCards from "@/components/stats-cards";
 import ActivityTimeline from "@/components/activity-timeline";
+import TopBar from "@/components/top-bar";
+import InstallsChart from "@/components/installs-chart";
+import CountryChart from "@/components/country-chart";
+import PlanChart from "@/components/plan-chart";
 import { Badge } from "@/components/ui/badge";
 import { formatDate } from "@/lib/utils";
-import { showDummyData } from "@/lib/data-source";
 
 type RecentInstall = DashboardStats["recentInstalls"][number];
 
 export default async function DashboardPage() {
-  const stats = await getDashboardStats();
+  const [stats, demoMode] = await Promise.all([getDashboardStats(), getDemoMode()]);
 
   return (
     <div className="space-y-8">
-      <h1 className="text-3xl font-bold">Dashboard</h1>
-      {showDummyData && (
-        <div className="rounded-md border border-amber-300 bg-amber-50 px-4 py-2 text-sm text-amber-800">
-          Showing <strong>dummy data</strong> (SHOW_DUMMY_DATA=true). Disable it before go-live
-          to read from the database.
-        </div>
-      )}
+      <TopBar title="Dashboard" demoMode={demoMode} />
       <StatsCards stats={stats} />
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+        <div className="lg:col-span-2">
+          <InstallsChart data={stats.installsByDay} />
+        </div>
+        <CountryChart data={stats.storesByCountry} />
+        <PlanChart data={stats.storesByPlan} />
+      </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
         <div>

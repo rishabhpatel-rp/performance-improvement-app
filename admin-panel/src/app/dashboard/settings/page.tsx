@@ -1,5 +1,6 @@
 import { redirect } from "next/navigation";
 import { requireAdmin } from "@/lib/auth";
+import { getDemoMode } from "@/lib/demo-mode";
 import SettingsClient from "@/components/settings-client";
 
 export default async function SettingsPage() {
@@ -14,5 +15,7 @@ export default async function SettingsPage() {
     isLoggedIn: session.isLoggedIn,
   };
 
-  return <SettingsClient user={user} />;
+  const demoMode = await getDemoMode();
+
+  return <SettingsClient user={user} demoMode={demoMode} />;
 }

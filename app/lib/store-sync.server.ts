@@ -49,10 +49,12 @@ export async function fetchShopDetailsFromShopify(
     `#graphql
     query ShopDetails {
       shop {
+        id
         name
         email
         url
         myshopifyDomain
+        locale
         shopAddress {
           country
           countryCode
@@ -91,7 +93,9 @@ export async function fetchShopDetailsFromShopify(
   const shopDomain = shop.myshopifyDomain || "";
 
   return {
-    shopifyShopId: shopDomain,
+    // Real Shopify numeric shop id (e.g. "gid://shopify/Shop/12345"), not
+    // the domain — the domain is already tracked separately as shopDomain.
+    shopifyShopId: shop.id || shopDomain,
     shopDomain: shopDomain,
     shopName: shop.name || "",
     email: shop.email || "",
@@ -104,6 +108,7 @@ export async function fetchShopDetailsFromShopify(
     timezone: shop.timezoneAbbreviation || undefined,
     ianaTimezone: shop.ianaTimezone || undefined,
     currency: shop.currencyCode || undefined,
+    locale: shop.locale || undefined,
     shopifyPlan: shop.plan?.displayName || undefined,
     totalProducts: productsCount ?? undefined,
     totalOrders: ordersCount ?? undefined,
@@ -132,6 +137,7 @@ export async function upsertStore(data: ShopifyShopData) {
       timezone: data.timezone,
       ianaTimezone: data.ianaTimezone,
       currency: data.currency,
+      locale: data.locale,
       shopifyPlan: data.shopifyPlan,
       totalProducts: data.totalProducts,
       totalOrders: data.totalOrders,
@@ -151,6 +157,7 @@ export async function upsertStore(data: ShopifyShopData) {
       timezone: data.timezone,
       ianaTimezone: data.ianaTimezone,
       currency: data.currency,
+      locale: data.locale,
       shopifyPlan: data.shopifyPlan,
       totalProducts: data.totalProducts,
       totalOrders: data.totalOrders,

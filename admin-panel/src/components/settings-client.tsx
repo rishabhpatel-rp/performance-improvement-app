@@ -12,15 +12,88 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import TopBar from "@/components/top-bar";
+import { cn } from "@/lib/utils";
 import type { AdminSession } from "@/lib/auth";
+import type { DemoMode } from "@/lib/demo-mode";
 
-export default function SettingsClient({ user }: { user: AdminSession }) {
+export default function SettingsClient({
+  user,
+  demoMode,
+}: {
+  user: AdminSession;
+  demoMode: DemoMode;
+}) {
   return (
     <div className="space-y-8 max-w-2xl">
-      <h1 className="text-3xl font-bold">Settings</h1>
+      <TopBar title="Settings" demoMode={demoMode} />
+      <DemoDataCard demoMode={demoMode} />
       <ProfileForm user={user} />
       <PasswordForm />
     </div>
+  );
+}
+
+function DemoDataCard({ demoMode }: { demoMode: DemoMode }) {
+  const router = useRouter();
+  const [on, setOn] = useState(demoMode === "on");
+  const [loading, setLoading] = useState(false);
+
+  async function handleToggle() {
+    const next = !on;
+    setOn(next);
+    setLoading(true);
+
+    try {
+      const res = await fetch("/api/demo", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled: next }),
+      });
+      if (!res.ok) throw new Error("Failed to update demo mode");
+      router.refresh();
+    } catch (error) {
+      console.error(error);
+      setOn(!next);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Demo Data</CardTitle>
+        <CardDescription>
+          When enabled, the dashboard, stores list, and store details pages show ~32
+          realistic dummy stores alongside any real data — nothing is written to the
+          database. Turn this off to see only real stores.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <label className="flex items-center gap-3 cursor-pointer select-none w-fit">
+          <button
+            type="button"
+            role="switch"
+            aria-checked={on}
+            disabled={loading}
+            onClick={handleToggle}
+            className={cn(
+              "relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors disabled:opacity-50",
+              on ? "bg-primary" : "bg-muted",
+            )}
+          >
+            <span
+              className={cn(
+                "inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform",
+                on ? "translate-x-6" : "translate-x-1",
+              )}
+            />
+          </button>
+          <span className="text-sm font-medium">{on ? "Enabled" : "Disabled"}</span>
+        </label>
+      </CardContent>
+    </Card>
   );
 }
 

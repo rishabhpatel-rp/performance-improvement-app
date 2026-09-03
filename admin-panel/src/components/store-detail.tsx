@@ -83,6 +83,7 @@ export default function StoreDetail({ store }: { store: Store }) {
             {!store.isActive && (
               <InfoRow label="App Uninstalled" value={formatDate(store.uninstalledAt)} />
             )}
+            <InfoRow label="Last Synced" value={formatDate(store.lastSyncedAt)} />
           </div>
 
           <div className="pt-2">

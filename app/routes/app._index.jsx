@@ -291,8 +291,24 @@ export default function Dashboard() {
 
   const handleDone = async () => {
     try {
-      const payload = step3DataRef.current;
-      console.log("[Dashboard] Saving latest text area values to DB:", payload);
+      // 1. Get values from ref
+      let payload = step3DataRef.current;
+
+      // 2. Fallback: If ref is empty because no edit happened, extract directly from step3Scripts state
+      if (!payload.auditScript && !payload.deferScript && !payload.hiddenCss && step3Scripts?.scripts) {
+        const scriptMap = {};
+        step3Scripts.scripts.forEach((s) => {
+          scriptMap[s.id] = s.code || "";
+        });
+
+        payload = {
+          auditScript: scriptMap["script_1"] || "",
+          deferScript: scriptMap["script_2"] || "",
+          hiddenCss: scriptMap["script_3"] || "",
+        };
+      }
+
+      console.log("[Dashboard] Saving performance scripts payload:", payload);
 
       const response = await fetch("/api/save-performance-scripts", {
         method: "POST",
@@ -306,7 +322,7 @@ export default function Dashboard() {
 
       const result = await response.json();
       if (result.success) {
-        console.log("[Dashboard] Saved successfully:", result);
+        console.log("[Dashboard] Saved successfully to DB:", result.data);
       }
     } catch (err) {
       console.error("[Dashboard] Error saving scripts on Done:", err);

@@ -14,6 +14,11 @@ export interface StoreConfig {
   metaobjectId: string | null;
   createdAt: Date;
   updatedAt: Date;
+  // Not yet a column on the real StoreConfig model (see the audit-columns
+  // schema conflict noted in the implementation plan — left untouched for
+  // now). Optional so real rows simply omit it while dummy rows can set it,
+  // and the "Audits Completed" KPI can read it defensively either way.
+  auditComplete?: boolean;
 }
 
 export interface StoreSummary {
@@ -72,6 +77,21 @@ export interface StoreWithDetails extends StoreWithConfigs {
   activities: StoreActivity[];
 }
 
+export interface InstallsByDayPoint {
+  date: string; // YYYY-MM-DD
+  count: number;
+}
+
+export interface CountryCount {
+  country: string;
+  count: number;
+}
+
+export interface PlanCount {
+  plan: string;
+  count: number;
+}
+
 export interface DashboardStats {
   totalStores: number;
   activeStores: number;
@@ -79,6 +99,12 @@ export interface DashboardStats {
   recentlyInstalledCount: number;
   recentInstalls: NewStoreRow[];
   recentActivity: StoreActivity[];
+  totalProducts: number;
+  totalOrders: number;
+  auditsCompleted: number;
+  installsByDay: InstallsByDayPoint[];
+  storesByCountry: CountryCount[];
+  storesByPlan: PlanCount[];
 }
 
 export interface StoresResult {
@@ -88,5 +114,3 @@ export interface StoresResult {
   pageSize: number;
   totalPages: number;
 }
-
-export interface StoreRow extends StoreWithConfigs {}

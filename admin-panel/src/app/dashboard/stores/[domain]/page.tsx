@@ -1,6 +1,8 @@
 import { getStoreByDomain } from "@/lib/queries";
+import { getDemoMode } from "@/lib/demo-mode";
 import { notFound } from "next/navigation";
 import StoreDetail from "@/components/store-detail";
+import TopBar from "@/components/top-bar";
 
 export default async function StoreDetailPage({
   params,
@@ -8,14 +10,17 @@ export default async function StoreDetailPage({
   params: Promise<{ domain: string }>;
 }) {
   const { domain } = await params;
-  const store = await getStoreByDomain(domain);
+  const [store, demoMode] = await Promise.all([
+    getStoreByDomain(domain),
+    getDemoMode(),
+  ]);
 
   if (!store) notFound();
 
   return (
     <div className="space-y-8">
       <div>
-        <h1 className="text-3xl font-bold">{store.shopName}</h1>
+        <TopBar title={store.shopName} demoMode={demoMode} />
         <p className="text-muted-foreground">{store.shopDomain}</p>
       </div>
       <StoreDetail store={store} />
