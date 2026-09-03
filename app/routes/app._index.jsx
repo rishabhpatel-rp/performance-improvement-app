@@ -1,10 +1,12 @@
-import { useState } from "react";
+import { useState,useRef } from "react";
 import { useLoaderData, useFetchers, useRouteError } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../shopify.server";
 import {
   ensureConfig,
+  ensureAppEndpoint,
   updateConfig,
+  resetAudit,
 } from "../lib/metaobjects";
 import {
   fetchShopDetailsFromShopify,
@@ -26,6 +28,10 @@ const DEFAULT_CONFIG = {
   script3Enabled: false,
   scriptTitles: ["", "", ""],
   debugMode: false,
+  auditDeferArray: [],
+  auditHideSelectors: [],
+  auditComplete: false,
+  appEndpoint: "",
 };
 
 async function safeUpdateConfig(admin, input) {
@@ -54,7 +60,10 @@ async function safeSyncConfig(shop, config) {
       script2Enabled: config.script2Enabled,
       script3Enabled: config.script3Enabled,
       debugMode: config.debugMode,
+      auditComplete: config.auditComplete,
       scriptTitles: config.scriptTitles,
+      auditDeferArray: config.auditDeferArray,
+      auditHideSelectors: config.auditHideSelectors,
     });
   } catch (err) {
     console.error(
@@ -101,11 +110,15 @@ export const loader = async ({ request }) => {
     );
   }
 
-  // ensureConfig creates the singleton if missing; the storefront bundle is
-  // served via the app proxy (see routes/api.script.jsx), which reads the
-  // config server-side per request — no endpoint sync needed here.
+  // ensureConfig creates the singleton if missing; ensureAppEndpoint syncs the
+  // public /audit-submit URL from SHOPIFY_APP_URL so the storefront audit
+  // script can POST results back (auto-sync, no manual editing).
   const { config } = await ensureConfig(admin);
-  const mergedConfig = config;
+  // eslint-disable-next-line no-undef
+  const appUrl = process.env.SHOPIFY_APP_URL || "";
+  const endpoint = appUrl ? `${appUrl.replace(/\/+$/, "")}/audit-submit` : "";
+  const configWithEndpoint = await ensureAppEndpoint(admin, endpoint);
+  const mergedConfig = { ...config, ...configWithEndpoint };
 
   // --- Sync config to database on every dashboard load ---
   await safeSyncConfig(session.shop, mergedConfig);
@@ -143,6 +156,18 @@ export const action = async ({ request }) => {
           }
         : {}),
     });
+    if (!appEnabled) {
+      // Clear audit_complete + audited arrays so the next OFF->ON cycle
+      // triggers a fresh one-time audit (Implementation Plan 4, Phase 4.1).
+      try {
+        await resetAudit(admin);
+      } catch (err) {
+        console.warn(
+          "[Dashboard] resetAudit failed:",
+          err instanceof Error ? err.message : err,
+        );
+      }
+    }
 
     await safeSyncConfig(session.shop, config);
     await safeLogActivity(
@@ -184,12 +209,33 @@ export const action = async ({ request }) => {
     return { ok: true, config };
   }
 
+  if (intent === "save-audit-defer") {
+    const auditDeferArray = JSON.parse(formData.get("auditDeferArray") || "[]");
+    const config = await safeUpdateConfig(admin, { auditDeferArray });
+
+    await safeSyncConfig(session.shop, config);
+
+    return { ok: true, config };
+  }
+
+  if (intent === "save-audit-hide") {
+    const auditHideSelectors = JSON.parse(
+      formData.get("auditHideSelectors") || "[]",
+    );
+    const config = await safeUpdateConfig(admin, { auditHideSelectors });
+
+    await safeSyncConfig(session.shop, config);
+
+    return { ok: true, config };
+  }
+
   return { ok: false };
 };
 
 export default function Dashboard() {
   const { config } = useLoaderData();
   const [currentStep, setCurrentStep] = useState(1);
+  const [step3Scripts, setStep3Scripts] = useState(null);
 
   // Merge the live "toggle-app" fetcher result in so the app gate unlocks
   // immediately when the Step 1 toggle is turned on (the loader data alone
@@ -214,33 +260,88 @@ export default function Dashboard() {
   const maxStep = appEnabled ? 3 : 1;
 
   const goToStep = (step) => {
+    console.log(`Dashboard: goToStep(${step}) called (maxStep=${maxStep})`);
     // Clamp to the highest allowed step — cannot skip past the app gate.
     setCurrentStep(Math.min(Math.max(step, 1), maxStep));
+
+    // Step 3 (Titles) loads its script payloads from the Node API via POST.
+    if (step === 3) {
+      fetch("/api/step-3", { method: "POST" })
+        .then((res) => res.json())
+        .then((data) => {
+          console.log("[Step 3] Scripts from Node API:", data);
+          setStep3Scripts(data);
+        })
+        .catch((err) =>
+          console.error("[Step 3] Failed to load scripts from Node API:", err),
+        );
+    }
+  };
+
+  // Ref always holds the instant, latest edited values without delay
+  const step3DataRef = useRef({
+    auditScript: "",
+    deferScript: "",
+    hiddenCss: "",
+  });
+
+  const handleStep3Change = (data) => {
+    step3DataRef.current = data;
+  };
+
+  const handleDone = async () => {
+    try {
+      const payload = step3DataRef.current;
+      console.log("[Dashboard] Saving latest text area values to DB:", payload);
+
+      const response = await fetch("/api/save-performance-scripts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          auditScript: payload.auditScript,
+          deferScript: payload.deferScript,
+          hiddenCss: payload.hiddenCss,
+        }),
+      });
+
+      const result = await response.json();
+      if (result.success) {
+        console.log("[Dashboard] Saved successfully:", result);
+      }
+    } catch (err) {
+      console.error("[Dashboard] Error saving scripts on Done:", err);
+    } finally {
+      setCurrentStep(1);
+    }
   };
 
   return (
     <s-page heading="Performance Improvement">
-      <WizardProgress
-        currentStep={currentStep}
-        maxStep={maxStep}
-        onStepClick={goToStep}
-      />
+      <WizardProgress currentStep={currentStep} maxStep={maxStep} onStepClick={goToStep} />
 
       {currentStep === 1 && <Step1Activate config={config} />}
       {currentStep === 2 && <Step2Configure config={liveConfig} />}
-      {currentStep === 3 && <Step3Titles />}
+      {currentStep === 3 && (
+        <Step3Titles
+          config={config}
+          scripts={step3Scripts}
+          onScriptDataChange={handleStep3Change}
+        />
+      )}
 
       <WizardNavigation
         currentStep={currentStep}
         maxStep={maxStep}
         onChange={goToStep}
-        onDone={() => setCurrentStep(1)}
+        onDone={handleDone}
       />
 
       <FooterBranding />
     </s-page>
   );
 }
+
+
 
 export function ErrorBoundary() {
   return boundary.error(useRouteError());

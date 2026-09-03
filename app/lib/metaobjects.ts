@@ -50,6 +50,19 @@ function parseTitles(raw: unknown): string[] {
   }
 }
 
+// parseJsonArray: parses a JSON-encoded array string (e.g. a list field) into a
+// string[]. Falls back to [] so a missing/blank field never crashes the app.
+function parseJsonArray(raw: unknown): string[] {
+  if (Array.isArray(raw)) return raw as string[];
+  if (typeof raw !== "string" || !raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? ((parsed as unknown[]) as string[]) : [];
+  } catch {
+    return [];
+  }
+}
+
 function mapConfigFields(
   fields: Array<{ key: string; value: string }>,
 ): AppConfig {
@@ -64,6 +77,27 @@ function mapConfigFields(
     script3Enabled: result.script_3_enabled === "true",
     scriptTitles: parseTitles(result.script_titles),
     debugMode: result.debug_mode === "true",
+    auditDeferArray: parseJsonArray(result.audit_defer_array),
+    auditHideSelectors: parseJsonArray(result.audit_hide_selectors),
+    auditComplete: result.audit_complete === "true",
+    appEndpoint: typeof result.app_endpoint === "string" ? result.app_endpoint : "",
+  };
+}
+
+// DEFAULT_APP_CONFIG: shared shape used by the loader/actions and by
+// ensureConfig when the metaobject definition isn't deployed yet.
+export function defaultAppConfig(): AppConfig {
+  return {
+    appEnabled: false,
+    script1Enabled: false,
+    script2Enabled: false,
+    script3Enabled: false,
+    scriptTitles: ["", "", ""],
+    debugMode: false,
+    auditDeferArray: [],
+    auditHideSelectors: [],
+    auditComplete: false,
+    appEndpoint: "",
   };
 }
 
@@ -99,6 +133,23 @@ function buildFields(
   }
   if (input.debugMode !== undefined)
     fields.push({ key: "debug_mode", value: String(input.debugMode) });
+  if (input.auditDeferArray !== undefined)
+    fields.push({
+      key: "audit_defer_array",
+      value: JSON.stringify(input.auditDeferArray),
+    });
+  if (input.auditHideSelectors !== undefined)
+    fields.push({
+      key: "audit_hide_selectors",
+      value: JSON.stringify(input.auditHideSelectors),
+    });
+  if (input.auditComplete !== undefined)
+    fields.push({
+      key: "audit_complete",
+      value: String(input.auditComplete),
+    });
+  if (input.appEndpoint !== undefined)
+    fields.push({ key: "app_endpoint", value: input.appEndpoint });
   return fields;
 }
 
@@ -138,14 +189,7 @@ export async function getConfig(request: RequestOrAdmin): Promise<AppConfig> {
   const data = await response.json();
   const edge = data.data?.metaobjects?.edges?.[0];
   if (!edge?.node) {
-    return {
-      appEnabled: false,
-      script1Enabled: false,
-      script2Enabled: false,
-      script3Enabled: false,
-      scriptTitles: ["", "", ""],
-      debugMode: false,
-    };
+    return defaultAppConfig();
   }
 
   return mapConfigFields(edge.node.fields);
@@ -246,17 +290,7 @@ export async function ensureConfig(
           "Run `shopify app config push` to create it. " +
           "Returning defaults for now.",
       );
-      return {
-        config: {
-          appEnabled: false,
-          script1Enabled: false,
-          script2Enabled: false,
-          script3Enabled: false,
-          scriptTitles: ["", "", ""],
-          debugMode: false,
-        },
-        created: false,
-      };
+      return { config: defaultAppConfig(), created: false };
     }
     throw err;
   }
@@ -276,5 +310,57 @@ export async function deleteConfig(request: RequestOrAdmin): Promise<void> {
       `,
       { variables: { id: configId } },
     );
+  }
+}
+
+/**
+ * Ensure the config metaobject's `app_endpoint` field matches the public
+ * /audit-submit URL derived from SHOPIFY_APP_URL. Called on every dashboard
+ * load so the storefront audit script can POST results back without manual
+ * editing. Returns the full merged config so callers can spread it over the
+ * loaded config. Non-fatal: if the metaobject/field isn't deployed yet, it
+ * returns the current config unchanged (defaults included).
+ */
+export async function ensureAppEndpoint(
+  requestOrAdmin: RequestOrAdmin,
+  endpoint: string,
+): Promise<AppConfig> {
+  const admin = await resolveAdmin(requestOrAdmin);
+  try {
+    const config = await getConfig(admin);
+    if (config.appEndpoint === endpoint) {
+      return config;
+    }
+    return await updateConfig(admin, { appEndpoint: endpoint });
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.warn(
+      "[ensureAppEndpoint] Could not sync app_endpoint:",
+      message,
+      "Using defaults.",
+    );
+    return defaultAppConfig();
+  }
+}
+
+/**
+ * Reset the audit state so a fresh one-time audit can run on the next
+ * OFF->ON cycle. Sets audit_complete=false and clears both audit arrays.
+ * Non-fatal — swaps any failure, so it never breaks the dashboard toggle.
+ */
+export async function resetAudit(
+  requestOrAdmin: RequestOrAdmin,
+): Promise<AppConfig> {
+  const admin = await resolveAdmin(requestOrAdmin);
+  try {
+    return await updateConfig(admin, {
+      auditDeferArray: [],
+      auditHideSelectors: [],
+      auditComplete: false,
+    });
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.warn("[resetAudit] Could not reset audit state:", message);
+    return defaultAppConfig();
   }
 }

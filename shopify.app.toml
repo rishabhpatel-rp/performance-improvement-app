@@ -85,3 +85,20 @@ type = "list.single_line_text_field"
 [metaobjects.app.script_injector_config.fields.debug_mode]
 name = "Debug Mode"
 type = "boolean"
+
+[metaobjects.app.script_injector_config.fields.audit_defer_array]
+name = "Audit Defer Array"
+type = "list.single_line_text_field"
+
+[metaobjects.app.script_injector_config.fields.audit_hide_selectors]
+name = "Audit Hide Selectors"
+type = "list.single_line_text_field"
+
+[metaobjects.app.script_injector_config.fields.audit_complete]
+name = "Audit Complete"
+type = "boolean"
+
+[metaobjects.app.script_injector_config.fields.app_endpoint]
+name = "App Endpoint"
+description = "Public /audit-submit URL of this app. Auto-populated from SHOPIFY_APP_URL on dashboard load; read by the storefront audit script (storefront public_read)."
+type = "url"

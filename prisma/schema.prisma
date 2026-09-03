@@ -38,30 +38,61 @@ model Session {
 }
 
 // ============================================================
+// TEAM MEMBER MODELS: Client store data collection
+// ============================================================
+model AppTracking {
+  id                  Int       @id @default(autoincrement())
+  store_name          String
+  email               String
+  domain              String    @unique
+  location            String?
+  timezone            String?
+  installation_time   DateTime  @default(now())
+  uninstallation_time DateTime?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+}
+
+model AuditLog {
+  id         Int      @id @default(autoincrement())
+  domain     String
+  audit_type String   @default("general")
+  audit_data Json?
+  timestamp  DateTime @default(now())
+  status     String   @default("completed")
+  details    String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([domain])
+  @@index([timestamp])
+}
+
+// ============================================================
 // MODEL 2: Store
 // Stores details about each Shopify store that installs the app.
 // Created on first dashboard visit (after OAuth), updated on uninstall.
 // ============================================================
 model Store {
-  id               String    @id @default(cuid())
+  id String @id @default(cuid())
 
   // Shopify identifiers
-  shopifyShopId    String    @unique // Shopify's numeric shop ID or domain
-  shopDomain       String    @unique // e.g. "mystore.myshopify.com"
+  shopifyShopId String @unique // Shopify's numeric shop ID or domain
+  shopDomain    String @unique // e.g. "mystore.myshopify.com"
 
   // Store details (fetched via GraphQL shop query on first visit)
-  shopName         String // Store name (shop.name)
-  email            String // Store owner email (shop.email)
-  country          String? // Country code (e.g. "US")
-  countryName      String? // Country name (e.g. "United States")
-  city             String? // City
-  address1         String? // Street address line 1
-  address2         String? // Street address line 2
-  zip              String? // Postal code
-  timezone         String? // Human-readable timezone (e.g. "(GMT-05:00) Eastern Time")
-  ianaTimezone     String? // IANA timezone (e.g. "America/New_York")
-  currency         String? // Currency code (e.g. "USD")
-  locale           String? // Primary locale (e.g. "en")
+  shopName     String // Store name (shop.name)
+  email        String // Store owner email (shop.email)
+  country      String? // Country code (e.g. "US")
+  countryName  String? // Country name (e.g. "United States")
+  city         String? // City
+  address1     String? // Street address line 1
+  address2     String? // Street address line 2
+  zip          String? // Postal code
+  timezone     String? // Human-readable timezone (e.g. "(GMT-05:00) Eastern Time")
+  ianaTimezone String? // IANA timezone (e.g. "America/New_York")
+  currency     String? // Currency code (e.g. "USD")
+  locale       String? // Primary locale (e.g. "en")
 
   // Plan & stats
   shopifyPlan      String? // Plan display name (e.g. "Shopify Plus", "Basic Shopify")
@@ -70,21 +101,22 @@ model Store {
   createdAtShopify DateTime? // When the shop was created on Shopify
 
   // App lifecycle tracking
-  installedAt      DateTime  @default(now()) // When THIS app was installed
-  uninstalledAt    DateTime? // When the app was uninstalled (null = still active)
-  isActive         Boolean   @default(true) // false after uninstall
-  currentScope     String? // Current OAuth access scopes
+  installedAt   DateTime  @default(now()) // When THIS app was installed
+  uninstalledAt DateTime? // When the app was uninstalled (null = still active)
+  isActive      Boolean   @default(true) // false after uninstall
+  currentScope  String? // Current OAuth access scopes
 
   // Sync tracking
-  lastSyncedAt     DateTime? // Last time we synced config from metaobjects
+  lastSyncedAt DateTime? // Last time we synced config from metaobjects
 
   // Timestamps
-  createdAt        DateTime  @default(now())
-  updatedAt        DateTime  @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   // Relations
-  configs          StoreConfig[]
-  activities       StoreActivity[]
+  configs           StoreConfig[]
+  activities        StoreActivity[]
+  performanceScript PerformanceScript?
 
   @@index([isActive])
   @@index([installedAt])
@@ -96,26 +128,29 @@ model Store {
 // Synced on every dashboard load and config change.
 // ============================================================
 model StoreConfig {
-  id                 String   @id @default(cuid())
-  storeId            String
-  store              Store    @relation(fields: [storeId], references: [id])
+  id      String @id @default(cuid())
+  storeId String
+  store   Store  @relation(fields: [storeId], references: [id])
 
   // Script toggles
-  appEnabled         Boolean  @default(false)
-  script1Enabled     Boolean  @default(false) // Dummy script
-  script2Enabled     Boolean  @default(false) // Dummy script
-  script3Enabled     Boolean  @default(false) // Dummy style
-  debugMode          Boolean  @default(false)
+  appEnabled     Boolean @default(false)
+  script1Enabled Boolean @default(false) // Audit script
+  script2Enabled Boolean @default(false) // Defer script
+  script3Enabled Boolean @default(false) // Hide CSS script
+  debugMode      Boolean @default(false)
+  auditComplete  Boolean @default(false)
 
   // Script data (stored as JSON arrays)
-  scriptTitles       Json     @default("[]") // ["Title1","Title2","Title3"]
+  scriptTitles       Json @default("[]") // ["Title1","Title2","Title3"]
+  auditDeferArray    Json @default("[]") // Defer/blocklist entries
+  auditHideSelectors Json @default("[]") // CSS selectors to hide
 
   // Reference to the Shopify metaobject
-  metaobjectId       String?
+  metaobjectId String?
 
   // Timestamps
-  createdAt          DateTime @default(now())
-  updatedAt          DateTime @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@unique([storeId])
 }
@@ -126,15 +161,15 @@ model StoreConfig {
 // an activity record for the admin panel timeline.
 // ============================================================
 model StoreActivity {
-  id          String   @id @default(cuid())
-  storeId     String
-  store       Store    @relation(fields: [storeId], references: [id])
+  id      String @id @default(cuid())
+  storeId String
+  store   Store  @relation(fields: [storeId], references: [id])
 
   eventType   String // Event type (see IMPLEMENTATION_PLAN_5.md)
   description String? // Human-readable description
   metadata    Json? // Additional event-specific data
 
-  createdAt   DateTime @default(now())
+  createdAt DateTime @default(now())
 
   @@index([storeId])
   @@index([eventType])
@@ -154,4 +189,23 @@ model AdminUser {
   lastLoginAt  DateTime?
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
+}
+
+// ============================================================
+// MODEL 6: PerformanceScript
+// Store script that will be used on the storefront side.
+// ============================================================
+model PerformanceScript {
+  id      String @id @default(cuid())
+  storeId String @unique // Makes relation 1:1 per store
+  store   Store  @relation(fields: [storeId], references: [id])
+
+  auditScript String?  @map("audit_script")
+  deferScript String?  @map("defer_script")
+  hiddenCss   String?  @map("hidden_css")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  @@index([storeId])
+  @@map("performance_scripts")
 }

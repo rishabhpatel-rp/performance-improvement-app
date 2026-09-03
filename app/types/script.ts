@@ -5,6 +5,10 @@ export interface AppConfig {
   script3Enabled: boolean;
   scriptTitles: string[]; // one entry per script, in order [title1, title2, title3]
   debugMode: boolean;
+  auditDeferArray: string[];
+  auditHideSelectors: string[];
+  auditComplete: boolean;
+  appEndpoint: string;
 }
 
 export interface AppConfigInput {
@@ -14,6 +18,10 @@ export interface AppConfigInput {
   script3Enabled?: boolean;
   scriptTitles?: string[];
   debugMode?: boolean;
+  auditDeferArray?: string[];
+  auditHideSelectors?: string[];
+  auditComplete?: boolean;
+  appEndpoint?: string;
 }
 
 export interface PredefinedScript {

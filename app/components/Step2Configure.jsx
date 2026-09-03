@@ -4,23 +4,26 @@ import { PREDEFINED_SCRIPTS } from "../lib/scripts";
 
 const FIELD_BY_INDEX = ["script1Enabled", "script2Enabled", "script3Enabled"];
 
-// Short role description shown under each toggle — clarifies what each
-// script does. script_1/script_2 are currently dummy placeholders that only
-// exercise the injection path; real logic lands before go-live.
+// Short role description shown under each toggle (Implementation Plan 4,
+// Task 4.3) — clarifies what each script actually does now that script_1
+// is a one-time audit feeding script_2/script_3.
 const DESCRIPTION_BY_INDEX = [
-  "Placeholder script injected into <head>. Currently a no-op while the " +
-    "delivery path is being tested; real logic replaces it before go-live.",
-  "Placeholder script injected into <head>. Currently a no-op while the " +
-    "delivery path is being tested; real logic replaces it before go-live.",
-  "Placeholder style block injected into <head>. Currently a no-op while " +
-    "the delivery path is being tested; real logic replaces it before " +
-    "go-live.",
+  "Runs once automatically on Home, then a collection and a product page, " +
+    "to detect third-party scripts and off-screen sections. Turning this " +
+    "off removes it from <head> immediately. Feeds the Defer and Hide CSS " +
+    "scripts below.",
+  "Delays loading of the scripts found by the audit (or the built-in " +
+    "default list, if no audit has completed yet) until the shopper " +
+    "interacts with the page.",
+  "Hides the off-screen sections found by the audit via CSS, using the " +
+    "selectors shown in Step 3.",
 ];
 
 /**
- * Step 2 — one toggle per predefined script, labeled with the current title
- * from config.scriptTitles[i] (falling back to the script's default name,
- * purely cosmetic). Toggles are disabled while the app itself is off.
+ * Step 2 — one toggle per predefined script (Audit / Defer / Hide CSS),
+ * labeled with the current title from config.scriptTitles[i] (falling back
+ * to the script's default name, purely cosmetic). Toggles are disabled
+ * while the app itself is off.
  */
 export default function Step2Configure({ config }) {
   const fetcher = useFetcher();
