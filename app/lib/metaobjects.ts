@@ -79,6 +79,20 @@ function mapConfigFields(
     debugMode: result.debug_mode === "true",
     auditDeferArray: parseJsonArray(result.audit_defer_array),
     auditHideSelectors: parseJsonArray(result.audit_hide_selectors),
+    staticDeferDefaults:
+      parseJsonArray(result.static_defer_defaults).length > 0
+        ? parseJsonArray(result.static_defer_defaults)
+        : ["wpm", "gtm", "clarity"],
+    // Toggle states + preserved snapshots are DB-only (see
+    // IMPLEMENTATION_PLAN_6.md) and are never read from or written to the
+    // metaobject. These defaults exist only to satisfy the AppConfig type;
+    // the loader always overlays the real DB values on top of this.
+    auditDeferArrayEnabled: true,
+    auditHideSelectorsEnabled: true,
+    staticDeferDefaultsEnabled: true,
+    auditDeferArrayPreserved: [],
+    auditHideSelectorsPreserved: [],
+    staticDeferDefaultsPreserved: [],
     auditComplete: result.audit_complete === "true",
     appEndpoint: typeof result.app_endpoint === "string" ? result.app_endpoint : "",
   };
@@ -96,6 +110,15 @@ export function defaultAppConfig(): AppConfig {
     debugMode: false,
     auditDeferArray: [],
     auditHideSelectors: [],
+    staticDeferDefaults: ["wpm", "gtm", "clarity"],
+    // DB-only (see IMPLEMENTATION_PLAN_6.md) — defaults here only satisfy the
+    // AppConfig type; the loader always overlays the real DB values.
+    auditDeferArrayEnabled: true,
+    auditHideSelectorsEnabled: true,
+    staticDeferDefaultsEnabled: true,
+    auditDeferArrayPreserved: [],
+    auditHideSelectorsPreserved: [],
+    staticDeferDefaultsPreserved: [],
     auditComplete: false,
     appEndpoint: "",
   };

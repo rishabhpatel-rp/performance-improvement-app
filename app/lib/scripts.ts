@@ -22,29 +22,7 @@ const SCRIPT_2_DUMMY = `
   })();
 `;
 
-export const PREDEFINED_SCRIPTS: PredefinedScript[] = [
-  {
-    id: "script_1",
-    name: "Dummy Script 1",
-    type: "script",
-    code: SCRIPT_1_DUMMY,
-    defaultEnabled: false,
-  },
-  {
-    id: "script_2",
-    name: "Dummy Script 2",
-    type: "script",
-    code: SCRIPT_2_DUMMY,
-    defaultEnabled: false,
-  },
-  {
-    id: "script_3",
-    name: "Dummy Style",
-    type: "style",
-    code: "/* Performance App dummy styles - no-op placeholder. */",
-    defaultEnabled: false,
-  },
-];
+export const PREDEFINED_SCRIPTS: PredefinedScript[] = [];
 
 export function getPredefinedScript(
   id: PredefinedScript["id"],

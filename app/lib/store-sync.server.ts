@@ -33,10 +33,24 @@ interface SyncConfigInput {
   debugMode: boolean;
   scriptTitles: string[];
   metaobjectId?: string;
+  auditComplete?: boolean;
+  auditDeferArray?: string[];
+  auditHideSelectors?: string[];
+  staticDeferDefaults?: string[];
+  auditDeferArrayEnabled?: boolean;
+  auditHideSelectorsEnabled?: boolean;
+  staticDeferDefaultsEnabled?: boolean;
+  auditDeferArrayPreserved?: string[];
+  auditHideSelectorsPreserved?: string[];
+  staticDeferDefaultsPreserved?: string[];
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AdminClient = any;
+
+// Static defaults the app always defers, independent of the audit results.
+// Stored DB-only (not on the metaobject) and editable per store in Step 3.
+export const DEFAULT_STATIC_DEFER = ["wpm", "gtm", "clarity"];
 
 // ============================================================
 // FUNCTION 1: Fetch shop details from Shopify Admin API
@@ -54,7 +68,6 @@ export async function fetchShopDetailsFromShopify(
         email
         url
         myshopifyDomain
-        locale
         shopAddress {
           country
           countryCode
@@ -73,9 +86,6 @@ export async function fetchShopDetailsFromShopify(
         updatedAt
       }
       productsCount {
-        count
-      }
-      ordersCount {
         count
       }
     }`,
@@ -224,6 +234,17 @@ export async function syncConfigToDatabase(
       debugMode: config.debugMode,
       scriptTitles: config.scriptTitles,
       metaobjectId: config.metaobjectId,
+      auditComplete: config.auditComplete,
+      auditDeferArray: config.auditDeferArray ?? [],
+      auditHideSelectors: config.auditHideSelectors ?? [],
+      staticDeferDefaults:
+        config.staticDeferDefaults ?? DEFAULT_STATIC_DEFER,
+      auditDeferArrayEnabled: config.auditDeferArrayEnabled ?? true,
+      auditHideSelectorsEnabled: config.auditHideSelectorsEnabled ?? true,
+      staticDeferDefaultsEnabled: config.staticDeferDefaultsEnabled ?? true,
+      auditDeferArrayPreserved: config.auditDeferArrayPreserved ?? [],
+      auditHideSelectorsPreserved: config.auditHideSelectorsPreserved ?? [],
+      staticDeferDefaultsPreserved: config.staticDeferDefaultsPreserved ?? [],
     },
     update: {
       appEnabled: config.appEnabled,
@@ -233,6 +254,22 @@ export async function syncConfigToDatabase(
       debugMode: config.debugMode,
       scriptTitles: config.scriptTitles,
       metaobjectId: config.metaobjectId,
+      // NOTE: audit-complete and the Step-3 arrays are DB-authoritative and
+      // deliberately excluded from update. They are written only by
+      // saveAuditReport() (the audit run) and updateAuditArrays() (Step-3
+      // Save). Mirroring the (empty) metaobject values here on every dashboard
+      // load would clobber the stored audit results and audit_complete flag.
+      //
+      // Toggle states + preserved snapshots are DB-only. They are kept in
+      // sync with the active arrays here only during initial creation; the
+      // active arrays remain DB-authoritative (written by saveAuditReport /
+      // updateAuditArrays / updateAuditFieldToggle).
+      auditDeferArrayEnabled: config.auditDeferArrayEnabled ?? undefined,
+      auditHideSelectorsEnabled: config.auditHideSelectorsEnabled ?? undefined,
+      staticDeferDefaultsEnabled: config.staticDeferDefaultsEnabled ?? undefined,
+      auditDeferArrayPreserved: config.auditDeferArrayPreserved ?? undefined,
+      auditHideSelectorsPreserved: config.auditHideSelectorsPreserved ?? undefined,
+      staticDeferDefaultsPreserved: config.staticDeferDefaultsPreserved ?? undefined,
     },
   });
 
@@ -371,4 +408,247 @@ export async function getDashboardStats() {
     recentInstalls,
     recentActivity,
   };
+}
+
+// ============================================================
+// FUNCTION 10: Save a completed audit report + audit-log trail
+// ============================================================
+
+export interface AuditReport {
+  deferArray: string[];
+  hideSelectors: string[];
+  pagesAudited: string[];
+  completedAt: string;
+}
+
+export async function saveAuditReport(
+  shopDomain: string,
+  report: AuditReport,
+  status = "completed",
+  details?: string,
+) {
+  const store = await prisma.store.findUnique({
+    where: { shopDomain },
+  });
+
+  if (!store) {
+    console.warn(`[saveAuditReport] No store found for ${shopDomain}. Skipped.`);
+    return null;
+  }
+
+  const completed = status === "completed";
+
+  const current = await prisma.storeConfig.findUnique({
+    where: { storeId: store.id },
+  });
+  const deferOn = current?.auditDeferArrayEnabled ?? true;
+  const hideOn = current?.auditHideSelectorsEnabled ?? true;
+  const activeDefer = deferOn ? report.deferArray : [];
+  const activeHide = hideOn ? report.hideSelectors : [];
+
+  await prisma.storeConfig.upsert({
+    where: { storeId: store.id },
+    create: {
+      storeId: store.id,
+      appEnabled: false,
+      script1Enabled: false,
+      script2Enabled: false,
+      script3Enabled: false,
+      debugMode: false,
+      scriptTitles: [],
+      auditComplete: completed,
+      auditRunning: false,
+      auditFailed: status === "failed",
+      auditError: status === "failed" ? details : null,
+      lastAuditAt: new Date(),
+      auditDeferArray: activeDefer,
+      auditHideSelectors: activeHide,
+      auditDeferArrayPreserved: deferOn ? [] : report.deferArray,
+      auditHideSelectorsPreserved: hideOn ? [] : report.hideSelectors,
+      staticDeferDefaults: DEFAULT_STATIC_DEFER,
+    },
+    update: {
+      auditComplete: completed,
+      auditRunning: false,
+      auditFailed: status === "failed",
+      auditError: status === "failed" ? details : null,
+      lastAuditAt: new Date(),
+      auditDeferArray: activeDefer,
+      auditHideSelectors: activeHide,
+      auditDeferArrayPreserved: deferOn ? undefined : report.deferArray,
+      auditHideSelectorsPreserved: hideOn ? undefined : report.hideSelectors,
+    },
+  });
+
+  await prisma.performanceScript.upsert({
+    where: { storeId: store.id },
+    create: {
+      storeId: store.id,
+      auditScript: JSON.stringify(report),
+    },
+    update: {
+      auditScript: JSON.stringify(report),
+    },
+  });
+
+  await prisma.auditLog.create({
+    data: {
+      domain: shopDomain,
+      audit_type: "auto-audit",
+      audit_data: report,
+      status,
+      details,
+    },
+  });
+
+  return { ok: true };
+}
+
+/**
+ * Safely coerce a Prisma `Json` value (or any unknown) into a string array.
+ * Returns `[]` when the value is not a JSON array of strings. Avoids
+ * trusting raw `JsonValue` from the DB.
+ */
+export function readStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((x): x is string => typeof x === "string");
+}
+
+export interface AuditArrayPatch {
+  auditDeferArray?: string[];
+  auditHideSelectors?: string[];
+  staticDeferDefaults?: string[];
+}
+
+/**
+ * DB-only writer for the three Step-3 audit/static arrays. This deliberately
+ * bypasses the metaobject — these fields are DB-authoritative. Only the keys
+ * actually provided are written (omitted keys keep their existing DB value),
+ * so a single-field Save never clobbers the others. Creates the StoreConfig
+ * row if missing, seeding the static defaults.
+ */
+export async function updateAuditArrays(
+  shopDomain: string,
+  patch: AuditArrayPatch,
+) {
+  const store = await prisma.store.findUnique({
+    where: { shopDomain },
+  });
+  if (!store) {
+    console.warn(
+      `[updateAuditArrays] No store found for ${shopDomain}. Skipped.`,
+    );
+    return null;
+  }
+
+  const createData: AuditArrayPatch &
+    Pick<AuditArrayPatch, "staticDeferDefaults"> = {
+    auditDeferArray: patch.auditDeferArray ?? [],
+    auditHideSelectors: patch.auditHideSelectors ?? [],
+    staticDeferDefaults: patch.staticDeferDefaults ?? DEFAULT_STATIC_DEFER,
+  };
+
+  return prisma.storeConfig.upsert({
+    where: { storeId: store.id },
+    create: {
+      storeId: store.id,
+      appEnabled: false,
+      script1Enabled: false,
+      script2Enabled: false,
+      script3Enabled: false,
+      debugMode: false,
+      scriptTitles: [],
+      ...createData,
+    },
+    update: {
+      ...(patch.auditDeferArray !== undefined
+        ? { auditDeferArray: patch.auditDeferArray }
+        : {}),
+      ...(patch.auditHideSelectors !== undefined
+        ? { auditHideSelectors: patch.auditHideSelectors }
+        : {}),
+      ...(patch.staticDeferDefaults !== undefined
+        ? { staticDeferDefaults: patch.staticDeferDefaults }
+        : {}),
+    },
+  });
+}
+
+type AuditField = "auditDeferArray" | "auditHideSelectors" | "staticDeferDefaults";
+
+const TOGGLE_FIELD_MAP: Record<
+  AuditField,
+  {
+    enabledKey: "auditDeferArrayEnabled" | "auditHideSelectorsEnabled" | "staticDeferDefaultsEnabled";
+    preservedKey: "auditDeferArrayPreserved" | "auditHideSelectorsPreserved" | "staticDeferDefaultsPreserved";
+  }
+> = {
+  auditDeferArray: {
+    enabledKey: "auditDeferArrayEnabled",
+    preservedKey: "auditDeferArrayPreserved",
+  },
+  auditHideSelectors: {
+    enabledKey: "auditHideSelectorsEnabled",
+    preservedKey: "auditHideSelectorsPreserved",
+  },
+  staticDeferDefaults: {
+    enabledKey: "staticDeferDefaultsEnabled",
+    preservedKey: "staticDeferDefaultsPreserved",
+  },
+};
+
+/**
+ * Toggle a Step-3 audit field ON/OFF, preserving its data.
+ *
+ * - OFF: the current active value is snapshotted into the preserved column
+ *        and the active column becomes `[]` (storefront receives nothing).
+ * - ON:  the preserved value (if any) is restored into the active column.
+ * Data is never deleted — it moves between the active and preserved columns.
+ * DB-only; the metaobject is NOT touched.
+ */
+export async function updateAuditFieldToggle(
+  shopDomain: string,
+  field: AuditField,
+  enabled: boolean,
+) {
+  const store = await prisma.store.findUnique({ where: { shopDomain } });
+  if (!store) return null;
+
+  const current = await prisma.storeConfig.findUnique({
+    where: { storeId: store.id },
+  });
+
+  const { enabledKey, preservedKey } = TOGGLE_FIELD_MAP[field];
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const active = readStringArray(current ? (current as any)[field] : undefined);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const preserved = readStringArray(current ? (current as any)[preservedKey] : undefined);
+
+  const nextActive = enabled ? (preserved.length > 0 ? preserved : active) : [];
+  const nextPreserved = enabled ? preserved : active;
+
+  const seed = {
+    storeId: store.id,
+    appEnabled: false,
+    script1Enabled: false,
+    script2Enabled: false,
+    script3Enabled: false,
+    debugMode: false,
+    scriptTitles: [],
+  } as const;
+
+  return prisma.storeConfig.upsert({
+    where: { storeId: store.id },
+    create: {
+      ...seed,
+      [field]: nextActive,
+      [enabledKey]: enabled,
+      [preservedKey]: nextPreserved,
+    },
+    update: {
+      [field]: nextActive,
+      [enabledKey]: enabled,
+      [preservedKey]: nextPreserved,
+    },
+  });
 }

@@ -7,6 +7,13 @@ export interface AppConfig {
   debugMode: boolean;
   auditDeferArray: string[];
   auditHideSelectors: string[];
+  staticDeferDefaults: string[];
+  auditDeferArrayEnabled: boolean;
+  auditHideSelectorsEnabled: boolean;
+  staticDeferDefaultsEnabled: boolean;
+  auditDeferArrayPreserved: string[];
+  auditHideSelectorsPreserved: string[];
+  staticDeferDefaultsPreserved: string[];
   auditComplete: boolean;
   appEndpoint: string;
 }
@@ -20,6 +27,13 @@ export interface AppConfigInput {
   debugMode?: boolean;
   auditDeferArray?: string[];
   auditHideSelectors?: string[];
+  staticDeferDefaults?: string[];
+  auditDeferArrayEnabled?: boolean;
+  auditHideSelectorsEnabled?: boolean;
+  staticDeferDefaultsEnabled?: boolean;
+  auditDeferArrayPreserved?: string[];
+  auditHideSelectorsPreserved?: string[];
+  staticDeferDefaultsPreserved?: string[];
   auditComplete?: boolean;
   appEndpoint?: string;
 }

@@ -1,13 +1,13 @@
 /* eslint-disable react/prop-types */
-const STEP_LABELS = ["Start", "Scripts", "Titles"];
+const STEP_LABELS = ["Start", "Scripts"];
 
 /**
- * 3-circle stepper matching Desing_plan.md: active/completed = filled green
- * circle, inactive = grey, connected by a thin line. Clickable to jump
- * between steps — but steps past `maxStep` are locked (greyed out) until the
- * app is enabled in Step 1.
+ * 2-circle stepper matching the merged wizard (Step 1 = Activate + audit,
+ * Step 2 = Scripts + Audit Results). Active/completed = filled green circle,
+ * inactive = grey, connected by a thin line. Step 2 stays locked until the
+ * app is enabled AND the hidden audit completes.
  */
-export default function WizardProgress({ currentStep, maxStep = 3, onStepClick }) {
+export default function WizardProgress({ currentStep, maxStep = 2, onStepClick }) {
   return (
     <div style={{ display: "flex", alignItems: "center", padding: "8px 0 20px" }}>
       {STEP_LABELS.map((label, index) => {

@@ -3,7 +3,6 @@ import { useLoaderData, useFetcher, useRouteError } from "react-router";
 import { useAppBridge } from "@shopify/app-bridge-react";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../shopify.server";
-import { getThemeEditorDeepLink } from "../lib/shopify";
 import { getConfig, updateConfig, deleteConfig } from "../lib/metaobjects";
 import { syncConfigToDatabase, logActivity } from "../lib/store-sync.server";
 
@@ -108,7 +107,7 @@ export const action = async ({ request }) => {
 };
 
 export default function Settings() {
-  const { config, shop } = useLoaderData();
+  const { config } = useLoaderData();
   const fetcher = useFetcher();
   const shopify = useAppBridge();
 
@@ -139,8 +138,6 @@ export default function Settings() {
     fetcher.submit({ intent: "reset" }, { method: "POST" });
   };
 
-  const themeEditorUrl = getThemeEditorDeepLink(shop);
-
   return (
     <s-page heading="Settings" backAction="/app">
       <s-section heading="General">
@@ -156,10 +153,10 @@ export default function Settings() {
 
       <s-section heading="Theme app extension">
         <s-paragraph>
-          Add and configure script blocks in the theme editor.
+          Enable the Performance Script Loader embed in the theme editor.
         </s-paragraph>
-        <s-button href={themeEditorUrl} target="_blank">
-          Open theme editor
+        <s-button href="/app/extension">
+          Open app extension page
         </s-button>
       </s-section>
 

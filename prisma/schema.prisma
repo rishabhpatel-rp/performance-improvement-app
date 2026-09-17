@@ -144,9 +144,35 @@ model StoreConfig {
   scriptTitles       Json @default("[]") // ["Title1","Title2","Title3"]
   auditDeferArray    Json @default("[]") // Defer/blocklist entries
   auditHideSelectors Json @default("[]") // CSS selectors to hide
+  staticDeferDefaults Json @default("[]") // Static always-defer defaults e.g. ["wpm","gtm","clarity"]
+
+  // Audit field toggle states (on/off) — Step 3 "Audit Results" textareas
+  auditDeferArrayEnabled      Boolean @default(true)
+  auditHideSelectorsEnabled   Boolean @default(true)
+  staticDeferDefaultsEnabled  Boolean @default(true)
+
+  // Preserved snapshot (taken when a field is toggled OFF so it can be
+  // restored on toggle ON; the "active" column holds [] while OFF).
+  auditDeferArrayPreserved      Json @default("[]")
+  auditHideSelectorsPreserved   Json @default("[]")
+  staticDeferDefaultsPreserved  Json @default("[]")
+
+  storefrontPassword String?   // Owner's storefront password — used to bypass the password page during audit
+
+  // Custom page URLs for audit (merchant-specified, optional)
+  customPlpUrl String?  // Merchant-specified PLP URL
+  customPdpUrl String?  // Merchant-specified PDP URL
 
   // Reference to the Shopify metaobject
   metaobjectId String?
+
+  // Audit status (hidden backend audit lifecycle)
+  auditRunning Boolean @default(false)
+  auditFailed  Boolean @default(false)
+  auditError   String?
+  lastAuditAt  DateTime?
+  auditPageIndex  Int? // 0-based page currently being audited (for progress UI)
+  auditTotalPages Int? // total pages in the audit run
 
   // Timestamps
   createdAt DateTime @default(now())
