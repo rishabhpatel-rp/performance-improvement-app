@@ -41,7 +41,7 @@ export default defineConfig({
     cors: {
       preflightContinue: true,
     },
-    port: parseInt(process.env.PORT || 3000),
+    port: parseInt(process.env.PORT || 9001),
     hmr: hmrConfig,
     fs: {
       // See https://vitejs.dev/config/server-options.html#server-fs-allow for more information

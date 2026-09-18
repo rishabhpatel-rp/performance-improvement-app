@@ -1,7 +1,7 @@
 # Learn more about configuring your app at https://shopify.dev/docs/apps/tools/cli/configuration
 
-client_id = "f3c38e708010aaa3be8bcdc18e3e03a6"
-name = "Performance-improvement-app"
+client_id = "20ab28b1c9809df789897f44095a86cd"
+name = "PagePulse"
 application_url = "https://pagepulsespeed.node.brainvire.dev"
 embedded = true
 
