@@ -174,10 +174,6 @@ export async function upsertStore(data: ShopifyShopData) {
       createdAtShopify: data.createdAtShopify,
       currentScope: data.currentScope,
       lastSyncedAt: new Date(),
-      // Reinstall: a returning shop must be active again so shop/redact
-      // (48h after a prior uninstall) does not wipe the new install.
-      isActive: true,
-      uninstalledAt: null,
     },
   });
 }
@@ -194,39 +190,6 @@ export async function markStoreUninstalled(shopDomain: string) {
       isActive: false,
     },
   });
-}
-
-/**
- * Permanently erase all stored data for a shop (shop/redact).
- * Skips deletion when the shop has reinstalled and is active again.
- */
-export async function eraseShopData(shopDomain: string) {
-  const store = await prisma.store.findUnique({
-    where: { shopDomain },
-    select: { id: true, isActive: true },
-  });
-
-  if (store?.isActive) {
-    console.log(
-      `[shop/redact] Skip erase for ${shopDomain}: store is active (reinstalled)`,
-    );
-    return { skipped: true };
-  }
-
-  await prisma.$transaction(async (tx) => {
-    await tx.session.deleteMany({ where: { shop: shopDomain } });
-    await tx.appTracking.deleteMany({ where: { domain: shopDomain } });
-    await tx.auditLog.deleteMany({ where: { domain: shopDomain } });
-
-    if (store) {
-      await tx.performanceScript.deleteMany({ where: { storeId: store.id } });
-      await tx.storeActivity.deleteMany({ where: { storeId: store.id } });
-      await tx.storeConfig.deleteMany({ where: { storeId: store.id } });
-      await tx.store.delete({ where: { id: store.id } });
-    }
-  });
-
-  return { skipped: false };
 }
 
 // ============================================================

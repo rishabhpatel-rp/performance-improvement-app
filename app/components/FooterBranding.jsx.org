@@ -1,18 +1,8 @@
 /* eslint-disable react/prop-types */
 /**
  * Footer branding component matching Desing_plan.md: rocket icon,
- * "PERFORMANCE APP" brand, tagline, and legal/support links.
+ * "PERFORMANCE APP" brand, tagline, and terms link.
  */
-const TERMS_URL = "https://www.brainvire.com/terms-of-use/";
-const PRIVACY_URL = "https://www.brainvire.com/privacy-policy/";
-const SUPPORT_EMAIL = "shopify@brainvire.com";
-
-const linkStyle = {
-  fontSize: 12,
-  color: "#2B6CB0",
-  textDecoration: "none",
-};
-
 export default function FooterBranding() {
   return (
     <div
@@ -64,37 +54,21 @@ export default function FooterBranding() {
         Boost your store performance
       </span>
 
-      <div
+      {/* Terms link */}
+      <span
+        role="link"
+        tabIndex={0}
+        onClick={() => {}}
+        onKeyDown={() => {}}
         style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 12,
+          fontSize: 12,
+          color: "#2B6CB0",
+          textDecoration: "none",
           marginTop: 4,
-          flexWrap: "wrap",
-          justifyContent: "center",
         }}
       >
-        <a
-          href={PRIVACY_URL}
-          target="_blank"
-          rel="noopener noreferrer"
-          style={linkStyle}
-        >
-          Privacy Policy
-        </a>
-        <a
-          href={TERMS_URL}
-          target="_blank"
-          rel="noopener noreferrer"
-          style={linkStyle}
-        >
-          Terms of use
-        </a>
-      </div>
-
-      <a href={`mailto:${SUPPORT_EMAIL}`} style={linkStyle}>
-        Support Email: {SUPPORT_EMAIL}
-      </a>
+        Terms of use
+      </span>
     </div>
   );
 }
