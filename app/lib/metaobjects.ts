@@ -177,23 +177,14 @@ function buildFields(
 }
 
 async function findConfigId(admin: AdminClient): Promise<string | undefined> {
-  const response = await admin.graphql(
-    `#graphql
-    query GetConfigId {
-      metaobjects(first: 1, type: "${CONFIG_TYPE}") {
-        edges {
-          node { id }
-        }
-      }
-    }
-    `,
-  );
-  const data = await response.json();
-  return data.data?.metaobjects?.edges?.[0]?.node?.id;
+  const { id } = await fetchConfigMetaobject(admin);
+  return id;
 }
 
-export async function getConfig(request: RequestOrAdmin): Promise<AppConfig> {
-  const admin = await resolveAdmin(request);
+/** One Admin query for the config metaobject id + mapped fields. */
+async function fetchConfigMetaobject(
+  admin: AdminClient,
+): Promise<{ id?: string; config: AppConfig }> {
   const response = await admin.graphql(
     `#graphql
     query GetConfig {
@@ -210,12 +201,18 @@ export async function getConfig(request: RequestOrAdmin): Promise<AppConfig> {
   );
 
   const data = await response.json();
-  const edge = data.data?.metaobjects?.edges?.[0];
-  if (!edge?.node) {
-    return defaultAppConfig();
+  const node = data.data?.metaobjects?.edges?.[0]?.node;
+  if (!node) {
+    return { config: defaultAppConfig() };
   }
 
-  return mapConfigFields(edge.node.fields);
+  return { id: node.id, config: mapConfigFields(node.fields) };
+}
+
+export async function getConfig(request: RequestOrAdmin): Promise<AppConfig> {
+  const admin = await resolveAdmin(request);
+  const { config } = await fetchConfigMetaobject(admin);
+  return config;
 }
 
 /**
@@ -288,9 +285,9 @@ export async function ensureConfig(
   requestOrAdmin: RequestOrAdmin,
 ): Promise<{ config: AppConfig; created: boolean }> {
   const admin = await resolveAdmin(requestOrAdmin);
-  const configId = await findConfigId(admin);
+  const { id: configId, config: existing } = await fetchConfigMetaobject(admin);
   if (configId) {
-    return { config: await getConfig(admin), created: false };
+    return { config: existing, created: false };
   }
 
   // The metaobject type may not exist yet if `shopify app config push`
@@ -347,11 +344,12 @@ export async function deleteConfig(request: RequestOrAdmin): Promise<void> {
 export async function ensureAppEndpoint(
   requestOrAdmin: RequestOrAdmin,
   endpoint: string,
+  currentConfig?: AppConfig,
 ): Promise<AppConfig> {
   const admin = await resolveAdmin(requestOrAdmin);
   try {
-    const config = await getConfig(admin);
-    if (config.appEndpoint === endpoint) {
+    const config = currentConfig ?? (await getConfig(admin));
+    if (!endpoint || config.appEndpoint === endpoint) {
       return config;
     }
     return await updateConfig(admin, { appEndpoint: endpoint });
@@ -360,9 +358,9 @@ export async function ensureAppEndpoint(
     console.warn(
       "[ensureAppEndpoint] Could not sync app_endpoint:",
       message,
-      "Using defaults.",
+      currentConfig ? "Keeping already-loaded config." : "Using defaults.",
     );
-    return defaultAppConfig();
+    return currentConfig ?? defaultAppConfig();
   }
 }
 

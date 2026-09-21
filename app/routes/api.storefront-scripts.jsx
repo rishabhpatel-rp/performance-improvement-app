@@ -1,6 +1,7 @@
 import { authenticate } from "../shopify.server";
 import prisma from "../db.server";
 import { generateDeferredScript } from "../lib/script-generator";
+import { readStringArray } from "../lib/store-sync.server";
 
 const JSON_HEADERS = {
   "Content-Type": "application/json",
@@ -14,6 +15,14 @@ function json(data, status = 200) {
   });
 }
 
+function buildHiddenCss(selectors) {
+  if (!selectors.length) return "";
+  const list = selectors
+    .map((selector) => `html:not(.interacted) ${selector}`)
+    .join(",\n");
+  return `${list} { visibility: hidden !important; }`;
+}
+
 async function loadStorefrontScripts(shopDomain) {
   if (!shopDomain) {
     return json({ success: false, error: "Missing shop" }, 400);
@@ -21,29 +30,54 @@ async function loadStorefrontScripts(shopDomain) {
 
   const store = await prisma.store.findUnique({
     where: { shopDomain },
-    include: { performanceScript: true },
+    include: {
+      configs: { orderBy: { updatedAt: "desc" }, take: 1 },
+    },
   });
 
-  if (!store?.performanceScript) {
-    return json({ success: false, error: "No scripts configured" });
+  const config = store?.configs?.[0];
+  if (!store?.isActive || !config?.appEnabled) {
+    return json({
+      success: true,
+      data: { auditScript: "", hiddenCss: "" },
+    });
   }
 
-  const { auditScript, deferScript, hiddenCss } = store.performanceScript;
-  const compiled = generateDeferredScript(auditScript, deferScript);
+  const deferArray = config.auditDeferArrayEnabled
+    ? readStringArray(config.auditDeferArray)
+    : [];
+  const staticDefer = config.staticDeferDefaultsEnabled
+    ? readStringArray(config.staticDeferDefaults)
+    : [];
+  const hideSelectors = config.auditHideSelectorsEnabled
+    ? readStringArray(config.auditHideSelectors)
+    : [];
+
+  const compiled = generateDeferredScript(deferArray, staticDefer);
 
   return json({
     success: true,
     data: {
       auditScript: compiled,
-      hiddenCss: hiddenCss || "",
+      hiddenCss: buildHiddenCss(hideSelectors),
     },
   });
 }
 
-export const loader = async ({ request }) => {
-  await authenticate.public.appProxy(request);
-  const shopDomain = new URL(request.url).searchParams.get("shop");
+async function handleProxy(request) {
+  const auth = await authenticate.public.appProxy(request);
+  const shopDomain =
+    auth?.session?.shop || new URL(request.url).searchParams.get("shop");
   return loadStorefrontScripts(shopDomain);
+}
+
+export const loader = async ({ request }) => {
+  try {
+    return await handleProxy(request);
+  } catch (error) {
+    console.error("[api.storefront-scripts] loader failed:", error);
+    return json({ success: false, error: "Failed to load scripts" });
+  }
 };
 
 export const action = async ({ request }) => {
@@ -51,7 +85,10 @@ export const action = async ({ request }) => {
     return new Response(null, { status: 204, headers: JSON_HEADERS });
   }
 
-  await authenticate.public.appProxy(request);
-  const shopDomain = new URL(request.url).searchParams.get("shop");
-  return loadStorefrontScripts(shopDomain);
+  try {
+    return await handleProxy(request);
+  } catch (error) {
+    console.error("[api.storefront-scripts] action failed:", error);
+    return json({ success: false, error: "Failed to load scripts" });
+  }
 };
