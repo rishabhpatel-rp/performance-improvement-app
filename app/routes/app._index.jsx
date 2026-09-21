@@ -27,6 +27,8 @@ import {
   isAppEmbedEnabled,
   getAppEmbedDeepLink,
 } from "../lib/theme-embed.server";
+import { withShopifyTimeout } from "../lib/shopify-timeout.server";
+import prisma from "../db.server";
 import WizardProgress from "../components/WizardProgress";
 import Step1Activate from "../components/Step1Activate";
 import Step2Configure from "../components/Step2Configure";
@@ -206,52 +208,35 @@ async function startHiddenAudit(admin, shopDomain) {
   })();
 }
 
-export const loader = async ({ request }) => {
-  const { admin, session } = await authenticate.admin(request);
+const STORE_CONFIG_SELECT = {
+  appEnabled: true,
+  script1Enabled: true,
+  script2Enabled: true,
+  script3Enabled: true,
+  debugMode: true,
+  scriptTitles: true,
+  auditComplete: true,
+  auditRunning: true,
+  auditFailed: true,
+  auditError: true,
+  auditPageIndex: true,
+  auditTotalPages: true,
+  storefrontPassword: true,
+  customPlpUrl: true,
+  customPdpUrl: true,
+  auditDeferArray: true,
+  auditHideSelectors: true,
+  staticDeferDefaults: true,
+  auditDeferArrayEnabled: true,
+  auditHideSelectorsEnabled: true,
+  staticDeferDefaultsEnabled: true,
+  auditDeferArrayPreserved: true,
+  auditHideSelectorsPreserved: true,
+  staticDeferDefaultsPreserved: true,
+};
 
-  // --- Sync store details to database (on every visit; upsert is a no-op
-  // update after the first) and detect whether this is a brand-new install.
-  let shopData = null;
-  let isNewStore = false;
-  try {
-    shopData = await fetchShopDetailsFromShopify(admin);
-    shopData.currentScope = session.scope || undefined;
-
-    const prisma = (await import("../db.server")).default;
-    const existingStore = await prisma.store.findUnique({
-      where: { shopDomain: shopData.shopDomain },
-      select: { id: true },
-    });
-    isNewStore = !existingStore;
-
-    await upsertStore(shopData);
-  } catch (err) {
-    console.error(
-      "[Dashboard] Failed to sync store details:",
-      err instanceof Error ? err.message : err,
-    );
-  }
-
-  // ensureConfig creates the singleton if missing; ensureAppEndpoint syncs the
-  // public /audit-submit URL from SHOPIFY_APP_URL so the storefront audit
-  // script can POST results back (auto-sync, no manual editing).
-  const { config } = await ensureConfig(admin);
-  // eslint-disable-next-line no-undef
-  const appUrl = process.env.SHOPIFY_APP_URL || "";
-  const endpoint = appUrl ? `${appUrl.replace(/\/+$/, "")}/audit-submit` : "";
-  const configWithEndpoint = await ensureAppEndpoint(admin, endpoint);
-  const mergedConfig = { ...config, ...configWithEndpoint };
-
-  // --- Sync config to database on every dashboard load ---
-  await safeSyncConfig(session.shop, mergedConfig);
-
-  // --- Theme app embed: Step 1 stays off until this is enabled ---
-  const embedCheck = await isAppEmbedEnabled(admin);
-  const embedEnabled = embedCheck !== false;
-  const embedActivateUrl = getAppEmbedDeepLink(session.shop);
-
-  // --- Read the hidden-backend audit status for Step 1 loader UI ---
-  let auditStatus = {
+function emptyAuditStatus() {
+  return {
     running: false,
     complete: false,
     failed: false,
@@ -260,115 +245,167 @@ export const loader = async ({ request }) => {
     totalPages: 0,
     progress: 0,
   };
+}
+
+function configFromDbRow(sc) {
+  if (!sc) return null;
+  return {
+    appEnabled: sc.appEnabled,
+    script1Enabled: sc.script1Enabled,
+    script2Enabled: sc.script2Enabled,
+    script3Enabled: sc.script3Enabled,
+    debugMode: sc.debugMode,
+    scriptTitles: readStringArray(sc.scriptTitles),
+    auditComplete: sc.auditComplete,
+    auditDeferArray: readStringArray(sc.auditDeferArray),
+    auditHideSelectors: readStringArray(sc.auditHideSelectors),
+    staticDeferDefaults: readStringArray(sc.staticDeferDefaults),
+  };
+}
+
+export const loader = async ({ request }) => {
+  const loaderStarted = Date.now();
+  const { admin, session } = await authenticate.admin(request);
+  // eslint-disable-next-line no-undef
+  const appUrl = process.env.SHOPIFY_APP_URL || "";
+  const endpoint = appUrl ? `${appUrl.replace(/\/+$/, "")}/audit-submit` : "";
+
+  const [shopResult, shopifyConfig, embedCheck, storeRow] = await Promise.all([
+    (async () => {
+      try {
+        const shopData = await withShopifyTimeout(
+          fetchShopDetailsFromShopify(admin),
+          "ShopDetails",
+        );
+        shopData.currentScope = session.scope || undefined;
+        const existingStore = await prisma.store.findUnique({
+          where: { shopDomain: shopData.shopDomain },
+          select: { id: true },
+        });
+        await upsertStore(shopData);
+        return { shopData, isNewStore: !existingStore };
+      } catch (err) {
+        console.error(
+          "[Dashboard] Failed to sync store details:",
+          err instanceof Error ? err.message : err,
+        );
+        return { shopData: null, isNewStore: false };
+      }
+    })(),
+    (async () => {
+      try {
+        const { config } = await withShopifyTimeout(
+          ensureConfig(admin),
+          "ensureConfig",
+        );
+        if (!endpoint || config.appEndpoint === endpoint) {
+          return config;
+        }
+        return await withShopifyTimeout(
+          ensureAppEndpoint(admin, endpoint, config),
+          "ensureAppEndpoint",
+        );
+      } catch (err) {
+        console.error(
+          "[Dashboard] Failed to load Shopify config:",
+          err instanceof Error ? err.message : err,
+        );
+        return null;
+      }
+    })(),
+    (async () => {
+      try {
+        return await withShopifyTimeout(
+          isAppEmbedEnabled(admin),
+          "isAppEmbedEnabled",
+        );
+      } catch (err) {
+        console.error(
+          "[Dashboard] Failed to read embed status:",
+          err instanceof Error ? err.message : err,
+        );
+        return null;
+      }
+    })(),
+    prisma.store.findUnique({
+      where: { shopDomain: session.shop },
+      select: { configs: { select: STORE_CONFIG_SELECT } },
+    }),
+  ]);
+
+  const sc = storeRow?.configs?.[0];
+  const dbConfig = configFromDbRow(sc);
+
+  // Shopify metaobject is the live source for flags/titles when the call
+  // succeeds. On timeout/error, use last-known StoreConfig — never invent
+  // "app on" or fake audit arrays.
+  const mergedConfig = shopifyConfig
+    ? shopifyConfig
+    : dbConfig
+      ? { ...DEFAULT_CONFIG, ...dbConfig }
+      : DEFAULT_CONFIG;
+
+  if (shopifyConfig) {
+    await safeSyncConfig(session.shop, mergedConfig);
+  }
+
+  const embedEnabled = embedCheck !== false;
+  const embedActivateUrl = getAppEmbedDeepLink(session.shop);
+
+  let auditStatus = emptyAuditStatus();
   let storefrontPassword = "";
   let customPlpUrl = "";
   let customPdpUrl = "";
-  try {
-    const prisma = (await import("../db.server")).default;
-    const st = await prisma.store.findUnique({
-      where: { shopDomain: session.shop },
-      select: { configs: { select: {
-        auditRunning: true,
-        auditComplete: true,
-        auditFailed: true,
-        auditError: true,
-        auditPageIndex: true,
-        auditTotalPages: true,
-        storefrontPassword: true,
-        customPlpUrl: true,
-        customPdpUrl: true,
-      } } },
-    });
-    const sc = st?.configs?.[0];
-    if (sc) {
-      storefrontPassword = sc.storefrontPassword || "";
-      customPlpUrl = sc.customPlpUrl || "";
-      customPdpUrl = sc.customPdpUrl || "";
-      const pageIndex = sc.auditPageIndex ?? 0;
-      const totalPages = sc.auditTotalPages ?? 0;
-      auditStatus = {
-        running: sc.auditRunning,
-        complete: sc.auditComplete,
-        failed: sc.auditFailed,
-        error: sc.auditError,
-        pageIndex,
-        totalPages,
-        progress:
-          totalPages > 0 ? Math.round((pageIndex / totalPages) * 100) : 0,
-      };
-    }
-  } catch (err) {
-    console.error(
-      "[Dashboard] Failed to read audit status:",
-      err instanceof Error ? err.message : err,
-    );
+  if (sc) {
+    storefrontPassword = sc.storefrontPassword || "";
+    customPlpUrl = sc.customPlpUrl || "";
+    customPdpUrl = sc.customPdpUrl || "";
+    const pageIndex = sc.auditPageIndex ?? 0;
+    const totalPages = sc.auditTotalPages ?? 0;
+    auditStatus = {
+      running: sc.auditRunning,
+      complete: sc.auditComplete,
+      failed: sc.auditFailed,
+      error: sc.auditError,
+      pageIndex,
+      totalPages,
+      progress: totalPages > 0 ? Math.round((pageIndex / totalPages) * 100) : 0,
+    };
   }
 
-  // --- Log "installed" event only the first time a store record is created ---
-  if (isNewStore && shopData) {
+  if (shopResult.isNewStore && shopResult.shopData) {
     await safeLogActivity(
       session.shop,
       "installed",
-      `App installed — ${shopData.shopName}`,
+      `App installed — ${shopResult.shopData.shopName}`,
       { source: "first_visit", shopDomain: session.shop },
     );
   }
 
-  // --- Overlay the DB-authoritative audit/static arrays onto the config ---
-  // The metaobject carries the toggles/titles, but the three Step-3 arrays
-  // (defer, hide selectors, static defaults) are sourced from the DB only.
-  // Read them AFTER syncConfigToDatabase so a completed audit's values win
-  // over the (empty) metaobject-mirrored arrays.
   let auditDeferArray = readStringArray(mergedConfig.auditDeferArray);
   let auditHideSelectors = readStringArray(mergedConfig.auditHideSelectors);
   let staticDeferDefaults = ["wpm", "gtm", "clarity"];
   let dbToggle = null;
   let dbPreserved = null;
-  try {
-    const prisma = (await import("../db.server")).default;
-    const st = await prisma.store.findUnique({
-      where: { shopDomain: session.shop },
-      select: {
-        configs: {
-          select: {
-            auditDeferArray: true,
-            auditHideSelectors: true,
-            staticDeferDefaults: true,
-            auditDeferArrayEnabled: true,
-            auditHideSelectorsEnabled: true,
-            staticDeferDefaultsEnabled: true,
-            auditDeferArrayPreserved: true,
-            auditHideSelectorsPreserved: true,
-            staticDeferDefaultsPreserved: true,
-          },
-        },
-      },
-    });
-    const sc = st?.configs?.[0];
-    if (sc) {
-      const dbDefer = readStringArray(sc.auditDeferArray);
-      const dbHide = readStringArray(sc.auditHideSelectors);
-      const dbStatic = readStringArray(sc.staticDeferDefaults);
-      if (dbDefer.length) auditDeferArray = dbDefer;
-      if (dbHide.length) auditHideSelectors = dbHide;
-      staticDeferDefaults =
-        dbStatic.length > 0 ? dbStatic : staticDeferDefaults;
-      dbToggle = {
-        auditDeferArrayEnabled: sc.auditDeferArrayEnabled ?? true,
-        auditHideSelectorsEnabled: sc.auditHideSelectorsEnabled ?? true,
-        staticDeferDefaultsEnabled: sc.staticDeferDefaultsEnabled ?? true,
-      };
-      dbPreserved = {
-        auditDeferArrayPreserved: readStringArray(sc.auditDeferArrayPreserved),
-        auditHideSelectorsPreserved: readStringArray(sc.auditHideSelectorsPreserved),
-        staticDeferDefaultsPreserved: readStringArray(sc.staticDeferDefaultsPreserved),
-      };
-    }
-  } catch (err) {
-    console.error(
-      "[Dashboard] Failed to read audit arrays from DB:",
-      err instanceof Error ? err.message : err,
-    );
+  if (sc) {
+    const dbDefer = readStringArray(sc.auditDeferArray);
+    const dbHide = readStringArray(sc.auditHideSelectors);
+    const dbStatic = readStringArray(sc.staticDeferDefaults);
+    if (dbDefer.length) auditDeferArray = dbDefer;
+    if (dbHide.length) auditHideSelectors = dbHide;
+    staticDeferDefaults = dbStatic.length > 0 ? dbStatic : staticDeferDefaults;
+    dbToggle = {
+      auditDeferArrayEnabled: sc.auditDeferArrayEnabled ?? true,
+      auditHideSelectorsEnabled: sc.auditHideSelectorsEnabled ?? true,
+      staticDeferDefaultsEnabled: sc.staticDeferDefaultsEnabled ?? true,
+    };
+    dbPreserved = {
+      auditDeferArrayPreserved: readStringArray(sc.auditDeferArrayPreserved),
+      auditHideSelectorsPreserved: readStringArray(sc.auditHideSelectorsPreserved),
+      staticDeferDefaultsPreserved: readStringArray(
+        sc.staticDeferDefaultsPreserved,
+      ),
+    };
   }
 
   const finalConfig = {
@@ -381,11 +418,16 @@ export const loader = async ({ request }) => {
     staticDeferDefaultsEnabled: dbToggle?.staticDeferDefaultsEnabled ?? true,
     auditDeferArrayPreserved: dbPreserved?.auditDeferArrayPreserved ?? [],
     auditHideSelectorsPreserved: dbPreserved?.auditHideSelectorsPreserved ?? [],
-    staticDeferDefaultsPreserved: dbPreserved?.staticDeferDefaultsPreserved ?? [],
+    staticDeferDefaultsPreserved:
+      dbPreserved?.staticDeferDefaultsPreserved ?? [],
     storefrontPassword,
     customPlpUrl,
     customPdpUrl,
   };
+
+  console.log(
+    `[Dashboard] loader ${Date.now() - loaderStarted}ms shopifyConfig=${Boolean(shopifyConfig)} embed=${String(embedCheck)}`,
+  );
 
   return {
     config: finalConfig,

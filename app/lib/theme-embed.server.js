@@ -52,37 +52,28 @@ export async function isAppEmbedEnabled(admin, handle = APP_EMBED_HANDLE) {
     const themeData = await graphqlJson(
       admin,
       `#graphql
-      query MainTheme {
+      query MainThemeSettings {
         themes(first: 1, roles: [MAIN]) {
-          nodes { id }
-        }
-      }`,
-    );
-    const themeId = themeData.themes?.nodes?.[0]?.id;
-    if (!themeId) return false;
-
-    const filesData = await graphqlJson(
-      admin,
-      `#graphql
-      query ThemeSettingsData($themeId: ID!) {
-        theme(id: $themeId) {
-          files(filenames: ["config/settings_data.json"]) {
-            nodes {
-              filename
-              body {
-                ... on OnlineStoreThemeFileBodyText {
-                  content
+          nodes {
+            id
+            files(filenames: ["config/settings_data.json"]) {
+              nodes {
+                filename
+                body {
+                  ... on OnlineStoreThemeFileBodyText {
+                    content
+                  }
                 }
               }
             }
           }
         }
       }`,
-      { themeId },
     );
+    const theme = themeData.themes?.nodes?.[0];
+    if (!theme?.id) return false;
 
-    const content =
-      filesData.theme?.files?.nodes?.[0]?.body?.content || "";
+    const content = theme.files?.nodes?.[0]?.body?.content || "";
     return embedEnabledInSettings(content, handle);
   } catch (err) {
     console.warn(
