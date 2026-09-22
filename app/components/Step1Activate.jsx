@@ -207,7 +207,7 @@ export default function Step1Activate({
                 marginBottom: 4,
               }}
             >
-              A powerful speed app without the expensive price tag?
+              A powerful speed app without the expensive price tag1?
             </div>
             <div style={{ fontSize: 13, color: "#4A5568" }}>
               We&apos;re committed to helping Shopify merchants build faster,
