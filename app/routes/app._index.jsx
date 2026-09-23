@@ -590,6 +590,56 @@ export const action = async ({ request }) => {
           config: { appEnabled: false },
         };
       }
+
+      // Defense-in-depth: re-check password protection here too, even
+      // though /api/toggle-validate already checked it client-side. This
+      // guards against a bypassed/skipped client validation call or stale
+      // client state — the server is the last line of defense before the
+      // app actually turns on.
+      try {
+        const response = await withShopifyTimeout(
+          admin.graphql(`#graphql
+            query OnlineStorePasswordStatus {
+              onlineStore {
+                passwordProtection {
+                  enabled
+                }
+              }
+            }
+          `),
+          "passwordProtection",
+        );
+        const data = await response.json();
+        const isPasswordProtected =
+          data.data?.onlineStore?.passwordProtection?.enabled ?? false;
+
+        if (isPasswordProtected) {
+          const store = await prisma.store.findUnique({
+            where: { shopDomain: session.shop },
+            select: { configs: { select: { storefrontPassword: true } } },
+          });
+          const savedPassword = store?.configs?.[0]?.storefrontPassword || "";
+          if (!savedPassword) {
+            return {
+              ok: false,
+              error: "password_required",
+              config: { appEnabled: false },
+            };
+          }
+        }
+      } catch (err) {
+        rethrowAuthRedirect(err);
+        // Fail-closed: if we can't confirm password status, don't enable.
+        console.warn(
+          "[Dashboard] toggle-app password check failed:",
+          err instanceof Error ? err.message : err,
+        );
+        return {
+          ok: false,
+          error: "password_required",
+          config: { appEnabled: false },
+        };
+      }
     }
 
     // Enabling the app turns all 3 scripts ON by default (user can then
