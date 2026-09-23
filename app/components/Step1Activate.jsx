@@ -24,6 +24,11 @@ export default function Step1Activate({
   const fetcher = useFetcher();
   const pwFetcher = useFetcher();
   const urlFetcher = useFetcher();
+  const validationFetcher = useFetcher();
+  // Deriving "validating" from the fetcher's own state (rather than a
+  // separate useState) keeps the spinner/disabled state always in sync with
+  // the in-flight request, including on late/slow responses.
+  const validating = validationFetcher.state !== "idle";
 
   // Local draft for the storefront password, seeded from the saved value.
   const [pwDraft, setPwDraft] = useState(config.storefrontPassword || "");
@@ -142,39 +147,88 @@ export default function Step1Activate({
   const total =
     auditStatus?.totalPages > 0 ? auditStatus.totalPages : DEFAULT_PAGES;
 
+  const focusPasswordField = () => {
+    const pwField = document.querySelector(
+      'input[placeholder*="storefront password" i], input[name="storefrontPassword"]',
+    );
+    pwField?.scrollIntoView({ behavior: "smooth", block: "center" });
+    pwField?.focus({ preventScroll: true });
+  };
+
+  const openThemeEditor = (url) => {
+    if (url) {
+      window.open(url, "_blank", "noopener,noreferrer");
+    } else {
+      window.location.assign("/app/extension?from=toggle");
+    }
+  };
+
+  // Fail-closed toggle-ON: the switch never flips ON from the click itself.
+  // A live validation round-trip (app embed + password protection, both
+  // re-checked at click time) has to come back `allowed: true` before we
+  // submit the real toggle-app action. Any failure, timeout, or unexpected
+  // response leaves the toggle OFF.
   const handleToggle = (checked) => {
-    if (checked && !embedEnabled) {
-      // Open the theme editor directly so user can enable the app embed
-      if (embedActivateUrl) {
-        window.open(embedActivateUrl, "_blank", "noopener,noreferrer");
-      } else {
-        // Fallback to extension page if URL not available
-        window.location.assign("/app/extension?from=toggle");
-      }
+    if (!checked) {
+      // OFF is always allowed immediately — no validation needed.
+      fetcher.submit(
+        { intent: "toggle-app", appEnabled: "false" },
+        { method: "POST" },
+      );
       return;
     }
-    if (checked && mainToggleBlocked) {
+
+    // Fast client-side check against the last-known loader data, so an
+    // obviously-blocked toggle doesn't even wait on a round trip.
+    if (mainToggleBlocked) {
+      focusPasswordField();
       return;
     }
-    fetcher.submit(
-      { intent: "toggle-app", appEnabled: String(checked) },
-      { method: "POST" },
+
+    if (validating) return; // no double-submit while a check is in flight
+
+    validationFetcher.submit(
+      { intent: "validate-toggle" },
+      { method: "POST", action: "/api/toggle-validate" },
     );
   };
 
-  // Server-side guard: the dashboard's embed status can be stale (e.g. the
-  // status check failed and the loader assumed enabled). If the action
-  // confirms the extension is not installed, send the merchant to the
-  // theme editor so they can enable it.
+  // Acts on the validation result once it comes back.
+  useEffect(() => {
+    if (validationFetcher.state !== "idle" || !validationFetcher.data) return;
+    const result = validationFetcher.data;
+
+    if (!result?.allowed) {
+      // FAIL-CLOSED: toggle never flips ON. Take the corrective action for
+      // whichever check failed (or, for an unrecognized/empty response,
+      // just leave the toggle OFF with the generic banner below).
+      if (result?.blockReason === "extension_required") {
+        openThemeEditor(result.embedActivateUrl || embedActivateUrl);
+      } else if (result?.blockReason === "password_required") {
+        focusPasswordField();
+      }
+      return;
+    }
+
+    // Validation passed — proceed with the real toggle-app submit.
+    fetcher.submit(
+      { intent: "toggle-app", appEnabled: "true" },
+      { method: "POST" },
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [validationFetcher.state, validationFetcher.data]);
+
+  // Server-side guard: the dashboard's embed/password status can be stale
+  // (e.g. the client validation was bypassed or the status check failed and
+  // the loader assumed enabled). If the toggle-app action itself blocks,
+  // take the same corrective action as the client-side validation does.
   useEffect(() => {
     if (fetcher.data?.error === "extension_required") {
-      const url = fetcher.data?.embedActivateUrl || embedActivateUrl;
-      if (url) {
-        window.open(url, "_blank", "noopener,noreferrer");
-      } else {
-        window.location.assign("/app/extension?from=toggle");
-      }
+      openThemeEditor(fetcher.data?.embedActivateUrl || embedActivateUrl);
+    } else if (fetcher.data?.error === "password_required") {
+      focusPasswordField();
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fetcher.data?.error, fetcher.data?.embedActivateUrl, embedActivateUrl]);
 
   return (
@@ -258,15 +312,38 @@ export default function Step1Activate({
           <s-switch
             label="Enable Performance Improvement App"
             checked={appEnabled}
-            disabled={mainToggleBlocked}
+            disabled={mainToggleBlocked || validating}
             onChange={(e) => handleToggle(e.target.checked)}
           />
 
-          {/* Show message if blocked due to password */}
-          {mainToggleBlocked && (
+          {/* Validating: live-checking app embed + password status (<3s) */}
+          {validating && (
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <s-spinner size="small" />
+              <s-text tone="subdued">Checking store setup…</s-text>
+            </div>
+          )}
+
+          {/* Show message if blocked due to password (stale loader data) */}
+          {mainToggleBlocked && !validating && (
             <s-text tone="caution">
               Save your storefront password below before enabling the app.
             </s-text>
+          )}
+
+          {/* Validation failed at click time — explain why the toggle
+              stayed OFF and what corrective action was taken. */}
+          {!validating && validationFetcher.data?.allowed === false && (
+            <s-banner tone="critical">
+              {validationFetcher.data.blockReason === "extension_required" &&
+                "App extension not enabled. Opening the theme editor…"}
+              {validationFetcher.data.blockReason === "password_required" &&
+                "Store is password protected. Save your storefront password below."}
+              {!["extension_required", "password_required"].includes(
+                validationFetcher.data.blockReason,
+              ) &&
+                "Couldn't verify store setup in time. Please try again."}
+            </s-banner>
           )}
         </div>
 
