@@ -30,7 +30,7 @@ import {
   isAppEmbedEnabled,
   getAppEmbedDeepLink,
 } from "../lib/theme-embed.server";
-import { withShopifyTimeout } from "../lib/shopify-timeout.server";
+import { withShopifyTimeout, rethrowAuthRedirect } from "../lib/shopify-timeout.server";
 import prisma from "../db.server";
 import WizardProgress from "../components/WizardProgress";
 import Step1Activate from "../components/Step1Activate";
@@ -346,6 +346,7 @@ let shopResult = { shopData: null, isNewStore: false };
           await upsertStore(shopData);
           return { shopData, isNewStore: !existingStore };
         } catch (err) {
+          rethrowAuthRedirect(err);
           console.error(
             "[Dashboard] Failed to sync store details:",
             err instanceof Error ? err.message : err,
@@ -368,6 +369,7 @@ let shopResult = { shopData: null, isNewStore: false };
             "ensureAppEndpoint",
           );
         } catch (err) {
+          rethrowAuthRedirect(err);
           console.error(
             "[Dashboard] Failed to load Shopify config:",
             err instanceof Error ? err.message : err,
@@ -382,6 +384,7 @@ let shopResult = { shopData: null, isNewStore: false };
             "isAppEmbedEnabled",
           );
         } catch (err) {
+          rethrowAuthRedirect(err);
           console.error(
             "[Dashboard] Failed to read embed status:",
             err instanceof Error ? err.message : err,
@@ -405,7 +408,8 @@ let shopResult = { shopData: null, isNewStore: false };
           );
           const data = await response.json();
           return data.data?.onlineStore?.passwordProtection?.enabled ?? false;
-        } catch {
+        } catch (err) {
+          rethrowAuthRedirect(err);
           return false;
         }
       })(),

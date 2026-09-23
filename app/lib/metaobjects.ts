@@ -368,6 +368,7 @@ export async function ensureAppEndpoint(
     }
     return await updateConfig(admin, { appEndpoint: endpoint });
   } catch (err: unknown) {
+    if (err instanceof Response) throw err;
     const message = err instanceof Error ? err.message : String(err);
     console.warn(
       "[ensureAppEndpoint] Could not sync app_endpoint:",
