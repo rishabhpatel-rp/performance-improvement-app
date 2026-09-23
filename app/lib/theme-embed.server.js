@@ -76,6 +76,7 @@ export async function isAppEmbedEnabled(admin, handle = APP_EMBED_HANDLE) {
     const content = theme.files?.nodes?.[0]?.body?.content || "";
     return embedEnabledInSettings(content, handle);
   } catch (err) {
+    if (err instanceof Response) throw err;
     console.warn(
       "[theme-embed] Failed to read embed status:",
       err instanceof Error ? err.message : err,
