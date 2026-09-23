@@ -144,7 +144,7 @@ model StoreConfig {
   scriptTitles       Json @default("[]") // ["Title1","Title2","Title3"]
   auditDeferArray    Json @default("[]") // Defer/blocklist entries
   auditHideSelectors Json @default("[]") // CSS selectors to hide
-  staticDeferDefaults Json @default("[]") // Static always-defer defaults e.g. ["wpm","gtm","clarity"]
+  staticDeferDefaults Json @default("[\"anime.js\"]") // Static always-defer defaults e.g. ["anime.js"]
 
   // Audit field toggle states (on/off) — Step 3 "Audit Results" textareas
   auditDeferArrayEnabled      Boolean @default(true)
@@ -159,12 +159,31 @@ model StoreConfig {
 
   storefrontPassword String?   // Owner's storefront password — used to bypass the password page during audit
 
+  // Cached values for fast path
+  isPasswordProtected Boolean @default(false) // Cached from Shopify onlineStore.passwordProtection.enabled
+  cachedAppEndpoint   String?                 // Last known SHOPIFY_APP_URL + /audit-submit for Gate C check
+
   // Custom page URLs for audit (merchant-specified, optional)
   customPlpUrl String?  // Merchant-specified PLP URL
   customPdpUrl String?  // Merchant-specified PDP URL
 
   // Reference to the Shopify metaobject
   metaobjectId String?
+
+  // ============================================================
+  // First User Delay Scripts (maps to FIRST_USER_DELAY_SCRIPTS in script)
+  // Only runs for first-time visitors (localStorage check)
+  // ============================================================
+  firstUserDelayScripts          Json    @default("[\"anime.js\"]")
+  firstUserDelayScriptsEnabled   Boolean @default(true)
+  firstUserDelayScriptsPreserved Json    @default("[]")
+  firstUserDelayMs               Int     @default(12000)  // 12 seconds in milliseconds
+
+  // ============================================================
+  // Delay time for "Delay Scripts" box (EVERY_TIME_DELAY_SCRIPTS)
+  // This is the timeout at line 400 in script-generator.js
+  // ============================================================
+  everyTimeDelayMs               Int     @default(6000)   // 6 seconds in milliseconds
 
   // Audit status (hidden backend audit lifecycle)
   auditRunning Boolean @default(false)

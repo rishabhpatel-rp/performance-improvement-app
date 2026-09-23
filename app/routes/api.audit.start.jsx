@@ -1,4 +1,5 @@
 import { authenticate } from "../shopify.server";
+import { redirect } from "react-router";
 import prisma from "../db.server";
 import {
   discoverPages,
@@ -6,6 +7,7 @@ import {
   getActiveThemeId,
 } from "../lib/audit.server";
 import { saveAuditReport } from "../lib/store-sync.server";
+import { isAppEmbedEnabled, getAppEmbedDeepLink } from "../lib/theme-embed.server";
 
 async function setAuditRunning(storeId, running) {
   await prisma.storeConfig.upsert({
@@ -33,6 +35,15 @@ async function setAuditRunning(storeId, running) {
 
 export async function action({ request }) {
   const { admin, session } = await authenticate.admin(request);
+
+  // The audit scans the storefront, so it can only run once the
+  // Performance Script Loader theme app embed is installed and enabled.
+  const embedEnabled = await isAppEmbedEnabled(admin);
+  if (embedEnabled !== true) {
+    // Redirect directly to the theme editor so user can enable the embed
+    const embedUrl = getAppEmbedDeepLink(session.shop);
+    return redirect(embedUrl);
+  }
 
   const store = await prisma.store.findUnique({
     where: { shopDomain: session.shop },

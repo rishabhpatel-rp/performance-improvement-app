@@ -3,7 +3,7 @@
  * Pure UI step navigation — no longer responsible for saving, since each
  * step's inputs save themselves via useFetcher as soon as they change.
  */
-export default function WizardNavigation({ currentStep, maxStep, onChange, onDone }) {
+export default function WizardNavigation({ currentStep, maxStep, onChange }) {
   const isFirst = currentStep === 1;
   const isLast = currentStep >= maxStep;
   // On Step 1, "Continue" is disabled until the app is enabled (maxStep > 1).
@@ -16,13 +16,9 @@ export default function WizardNavigation({ currentStep, maxStep, onChange, onDon
           Back
         </s-button>
       )}
-      {!isLast ? (
+      {!isLast && (
         <s-button variant="primary" disabled={!canContinue} onClick={() => onChange(currentStep + 1)}>
           Continue
-        </s-button>
-      ) : (
-        <s-button variant="primary" onClick={onDone}>
-          Done
         </s-button>
       )}
     </s-stack>

@@ -8,7 +8,7 @@
         if (data.hiddenCss && data.hiddenCss.trim()) {
           try {
             var el = document.createElement("style");
-            el.id = "p" + Math.random().toString(36).slice(2, 8);
+            el.id = "pp-hide-lastfold";
             el.textContent = data.hiddenCss;
             document.head.appendChild(el);
           } catch (e) {}

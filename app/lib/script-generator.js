@@ -7,7 +7,9 @@ export function parseToArray(input) {
   try {
     const parsed = JSON.parse(input);
     if (Array.isArray(parsed)) return parsed;
-  } catch (_) {}
+  } catch (_) {
+    // Ignore JSON parse errors, fall back to string splitting
+  }
 
   return String(input)
     .split(/[\n,]+/)
@@ -15,9 +17,36 @@ export function parseToArray(input) {
     .filter(Boolean);
 }
 
-export function generateDeferredScript(auditArray, deferArray) {
+/**
+ * Hide lastfold selectors until html.interacted is set.
+ * Example: html:not(.interacted) :is(#footer,.grid>:nth-child(n+5)){display:none!important}
+ */
+export function buildHiddenCss(selectors) {
+  const list = (Array.isArray(selectors) ? selectors : [])
+    .map((selector) => String(selector || "").trim())
+    .filter(Boolean);
+  if (!list.length) return "";
+  return (
+    "html:not(.interacted) :is(" +
+    list.join(",") +
+    "){display:none!important}"
+  );
+}
+
+export function generateDeferredScript(
+  auditArray,
+  deferArray,
+  {
+    firstUserDelayScripts = ["anime.js"],
+    firstUserDelayMs = 12000,
+    everyTimeDelayMs = 6000,
+    hideSelectors = [],
+  } = {}
+) {
   const auditJson = JSON.stringify(auditArray);
   const deferJson = JSON.stringify(deferArray);
+  const firstUserJson = JSON.stringify(firstUserDelayScripts);
+  const hideCssJson = JSON.stringify(buildHiddenCss(hideSelectors));
 
   // Source script template
   const rawScript = `
@@ -28,6 +57,20 @@ export function generateDeferredScript(auditArray, deferArray) {
     var classList = docEl.classList;
     var win = window;
     var startTime = performance.now();
+    var hideCss = ${hideCssJson};
+    if (hideCss && !doc.getElementById("pp-hide-lastfold")) {
+      try {
+        var hideStyle = doc.createElement("style");
+        hideStyle.id = "pp-hide-lastfold";
+        hideStyle.appendChild(doc.createTextNode(hideCss));
+        var hideParent = doc.head || docEl;
+        if (hideParent.firstChild) {
+          hideParent.insertBefore(hideStyle, hideParent.firstChild);
+        } else {
+          hideParent.appendChild(hideStyle);
+        }
+      } catch (e0) {}
+    }
     var MIN_DELAY = 0;
     var interactionCaptured = false;
     var interactionApplied = false;
@@ -232,8 +275,8 @@ export function generateDeferredScript(auditArray, deferArray) {
 
       if (alreadyRan) return;
 
-      var FIRST_USER_DELAY_SCRIPTS = ["wpm", "gtm", "clarity"];
-      var _delay = 12000;
+      var FIRST_USER_DELAY_SCRIPTS = ${firstUserJson};
+      var _delay = ${firstUserDelayMs};
       var fudRe = FIRST_USER_DELAY_SCRIPTS.length
         ? new RegExp(
             FIRST_USER_DELAY_SCRIPTS.map(function (p) {
@@ -398,7 +441,7 @@ export function generateDeferredScript(auditArray, deferArray) {
       setTimeout(function () {
         etReleased = true;
         releaseHeldET();
-      }, 6000);
+      }, ${everyTimeDelayMs});
     })();
   })();
   `;

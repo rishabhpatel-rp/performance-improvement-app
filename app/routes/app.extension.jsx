@@ -24,12 +24,8 @@ export default function ExtensionInstall() {
   const [searchParams] = useSearchParams();
   const fromToggle = searchParams.get("from") === "toggle";
 
-  useEffect(() => {
-    if (fromToggle && !embedEnabled && embedActivateUrl) {
-      window.location.assign(embedActivateUrl);
-    }
-  }, [fromToggle, embedEnabled, embedActivateUrl]);
-
+  // Re-check the embed status whenever the merchant returns (e.g. after
+  // enabling it in the theme editor tab that the button below opens).
   useEffect(() => {
     const onVisible = () => {
       if (document.visibilityState === "visible") {
@@ -51,7 +47,8 @@ export default function ExtensionInstall() {
           {embedEnabled ? (
             <s-banner tone="success">
               The Performance Script Loader embed is on for your live theme.
-              You can now turn the app ON in Step 1.
+              You can now return to the dashboard and turn the app ON in
+              Step 1.
             </s-banner>
           ) : embedUnknown ? (
             <s-banner tone="warning">
@@ -60,8 +57,8 @@ export default function ExtensionInstall() {
             </s-banner>
           ) : (
             <s-banner tone="warning">
-              The theme app embed is off. Turn it on in the theme editor
-              before enabling the app in Step 1.
+              The theme app embed is off. Turn it on in the theme editor to
+              install the extension before starting an audit.
             </s-banner>
           )}
 
@@ -71,6 +68,14 @@ export default function ExtensionInstall() {
             then toggle <strong>Performance Script Loader</strong> ON and
             save.
           </s-paragraph>
+
+          {fromToggle && !embedEnabled && (
+            <s-banner tone="info">
+              The audit can&apos;t start until the embed is enabled. After
+              you turn it on in the theme editor and come back, this page
+              refreshes automatically.
+            </s-banner>
+          )}
 
           <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
             <s-button

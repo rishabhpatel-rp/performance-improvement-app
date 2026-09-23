@@ -2,6 +2,9 @@ import { useState, useEffect, useRef } from "react";
 import { useLoaderData, useFetchers, useRouteError, useRevalidator } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../shopify.server";
+
+// Request-scoped key for caching auth result (must match app.jsx)
+const AUTH_CACHE_KEY = "__pagepulse_admin_auth__";
 import {
   ensureConfig,
   ensureAppEndpoint,
@@ -44,7 +47,7 @@ const DEFAULT_CONFIG = {
   debugMode: false,
   auditDeferArray: [],
   auditHideSelectors: [],
-  staticDeferDefaults: ["wpm", "gtm", "clarity"],
+  staticDeferDefaults: ["anime.js"],
   auditDeferArrayEnabled: true,
   auditHideSelectorsEnabled: true,
   staticDeferDefaultsEnabled: true,
@@ -54,6 +57,13 @@ const DEFAULT_CONFIG = {
   auditComplete: false,
   appEndpoint: "",
   storefrontPassword: "",
+
+  // NEW
+  firstUserDelayScripts: ["anime.js"],
+  firstUserDelayScriptsEnabled: true,
+  firstUserDelayScriptsPreserved: [],
+  firstUserDelayMs: 12000,
+  everyTimeDelayMs: 6000,
 };
 
 async function safeUpdateConfig(admin, input) {
@@ -233,6 +243,15 @@ const STORE_CONFIG_SELECT = {
   auditDeferArrayPreserved: true,
   auditHideSelectorsPreserved: true,
   staticDeferDefaultsPreserved: true,
+  // NEW
+  firstUserDelayScripts: true,
+  firstUserDelayScriptsEnabled: true,
+  firstUserDelayScriptsPreserved: true,
+  firstUserDelayMs: true,
+  everyTimeDelayMs: true,
+  // NEW: Cached values for fast path
+  isPasswordProtected: true,
+  cachedAppEndpoint: true,
 };
 
 function emptyAuditStatus() {
@@ -265,89 +284,197 @@ function configFromDbRow(sc) {
 
 export const loader = async ({ request }) => {
   const loaderStarted = Date.now();
-  const { admin, session } = await authenticate.admin(request);
+
+  // Use cached auth from parent layout loader (one auth on paint path)
+  const cached = request[AUTH_CACHE_KEY];
+  if (!cached) {
+    // Fallback: if no cache, we need to authenticate (first open, or direct navigation)
+    const { admin, session } = await authenticate.admin(request);
+    request[AUTH_CACHE_KEY] = { admin, session };
+  }
+  const { admin, session } = request[AUTH_CACHE_KEY];
+
   // eslint-disable-next-line no-undef
   const appUrl = process.env.SHOPIFY_APP_URL || "";
   const endpoint = appUrl ? `${appUrl.replace(/\/+$/, "")}/audit-submit` : "";
 
-  const [shopResult, shopifyConfig, embedCheck, storeRow] = await Promise.all([
-    (async () => {
-      try {
-        const shopData = await withShopifyTimeout(
-          fetchShopDetailsFromShopify(admin),
-          "ShopDetails",
-        );
-        shopData.currentScope = session.scope || undefined;
-        const existingStore = await prisma.store.findUnique({
-          where: { shopDomain: shopData.shopDomain },
-          select: { id: true },
-        });
-        await upsertStore(shopData);
-        return { shopData, isNewStore: !existingStore };
-      } catch (err) {
-        console.error(
-          "[Dashboard] Failed to sync store details:",
-          err instanceof Error ? err.message : err,
-        );
-        return { shopData: null, isNewStore: false };
-      }
-    })(),
-    (async () => {
-      try {
-        const { config } = await withShopifyTimeout(
-          ensureConfig(admin),
-          "ensureConfig",
-        );
-        if (!endpoint || config.appEndpoint === endpoint) {
-          return config;
-        }
-        return await withShopifyTimeout(
-          ensureAppEndpoint(admin, endpoint, config),
-          "ensureAppEndpoint",
-        );
-      } catch (err) {
-        console.error(
-          "[Dashboard] Failed to load Shopify config:",
-          err instanceof Error ? err.message : err,
-        );
-        return null;
-      }
-    })(),
-    (async () => {
-      try {
-        return await withShopifyTimeout(
-          isAppEmbedEnabled(admin),
-          "isAppEmbedEnabled",
-        );
-      } catch (err) {
-        console.error(
-          "[Dashboard] Failed to read embed status:",
-          err instanceof Error ? err.message : err,
-        );
-        return null;
-      }
-    })(),
-    prisma.store.findUnique({
-      where: { shopDomain: session.shop },
-      select: { configs: { select: STORE_CONFIG_SELECT } },
-    }),
-  ]);
+  // Check if we can use fast path: Store exists AND isActive=true
+  const store = await prisma.store.findUnique({
+    where: { shopDomain: session.shop },
+    select: {
+      id: true,
+      isActive: true,
+      lastSyncedAt: true,
+      configs: { select: STORE_CONFIG_SELECT },
+    },
+  });
 
-  const sc = storeRow?.configs?.[0];
+  const hasActiveStore = store?.isActive === true;
+  const sc = store?.configs?.[0];
+
+  // Fast path: active store exists -> return from DB immediately
+  // Safety gates A-D determine when we must refresh from Shopify
+  const currentEndpoint = appUrl ? `${appUrl.replace(/\/+$/, "")}/audit-submit` : "";
+  const needsShopifyRefresh =
+    !hasActiveStore || // Gate A: no Store row, or Gate B: isActive=false
+    (store?.lastSyncedAt &&
+      Date.now() - store.lastSyncedAt.getTime() > 10 * 60 * 1000) || // Stale > 10 min
+    request.url.includes("?refresh=1") || // Explicit refresh
+    // NEW: Gate C - if endpoint URL changed (tunnel restart), must update metaobject
+    (sc?.cachedAppEndpoint && sc.cachedAppEndpoint !== currentEndpoint);
+
+let shopResult = { shopData: null, isNewStore: false };
+  let shopifyConfig = null;
+  let embedCheck = null;
+  let passwordProtected = false;
+  let isNewStore = false;
+
+  if (needsShopifyRefresh) {
+    // Slow path: run Shopify calls in parallel (only when needed)
+    const [shopRes, shopifyCfg, embedChk, pwProtected] = await Promise.all([
+      (async () => {
+        try {
+          const shopData = await withShopifyTimeout(
+            fetchShopDetailsFromShopify(admin),
+            "ShopDetails",
+          );
+          shopData.currentScope = session.scope || undefined;
+          const existingStore = await prisma.store.findUnique({
+            where: { shopDomain: shopData.shopDomain },
+            select: { id: true },
+          });
+          await upsertStore(shopData);
+          return { shopData, isNewStore: !existingStore };
+        } catch (err) {
+          console.error(
+            "[Dashboard] Failed to sync store details:",
+            err instanceof Error ? err.message : err,
+          );
+          return { shopData: null, isNewStore: false };
+        }
+      })(),
+      (async () => {
+        try {
+          const { config } = await withShopifyTimeout(
+            ensureConfig(admin),
+            "ensureConfig",
+          );
+          // Gate C: only write appEndpoint if URL differs
+          if (!endpoint || config.appEndpoint === endpoint) {
+            return config;
+          }
+          return await withShopifyTimeout(
+            ensureAppEndpoint(admin, endpoint, config),
+            "ensureAppEndpoint",
+          );
+        } catch (err) {
+          console.error(
+            "[Dashboard] Failed to load Shopify config:",
+            err instanceof Error ? err.message : err,
+          );
+          return null;
+        }
+      })(),
+      (async () => {
+        try {
+          return await withShopifyTimeout(
+            isAppEmbedEnabled(admin),
+            "isAppEmbedEnabled",
+          );
+        } catch (err) {
+          console.error(
+            "[Dashboard] Failed to read embed status:",
+            err instanceof Error ? err.message : err,
+          );
+          return null;
+        }
+      })(),
+      (async () => {
+        try {
+          const response = await withShopifyTimeout(
+            admin.graphql(`
+              query OnlineStorePasswordStatus {
+                onlineStore {
+                  passwordProtection {
+                    enabled
+                  }
+                }
+              }
+            `),
+            "passwordProtection",
+          );
+          const data = await response.json();
+          return data.data?.onlineStore?.passwordProtection?.enabled ?? false;
+        } catch {
+          return false;
+        }
+      })(),
+    ]);
+
+    shopResult = shopRes;
+    shopifyConfig = shopifyCfg;
+    embedCheck = embedChk;
+    passwordProtected = pwProtected;
+    isNewStore = shopResult.isNewStore;
+
+    // NEW: Cache passwordProtected and appEndpoint in StoreConfig for fast path
+    if (store?.id && (passwordProtected !== undefined || shopifyConfig?.appEndpoint)) {
+      try {
+        await prisma.storeConfig.upsert({
+          where: { storeId: store.id },
+          create: {
+            storeId: store.id,
+            appEnabled: false,
+            script1Enabled: false,
+            script2Enabled: false,
+            script3Enabled: false,
+            debugMode: false,
+            scriptTitles: [],
+            isPasswordProtected: passwordProtected ?? false,
+            cachedAppEndpoint: shopifyConfig?.appEndpoint || endpoint || null,
+          },
+          update: {
+            isPasswordProtected: passwordProtected ?? false,
+            cachedAppEndpoint: shopifyConfig?.appEndpoint || endpoint || null,
+          },
+        });
+      } catch (err) {
+        console.error("[Dashboard] Failed to cache password/endpoint status:", err instanceof Error ? err.message : err);
+      }
+    }
+
+    // Sync config from Shopify to DB (non-blocking on fast path)
+    if (shopifyConfig) {
+      await safeSyncConfig(session.shop, shopifyConfig);
+    }
+
+    // Log "installed" activity only when creating the Store row (first visit)
+    if (isNewStore && shopResult.shopData) {
+      await safeLogActivity(
+        session.shop,
+        "installed",
+        `App installed — ${shopResult.shopData.shopName}`,
+        { source: "first_visit", shopDomain: session.shop },
+      );
+    }
+  } else {
+    // Fast path: use cached values from DB
+    // Gate D: embedEnabled uses unknown = not locking (same as before)
+    embedCheck = null; // will result in embedEnabled = true (unknown !== false)
+
+    // NEW: Read cached passwordProtected from DB instead of assuming false
+    passwordProtected = sc?.isPasswordProtected ?? false;
+  }
+
   const dbConfig = configFromDbRow(sc);
 
-  // Shopify metaobject is the live source for flags/titles when the call
-  // succeeds. On timeout/error, use last-known StoreConfig — never invent
-  // "app on" or fake audit arrays.
+  // On fast path, Shopify config is null -> use DB config
+  // On slow path with successful Shopify call, Shopify config wins
   const mergedConfig = shopifyConfig
     ? shopifyConfig
     : dbConfig
       ? { ...DEFAULT_CONFIG, ...dbConfig }
       : DEFAULT_CONFIG;
-
-  if (shopifyConfig) {
-    await safeSyncConfig(session.shop, mergedConfig);
-  }
 
   const embedEnabled = embedCheck !== false;
   const embedActivateUrl = getAppEmbedDeepLink(session.shop);
@@ -373,18 +500,9 @@ export const loader = async ({ request }) => {
     };
   }
 
-  if (shopResult.isNewStore && shopResult.shopData) {
-    await safeLogActivity(
-      session.shop,
-      "installed",
-      `App installed — ${shopResult.shopData.shopName}`,
-      { source: "first_visit", shopDomain: session.shop },
-    );
-  }
-
   let auditDeferArray = readStringArray(mergedConfig.auditDeferArray);
   let auditHideSelectors = readStringArray(mergedConfig.auditHideSelectors);
-  let staticDeferDefaults = ["wpm", "gtm", "clarity"];
+  let staticDeferDefaults = ["anime.js"];
   let dbToggle = null;
   let dbPreserved = null;
   if (sc) {
@@ -398,6 +516,7 @@ export const loader = async ({ request }) => {
       auditDeferArrayEnabled: sc.auditDeferArrayEnabled ?? true,
       auditHideSelectorsEnabled: sc.auditHideSelectorsEnabled ?? true,
       staticDeferDefaultsEnabled: sc.staticDeferDefaultsEnabled ?? true,
+      firstUserDelayScriptsEnabled: sc.firstUserDelayScriptsEnabled ?? true,  // NEW
     };
     dbPreserved = {
       auditDeferArrayPreserved: readStringArray(sc.auditDeferArrayPreserved),
@@ -405,6 +524,7 @@ export const loader = async ({ request }) => {
       staticDeferDefaultsPreserved: readStringArray(
         sc.staticDeferDefaultsPreserved,
       ),
+      firstUserDelayScriptsPreserved: readStringArray(sc.firstUserDelayScriptsPreserved),
     };
   }
 
@@ -423,10 +543,19 @@ export const loader = async ({ request }) => {
     storefrontPassword,
     customPlpUrl,
     customPdpUrl,
+
+    // NEW
+    firstUserDelayScripts: readStringArray(sc?.firstUserDelayScripts) || ["anime.js"],
+    firstUserDelayScriptsEnabled: sc?.firstUserDelayScriptsEnabled ?? true,
+    firstUserDelayScriptsPreserved: readStringArray(sc?.firstUserDelayScriptsPreserved) || [],
+    firstUserDelayMs: sc?.firstUserDelayMs ?? 12000,
+    everyTimeDelayMs: sc?.everyTimeDelayMs ?? 6000,
   };
 
   console.log(
-    `[Dashboard] loader ${Date.now() - loaderStarted}ms shopifyConfig=${Boolean(shopifyConfig)} embed=${String(embedCheck)}`,
+    `[Dashboard] loader ${Date.now() - loaderStarted}ms shopifyConfig=${Boolean(
+      shopifyConfig,
+    )} embed=${String(embedCheck)} fastPath=${!needsShopifyRefresh} pwProtected=${passwordProtected} endpointMatch=${sc?.cachedAppEndpoint === endpoint}`,
   );
 
   return {
@@ -434,6 +563,7 @@ export const loader = async ({ request }) => {
     auditStatus,
     embedEnabled,
     embedActivateUrl,
+    passwordProtected,
   };
 };
 
@@ -447,7 +577,7 @@ export const action = async ({ request }) => {
 
     if (appEnabled) {
       const embedCheck = await isAppEmbedEnabled(admin);
-      if (embedCheck === false) {
+      if (embedCheck !== true) {
         return {
           ok: false,
           error: "extension_required",
@@ -576,7 +706,12 @@ export const action = async ({ request }) => {
   if (intent === "toggle-audit-field") {
     const field = formData.get("field");
     const enabled = formData.get("enabled") === "true";
-    const allowed = ["auditDeferArray", "auditHideSelectors", "staticDeferDefaults"];
+    const allowed = [
+      "auditDeferArray",
+      "auditHideSelectors",
+      "staticDeferDefaults",
+      "firstUserDelayScripts",
+    ];
     if (typeof field !== "string" || !allowed.includes(field)) {
       return { ok: false, error: "Invalid field." };
     }
@@ -661,6 +796,7 @@ export const action = async ({ request }) => {
       auditDeferArray: sc?.auditDeferArrayEnabled ?? true,
       auditHideSelectors: sc?.auditHideSelectorsEnabled ?? true,
       staticDeferDefaults: sc?.staticDeferDefaultsEnabled ?? true,
+      firstUserDelayScripts: sc?.firstUserDelayScriptsEnabled ?? true,
     };
 
     const patch = {};
@@ -668,6 +804,7 @@ export const action = async ({ request }) => {
       ["auditDeferArray", formData.get("auditDeferArray")],
       ["auditHideSelectors", formData.get("auditHideSelectors")],
       ["staticDeferDefaults", formData.get("staticDeferDefaults")],
+      ["firstUserDelayScripts", formData.get("firstUserDelayScripts")],
     ];
     for (const [key, raw] of fields) {
       if (formData.has(key)) {
@@ -681,6 +818,24 @@ export const action = async ({ request }) => {
           };
         }
         patch[key] = value;
+      }
+    }
+
+    // NEW: Handle delay integer fields (stored in milliseconds)
+    const firstUserDelayMs = formData.get("firstUserDelayMs");
+    const everyTimeDelayMs = formData.get("everyTimeDelayMs");
+
+    if (firstUserDelayMs !== null && firstUserDelayMs !== "") {
+      const ms = parseInt(firstUserDelayMs, 10);
+      if (!isNaN(ms) && ms >= 0) {
+        patch.firstUserDelayMs = ms;
+      }
+    }
+
+    if (everyTimeDelayMs !== null && everyTimeDelayMs !== "") {
+      const ms = parseInt(everyTimeDelayMs, 10);
+      if (!isNaN(ms) && ms >= 0) {
+        patch.everyTimeDelayMs = ms;
       }
     }
 
@@ -770,6 +925,7 @@ export default function Dashboard() {
     auditStatus: initialAuditStatus,
     embedEnabled = false,
     embedActivateUrl = "",
+    passwordProtected = false,
   } = useLoaderData();
   const revalidator = useRevalidator();
   const [currentStep, setCurrentStep] = useState(1);
@@ -787,12 +943,17 @@ export default function Dashboard() {
       f.formData?.get("intent") === "toggle-app" ||
       typeof f.data?.auditRunning === "boolean",
   );
+  const extensionBlocked =
+    toggleFetcher?.data?.error === "extension_required";
+  // Turning ON waits for the action. Optimistic formData would treat a
+  // missing embed as enabled and unlock Step 2 from a leftover auditComplete.
+  // Turning OFF is optimistic so the spinner hides immediately.
   const rawAppEnabled =
     toggleFetcher?.data?.config?.appEnabled ??
-    (toggleFetcher?.formData
-      ? toggleFetcher.formData.get("appEnabled") === "true"
+    (toggleFetcher?.formData?.get("appEnabled") === "false"
+      ? false
       : config.appEnabled);
-  const appEnabled = embedEnabled ? rawAppEnabled : false;
+  const appEnabled = !extensionBlocked && embedEnabled ? rawAppEnabled : false;
 
   // Fresh config that reflects the in-flight Step 1 toggle so Step 2 shows
   // scripts ON as soon as the app is enabled, before any reload.
@@ -803,20 +964,20 @@ export default function Dashboard() {
   // The app must be enabled in Step 1 AND the hidden audit must have
   // completed before Step 2 (Scripts + Titles) unlocks. Until then the wizard
   // stays locked on Step 1. Step 2 auto-opens when the poll reports complete.
-  const maxStep = appEnabled && auditStatus?.complete ? 2 : 1;
+  const maxStep =
+    appEnabled && !extensionBlocked && auditStatus?.complete ? 2 : 1;
 
-  // Poll the hidden backend audit status while it is running. When it
-  // completes, auto-open Step 2. The audit results are stored in the DB only —
-  // they are not wired into the Step 2/3 UI.
+  // Poll the hidden backend audit only while the main toggle is ON.
+  // Toggle OFF must not start or keep showing an audit in progress.
   const auditInProgress =
-    expectingAudit || auditStatus?.running === true;
+    appEnabled && (expectingAudit || auditStatus?.running === true);
 
   // A toggle-ON is either confirmed by the action response or optimistic via
   // the fetcher's submitted formData (before the action resolves).
-  const toggleDataOn = toggleFetcher?.data?.auditRunning === true;
-  const toggleFormOn =
-    toggleFetcher?.formData?.get("appEnabled") === "true";
-  const enablingAudit = toggleDataOn || toggleFormOn;
+  // Only a successful toggle-ON starts the audit. Do not treat in-flight
+  // formData as a start — that skipped the extension check and jumped to Step 2.
+  const enablingAudit =
+    !extensionBlocked && toggleFetcher?.data?.auditRunning === true;
 
   // Re-check embed status when the merchant returns from the theme editor.
   useEffect(() => {
@@ -835,8 +996,8 @@ export default function Dashboard() {
   }, [embedEnabled, revalidator]);
 
   useEffect(() => {
-    if (initialAuditStatus?.running) setExpectingAudit(true);
-  }, [initialAuditStatus?.running]);
+    if (appEnabled && initialAuditStatus?.running) setExpectingAudit(true);
+  }, [appEnabled, initialAuditStatus?.running]);
 
   // When the Step-1 toggle is flipped ON, the action's background audit has
   // started in the DB but the loader's auditStatus never heard about it. Force
@@ -844,7 +1005,7 @@ export default function Dashboard() {
   // resolves, via the optimistic formData) so the Step-1 loader + countdown
   // show right away and the polling effect below starts.
   useEffect(() => {
-    if (enablingAudit) {
+    if (enablingAudit && appEnabled) {
       completingRef.current = false;
       setExpectingAudit(true);
       setCurrentStep(1);
@@ -858,7 +1019,20 @@ export default function Dashboard() {
         progress: 0,
       }));
     }
-  }, [enablingAudit]);
+  }, [enablingAudit, appEnabled]);
+
+  // Toggle OFF, missing embed, or extension_required: stay on Step 1.
+  // Never keep a leftover auditComplete jump from sending the merchant to Step 2.
+  useEffect(() => {
+    if (appEnabled && !extensionBlocked) return;
+    setExpectingAudit(false);
+    setCurrentStep(1);
+    setAuditStatus((s) =>
+      s?.running || s?.failed
+        ? { ...s, running: false, failed: false }
+        : s,
+    );
+  }, [appEnabled, extensionBlocked]);
 
   useEffect(() => {
     if (!auditInProgress) return;
@@ -878,7 +1052,7 @@ export default function Dashboard() {
         });
         if (data.complete) {
           setExpectingAudit(false);
-          if (!completingRef.current) {
+          if (!completingRef.current && appEnabled && !extensionBlocked) {
             completingRef.current = true;
             void revalidator.revalidate();
             setCurrentStep((step) => (step === 1 ? 2 : step));
@@ -901,6 +1075,8 @@ export default function Dashboard() {
     auditInProgress,
     auditStatus?.complete,
     auditStatus?.failed,
+    appEnabled,
+    extensionBlocked,
     revalidator,
   ]);
 
@@ -908,12 +1084,6 @@ export default function Dashboard() {
     console.log(`Dashboard: goToStep(${step}) called (maxStep=${maxStep})`);
     // Clamp to the highest allowed step — cannot skip past the app gate.
     setCurrentStep(Math.min(Math.max(step, 1), maxStep));
-  };
-
-  // "Done" on the final step simply returns to Step 1. Each step persists its
-  // own values: Step 1/2 via toggles, Step 3 via its per-box Save buttons.
-  const handleDone = () => {
-    setCurrentStep(1);
   };
 
   return (
@@ -926,6 +1096,7 @@ export default function Dashboard() {
           auditStatus={auditStatus}
           embedEnabled={embedEnabled}
           embedActivateUrl={embedActivateUrl}
+          passwordProtected={passwordProtected}
         />
       )}
       {currentStep === 2 && <Step2Configure config={liveConfig} />}
@@ -934,7 +1105,6 @@ export default function Dashboard() {
         currentStep={currentStep}
         maxStep={maxStep}
         onChange={goToStep}
-        onDone={handleDone}
       />
 
       <FooterBranding />
