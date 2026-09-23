@@ -268,26 +268,6 @@ export default function Step1Activate({
               Save your storefront password below before enabling the app.
             </s-text>
           )}
-
-          {!embedEnabled && !mainToggleBlocked && (
-            <div style={{ fontSize: 13, color: "#6B7177", textAlign: "center", maxWidth: 420 }}>
-              Enable the theme app embed first. Turning this ON opens the
-              theme editor where you can toggle the Performance Script Loader ON and save.
-              {embedActivateUrl ? (
-                <>
-                  {" "}
-                  <a
-                    href={embedActivateUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    style={{ color: "#00B856" }}
-                  >
-                    Open theme editor now
-                  </a>
-                </>
-              ) : null}
-            </div>
-          )}
         </div>
 
         {/* Password + custom PLP/PDP URL cards — side by side */}
