@@ -16,6 +16,15 @@ export interface AppConfig {
   staticDeferDefaultsPreserved: string[];
   auditComplete: boolean;
   appEndpoint: string;
+
+  // First User Delay Scripts
+  firstUserDelayScripts: string[];
+  firstUserDelayScriptsEnabled: boolean;
+  firstUserDelayScriptsPreserved: string[];
+  firstUserDelayMs: number;
+
+  // Every Time Delay (for staticDeferDefaults)
+  everyTimeDelayMs: number;
 }
 
 export interface AppConfigInput {
@@ -36,6 +45,15 @@ export interface AppConfigInput {
   staticDeferDefaultsPreserved?: string[];
   auditComplete?: boolean;
   appEndpoint?: string;
+
+  // First User Delay Scripts
+  firstUserDelayScripts?: string[];
+  firstUserDelayScriptsEnabled?: boolean;
+  firstUserDelayScriptsPreserved?: string[];
+  firstUserDelayMs?: number;
+
+  // Every Time Delay
+  everyTimeDelayMs?: number;
 }
 
 export interface PredefinedScript {

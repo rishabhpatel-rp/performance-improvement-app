@@ -3,8 +3,21 @@ import { boundary } from "@shopify/shopify-app-react-router/server";
 import { AppProvider } from "@shopify/shopify-app-react-router/react";
 import { authenticate } from "../shopify.server";
 
+// Request-scoped key for caching auth result
+const AUTH_CACHE_KEY = "__pagepulse_admin_auth__";
+
 export const loader = async ({ request }) => {
-  await authenticate.admin(request);
+  // Check if auth was already done in this request (by a parent loader)
+  const cached = request[AUTH_CACHE_KEY];
+  if (cached) {
+    // eslint-disable-next-line no-undef
+    return { apiKey: process.env.SHOPIFY_API_KEY || "" };
+  }
+
+  const { admin, session } = await authenticate.admin(request);
+
+  // Cache for child loaders in the same request
+  request[AUTH_CACHE_KEY] = { admin, session };
 
   // eslint-disable-next-line no-undef
   return { apiKey: process.env.SHOPIFY_API_KEY || "" };

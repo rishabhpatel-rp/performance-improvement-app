@@ -43,6 +43,13 @@ interface SyncConfigInput {
   auditDeferArrayPreserved?: string[];
   auditHideSelectorsPreserved?: string[];
   staticDeferDefaultsPreserved?: string[];
+
+  // NEW
+  firstUserDelayScripts?: string[];
+  firstUserDelayScriptsEnabled?: boolean;
+  firstUserDelayScriptsPreserved?: string[];
+  firstUserDelayMs?: number;
+  everyTimeDelayMs?: number;
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -50,7 +57,7 @@ type AdminClient = any;
 
 // Static defaults the app always defers, independent of the audit results.
 // Stored DB-only (not on the metaobject) and editable per store in Step 3.
-export const DEFAULT_STATIC_DEFER = ["wpm", "gtm", "clarity"];
+export const DEFAULT_STATIC_DEFER = ["anime.js"];
 
 // ============================================================
 // FUNCTION 1: Fetch shop details from Shopify Admin API
@@ -213,7 +220,8 @@ export async function eraseShopData(shopDomain: string) {
     return { skipped: true };
   }
 
-  await prisma.$transaction(async (tx) => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  await prisma.$transaction(async (tx: any) => {
     await tx.session.deleteMany({ where: { shop: shopDomain } });
     await tx.appTracking.deleteMany({ where: { domain: shopDomain } });
     await tx.auditLog.deleteMany({ where: { domain: shopDomain } });
@@ -260,7 +268,7 @@ export async function syncConfigToDatabase(
     return null;
   }
 
-  const storeConfig = await prisma.storeConfig.upsert({
+const storeConfig = await prisma.storeConfig.upsert({
     where: { storeId: store.id },
     create: {
       storeId: store.id,
@@ -282,6 +290,13 @@ export async function syncConfigToDatabase(
       auditDeferArrayPreserved: config.auditDeferArrayPreserved ?? [],
       auditHideSelectorsPreserved: config.auditHideSelectorsPreserved ?? [],
       staticDeferDefaultsPreserved: config.staticDeferDefaultsPreserved ?? [],
+
+      // NEW
+      firstUserDelayScripts: config.firstUserDelayScripts ?? ["anime.js"],
+      firstUserDelayScriptsEnabled: config.firstUserDelayScriptsEnabled ?? true,
+      firstUserDelayScriptsPreserved: config.firstUserDelayScriptsPreserved ?? [],
+      firstUserDelayMs: config.firstUserDelayMs ?? 12000,
+      everyTimeDelayMs: config.everyTimeDelayMs ?? 6000,
     },
     update: {
       appEnabled: config.appEnabled,
@@ -297,6 +312,7 @@ export async function syncConfigToDatabase(
       // Save). Mirroring the (empty) metaobject values here on every dashboard
       // load would clobber the stored audit results and audit_complete flag.
       //
+
       // Toggle states + preserved snapshots are DB-only. They are kept in
       // sync with the active arrays here only during initial creation; the
       // active arrays remain DB-authoritative (written by saveAuditReport /
@@ -307,6 +323,12 @@ export async function syncConfigToDatabase(
       auditDeferArrayPreserved: config.auditDeferArrayPreserved ?? undefined,
       auditHideSelectorsPreserved: config.auditHideSelectorsPreserved ?? undefined,
       staticDeferDefaultsPreserved: config.staticDeferDefaultsPreserved ?? undefined,
+
+      // NEW
+      firstUserDelayScriptsEnabled: config.firstUserDelayScriptsEnabled ?? undefined,
+      firstUserDelayScriptsPreserved: config.firstUserDelayScriptsPreserved ?? undefined,
+      firstUserDelayMs: config.firstUserDelayMs ?? undefined,
+      everyTimeDelayMs: config.everyTimeDelayMs ?? undefined,
     },
   });
 
@@ -555,6 +577,9 @@ export interface AuditArrayPatch {
   auditDeferArray?: string[];
   auditHideSelectors?: string[];
   staticDeferDefaults?: string[];
+  firstUserDelayScripts?: string[];
+  firstUserDelayMs?: number;
+  everyTimeDelayMs?: number;
 }
 
 /**
@@ -583,6 +608,9 @@ export async function updateAuditArrays(
     auditDeferArray: patch.auditDeferArray ?? [],
     auditHideSelectors: patch.auditHideSelectors ?? [],
     staticDeferDefaults: patch.staticDeferDefaults ?? DEFAULT_STATIC_DEFER,
+    firstUserDelayScripts: patch.firstUserDelayScripts ?? ["anime.js"],
+    firstUserDelayMs: patch.firstUserDelayMs ?? 12000,
+    everyTimeDelayMs: patch.everyTimeDelayMs ?? 6000,
   };
 
   return prisma.storeConfig.upsert({
@@ -607,17 +635,26 @@ export async function updateAuditArrays(
       ...(patch.staticDeferDefaults !== undefined
         ? { staticDeferDefaults: patch.staticDeferDefaults }
         : {}),
+      ...(patch.firstUserDelayScripts !== undefined
+        ? { firstUserDelayScripts: patch.firstUserDelayScripts }
+        : {}),
+      ...(patch.firstUserDelayMs !== undefined
+        ? { firstUserDelayMs: patch.firstUserDelayMs }
+        : {}),
+      ...(patch.everyTimeDelayMs !== undefined
+        ? { everyTimeDelayMs: patch.everyTimeDelayMs }
+        : {}),
     },
   });
 }
 
-type AuditField = "auditDeferArray" | "auditHideSelectors" | "staticDeferDefaults";
+type AuditField = "auditDeferArray" | "auditHideSelectors" | "staticDeferDefaults" | "firstUserDelayScripts";
 
 const TOGGLE_FIELD_MAP: Record<
   AuditField,
   {
-    enabledKey: "auditDeferArrayEnabled" | "auditHideSelectorsEnabled" | "staticDeferDefaultsEnabled";
-    preservedKey: "auditDeferArrayPreserved" | "auditHideSelectorsPreserved" | "staticDeferDefaultsPreserved";
+    enabledKey: "auditDeferArrayEnabled" | "auditHideSelectorsEnabled" | "staticDeferDefaultsEnabled" | "firstUserDelayScriptsEnabled";
+    preservedKey: "auditDeferArrayPreserved" | "auditHideSelectorsPreserved" | "staticDeferDefaultsPreserved" | "firstUserDelayScriptsPreserved";
   }
 > = {
   auditDeferArray: {
@@ -631,6 +668,10 @@ const TOGGLE_FIELD_MAP: Record<
   staticDeferDefaults: {
     enabledKey: "staticDeferDefaultsEnabled",
     preservedKey: "staticDeferDefaultsPreserved",
+  },
+  firstUserDelayScripts: {
+    enabledKey: "firstUserDelayScriptsEnabled",
+    preservedKey: "firstUserDelayScriptsPreserved",
   },
 };
 

@@ -1,6 +1,6 @@
 import { authenticate } from "../shopify.server";
 import prisma from "../db.server";
-import { generateDeferredScript } from "../lib/script-generator";
+import { generateDeferredScript, buildHiddenCss } from "../lib/script-generator";
 import { readStringArray } from "../lib/store-sync.server";
 
 const JSON_HEADERS = {
@@ -13,14 +13,6 @@ function json(data, status = 200) {
     status,
     headers: JSON_HEADERS,
   });
-}
-
-function buildHiddenCss(selectors) {
-  if (!selectors.length) return "";
-  const list = selectors
-    .map((selector) => `html:not(.interacted) ${selector}`)
-    .join(",\n");
-  return `${list} { visibility: hidden !important; }`;
 }
 
 async function loadStorefrontScripts(shopDomain) {
@@ -53,7 +45,17 @@ async function loadStorefrontScripts(shopDomain) {
     ? readStringArray(config.auditHideSelectors)
     : [];
 
-  const compiled = generateDeferredScript(deferArray, staticDefer);
+  // Read first user delay scripts
+  const firstUserDelayScripts = config.firstUserDelayScriptsEnabled
+    ? readStringArray(config.firstUserDelayScripts)
+    : [];
+
+  const compiled = generateDeferredScript(deferArray, staticDefer, {
+    firstUserDelayScripts,
+    firstUserDelayMs: config.firstUserDelayMs ?? 12000,
+    everyTimeDelayMs: config.everyTimeDelayMs ?? 6000,
+    hideSelectors,
+  });
 
   return json({
     success: true,

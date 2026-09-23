@@ -333,16 +333,21 @@ wizard JSON. Heavy Shopify payloads stay on the server.
 Browser GET /app
   → app.jsx loader: authenticate.admin  →  { apiKey }
   → app._index.jsx loader: authenticate.admin AGAIN
-       → Promise.all (3s timeout each):
-            A. ShopDetails GraphQL + upsert Store
-            B. ensureConfig (1 metaobject query) + maybe ensureAppEndpoint
-            C. isAppEmbedEnabled (1 theme + settings_data.json query)
-            D. Prisma Store + StoreConfig (one read)
-       → if B succeeded: syncConfigToDatabase (flags only)
-       → if first-ever Store row: logActivity("installed")
+       → Prisma: Store + StoreConfig (one read)
+       → FAST PATH if Store.isActive and no safety gate fires
+            (use cached isPasswordProtected + cachedAppEndpoint)
+       → SLOW PATH (Promise.all, 3s timeout each) if:
+            A. no Store / isActive=false
+            B. lastSyncedAt older than 10 min
+            C. cachedAppEndpoint ≠ current SHOPIFY_APP_URL/audit-submit
+            D. ?refresh=1
+            Then: ShopDetails + upsert, ensureConfig+endpoint,
+            embed check, OnlineStorePasswordStatus
+            Cache isPasswordProtected + cachedAppEndpoint on StoreConfig
        → overlay DB arrays/toggles/password/custom URLs
   → Browser receives:
-       { config, auditStatus, embedEnabled, embedActivateUrl }
+       { config, auditStatus, embedEnabled, embedActivateUrl,
+         passwordProtected }
 ```
 
 Warm loads measured after the parallel rewrite: **~410–466ms**
@@ -360,7 +365,8 @@ this loader shape.
 
 | Change (done) | File | What it does | Do not regress |
 |---|---|---|---|
-| Parallel loader | `app/routes/app._index.jsx` | `Promise.all([shop sync, ensureConfig+endpoint, isAppEmbedEnabled, one Prisma Store+StoreConfig])` | Do not `await` A then B then C again |
+| Fast path vs Shopify | `app/routes/app._index.jsx` | Active Store + fresh `lastSyncedAt` + matching `cachedAppEndpoint` → paint from DB. Else `Promise.all` (shop, config, embed, password) | Do not skip Shopify on first install / reinstall / tunnel URL change |
+| Parallel loader | `app/routes/app._index.jsx` | Slow path: `Promise.all([shop sync, ensureConfig+endpoint, isAppEmbedEnabled, passwordProtection])` | Do not `await` A then B then C again |
 | 3s fail-fast | `app/lib/shopify-timeout.server.ts` (`SHOPIFY_CALL_TIMEOUT_MS = 3000`) | Each Shopify block is wrapped in `withShopifyTimeout` | On timeout use last `StoreConfig`. Never invent `appEnabled=true` or fake audit arrays |
 | One metaobject read | `app/lib/metaobjects.ts` `fetchConfigMetaobject` | `ensureConfig` is one `GetConfig` query (id + fields) | Do not add a second `getConfig` / `findConfigId` round-trip on the happy path |
 | Skip no-op endpoint write | `ensureAppEndpoint(admin, endpoint, currentConfig)` | If `app_endpoint` already equals `SHOPIFY_APP_URL/audit-submit`, **no** `metaobjectUpdate` | Do not call `getConfig` again inside `ensureAppEndpoint` when `currentConfig` was just loaded |
@@ -459,7 +465,8 @@ One `store.findUnique({ shopDomain: session.shop, select: { configs:
 { select: STORE_CONFIG_SELECT } } })`.
 
 `STORE_CONFIG_SELECT` includes flags, audit lifecycle, password, custom
-URLs, three arrays, three enabled flags, three preserved snapshots.
+URLs, four arrays + enabled/preserved, `firstUserDelayMs`,
+`everyTimeDelayMs`, `isPasswordProtected`, `cachedAppEndpoint`.
 
 ### 7.6 After Promise.all
 
@@ -468,16 +475,18 @@ URLs, three arrays, three enabled flags, three preserved snapshots.
 3. `auditStatus` from DB (`progress = round(pageIndex/totalPages*100)`).
 4. First-install `StoreActivity` if `isNewStore`.
 5. Overlay non-empty DB defer/hide; static defaults fall back to
-   `["wpm","gtm","clarity"]` if DB empty.
+   `["anime.js"]` if DB empty.
 6. Return `{ config: finalConfig, auditStatus, embedEnabled, embedActivateUrl }`.
 
 `finalConfig` fields the React wizard uses:
 
 ```
 appEnabled, script1/2/3Enabled, scriptTitles, debugMode,
-auditDeferArray, auditHideSelectors, staticDeferDefaults,
+auditDeferArray, auditHideSelectors, staticDeferDefaults, firstUserDelayScripts,
 auditDeferArrayEnabled, auditHideSelectorsEnabled, staticDeferDefaultsEnabled,
+firstUserDelayScriptsEnabled,
 auditDeferArrayPreserved, auditHideSelectorsPreserved, staticDeferDefaultsPreserved,
+firstUserDelayScriptsPreserved, firstUserDelayMs, everyTimeDelayMs,
 auditComplete, appEndpoint, storefrontPassword, customPlpUrl, customPdpUrl
 ```
 
@@ -510,8 +519,12 @@ timeout. It still does `getConfig` + `syncConfigToDatabase` serially.
 - Master switch → `intent: "toggle-app"`, `appEnabled: "true"|"false"`.
 - If merchant tries ON while embed is off: **does not POST**. Opens
   `/app/extension?...&from=toggle` in a new tab.
-- Password card (local `pwEnabled` switch, not persisted as a flag):
-  `intent: "save-storefront-password"`. DB only.
+- Password card is **auto-detected**. GraphQL
+  `onlineStore.passwordProtection.enabled` is a boolean only — Shopify
+  never returns the password. Cached on `StoreConfig.isPasswordProtected`.
+  If protected: show required password field and block the master
+  switch until saved (`intent: "save-storefront-password"`, DB only).
+  If not protected: hide the card.
 - Custom PLP/PDP: `intent: "save-custom-page-urls"`. DB only. Empty
   string → `null` (audit then auto-discovers).
 - Progress UI: assumes 30s/page, default 3 pages. Bar caps at 99% until
@@ -541,13 +554,14 @@ Activity logged.
 `PREDEFINED_SCRIPTS` is `[]`, so **zero script-slot rows render**.
 `script1/2/3Enabled` still exist on the metaobject and in `toggle-script`.
 
-`Step3Titles` — three independent JSON-array textareas:
+`Step3Titles` — four independent JSON-array cards:
 
 | Label | DB column | Storefront use |
 |---|---|---|
 | Defer Heavy Scripts | `auditDeferArray` | `generateDeferredScript` arg 1 (`var P`) — hold until interaction |
-| Hide Lastfold Classes | `auditHideSelectors` | `buildHiddenCss` — `html:not(.interacted) {sel} { visibility:hidden !important }` |
-| Delay Scripts | `staticDeferDefaults` | `generateDeferredScript` arg 2 — 6s timer every page load |
+| Hide Lastfold Classes | `auditHideSelectors` | `buildHiddenCss` + inject `<style id="pp-hide-lastfold">` — see §10.3 |
+| Delay Scripts for First User | `firstUserDelayScripts` + `firstUserDelayMs` | First visit only (`localStorage.__wpmDelayDone`). Default 12s or first interaction |
+| Delay Scripts | `staticDeferDefaults` + `everyTimeDelayMs` | Every page load, timer only. Default 6s |
 
 Each box:
 
@@ -555,9 +569,10 @@ Each box:
   OFF: snapshot active → preserved, active = `[]`.
   ON: restore preserved (or keep active if preserved empty).
   Data is never deleted.
-- Save `intent: "save-audit-arrays"` — only dirty valid JSON arrays of
-  strings. If that field’s toggle is OFF, write `[]` regardless of
-  textarea. **DB only.**
+- Dirty valid JSON (or delay seconds) shows a compact **Save** beside
+  the toggle. Invalid JSON replaces the hint with “Invalid JSON” and
+  tints the card. Save `intent: "save-audit-arrays"` — **DB only.**
+  If that field’s toggle is OFF, write `[]`.
 
 Dead intents still in the action (no current UI caller):
 `save-titles`, `save-audit-defer`, `save-audit-hide` (these **do** write
@@ -570,7 +585,7 @@ the metaobject).
 | `toggle-app` | `appEnabled` true/false | Metaobject flags; ON starts audit; OFF `resetAudit` + clears DB audit arrays | `Step1Activate` |
 | `toggle-script` | `scriptIndex` 0–2, `enabled` | Metaobject `scriptNEnabled` + DB sync | `Step2Configure` (no rows while `PREDEFINED_SCRIPTS` is `[]`) |
 | `toggle-audit-field` | `field`, `enabled` | DB only via `updateAuditFieldToggle` | `Step3Titles` |
-| `save-audit-arrays` | any of the 3 JSON arrays | DB only via `updateAuditArrays`; OFF field forced to `[]` | `Step3Titles` Save |
+| `save-audit-arrays` | any of the 4 JSON arrays and/or `firstUserDelayMs` / `everyTimeDelayMs` | DB only via `updateAuditArrays`; OFF field forced to `[]` | `Step3Titles` Save |
 | `save-storefront-password` | `storefrontPassword` | `StoreConfig.storefrontPassword` (empty → `null`) | `Step1Activate` |
 | `save-custom-page-urls` | `customPlpUrl`, `customPdpUrl` | `StoreConfig` (empty → `null`) | `Step1Activate` |
 | `save-titles` | `scriptTitles` JSON | Metaobject — **no UI caller today** | — |
@@ -702,8 +717,8 @@ Theme (head)
 - If `!store.isActive` or `!config.appEnabled` →
   `{ success:true, data:{ auditScript:"", hiddenCss:"" } }` (no-op).
 - Else, respect per-field enabled flags (OFF → `[]`):
-  - `auditScript = generateDeferredScript(deferArray, staticDefer)`
-  - `hiddenCss = buildHiddenCss(hideSelectors)`
+  - `auditScript = generateDeferredScript(deferArray, staticDefer, { firstUserDelayScripts, firstUserDelayMs, everyTimeDelayMs, hideSelectors })`
+  - `hiddenCss = buildHiddenCss(hideSelectors)` (same CSS the generated JS also injects)
 - Headers: `Content-Type: application/json`,
   `Cache-Control: private, no-store`.
 - `action` handles POST + OPTIONS (204). Loader and action share
@@ -714,13 +729,16 @@ Typical compiled `auditScript` is ~200–280KB after obfuscation.
 
 ### 10.3 Hide CSS
 
+`buildHiddenCss` in `script-generator.js`:
+
 ```
-html:not(.interacted) {sel1},
-html:not(.interacted) {sel2} { visibility: hidden !important; }
+html:not(.interacted) :is({selectors}){display:none!important}
 ```
 
-First interaction adds `interacted` on `<html>` (see §11), which lifts
-the hide.
+Liquid injects it as `<style id="pp-hide-lastfold">` as soon as the
+proxy JSON returns. The generated script also inserts that tag into
+`document.head` if the id is missing. First interaction adds
+`interacted` on `<html>` (§11.1), which lifts the hide.
 
 ### 10.4 Present in the repo but not wired to the destore storefront
 
@@ -732,15 +750,18 @@ the hide.
 
 ---
 
-## 11. `generateDeferredScript(auditArray, deferArray)`
+## 11. `generateDeferredScript(auditArray, deferArray, options)`
 
 File: `app/lib/script-generator.js`. Server-only. Output is obfuscated
 (`compact`, control-flow flattening, dead-code, RC4+base64 string array,
 `disableConsoleOutput`, hex identifiers, `selfDefending: false` so
 `new Function()` in Liquid still runs).
 
-Three **independent** gates (a URL matching more than one is held by
-each; release is whichever fires):
+`options`: `firstUserDelayScripts`, `firstUserDelayMs` (default 12000),
+`everyTimeDelayMs` (default 6000), `hideSelectors`.
+
+Three **independent** script gates (a URL matching more than one is
+held by each; release is whichever fires) plus the hide-CSS inject:
 
 ### 11.1 Interaction class
 
@@ -763,21 +784,19 @@ URL on `el._ps`. `MutationObserver` on `documentElement`. On
 `site:interacted` (or if already interacted): rebuild real `<script>`
 tags into `document.head`.
 
-### 11.3 First-user delay (hardcoded, once per browser)
+### 11.3 First-user delay (once per browser)
 
-`FIRST_USER_DELAY_SCRIPTS = ["wpm","gtm","clarity"]`, **12s** or first
-interaction, whichever first. `localStorage.__wpmDelayDone=1` so it
-does **not** re-hold on later page views. Intercepts `HTMLScriptElement`
-`src` setter.
-
-This list is **not** the merchant’s Delay Scripts box. It is hardcoded
-inside the generator.
+Merchant “Delay Scripts for First User” (`firstUserDelayScripts`,
+default `anime.js`). Hold for `firstUserDelayMs` (default 12s)
+**or** first interaction, whichever first.
+`localStorage.__wpmDelayDone=1` so later page views skip this gate.
+Intercepts `HTMLScriptElement` `src` setter.
 
 ### 11.4 Every-load delay (`var EVERY_TIME_DELAY_SCRIPTS = deferArray`)
 
 Merchant “Delay Scripts” (`staticDeferDefaults`, default
-`wpm,gtm,clarity`). **6s timer, every page load**, no interaction
-requirement. Marks `data-et-deferred`.
+`anime.js`). Timer is `everyTimeDelayMs` (default 6s), **every
+page load**, no interaction release. Marks `data-et-deferred`.
 
 `parseToArray` exists for string/CSV input; `api.storefront-scripts.jsx`
 already passes string[].
@@ -791,7 +810,7 @@ required or Admin GraphQL finds nothing.
 
 | Export | Behavior |
 |---|---|
-| `defaultAppConfig()` | All flags false; static defaults `wpm/gtm/clarity` |
+| `defaultAppConfig()` | All flags false; static defaults `anime.js` |
 | `getConfig` | One `fetchConfigMetaobject` |
 | `updateConfig` | Partial field write; create if no id |
 | `ensureConfig` | Get or create; swallow missing definition |
@@ -809,7 +828,7 @@ JSON-encoded arrays; blank titles are stripped (Shopify rejects `""`).
 
 | Export | Used by (this app) | Notes |
 |---|---|---|
-| `DEFAULT_STATIC_DEFER` | `saveAuditReport` create path | `["wpm","gtm","clarity"]` |
+| `DEFAULT_STATIC_DEFER` | `saveAuditReport` create path | `["anime.js"]` |
 | `fetchShopDetailsFromShopify` | dashboard loader | See query gap above |
 | `upsertStore` | dashboard loader | Reinstall: `isActive=true`, `uninstalledAt=null` |
 | `markStoreUninstalled` | `webhooks.app.uninstalled` | Soft delete |
@@ -1030,10 +1049,21 @@ Docker images use `CHROMIUM_PATH=/usr/bin/chromium-browser` and
 
 ### 16.5 Start (or recycle) `shopify app dev`
 
+If the developer already gave store + password in this chat, reuse
+them. Do not invent a store.
+
 If a previous `shopify app dev` is running, do **not** blindly reuse
 it. Check the printed `trycloudflare.com` host still answers. If DNS
 fails or storefront proxy is 500, kill that process and start a new
 one.
+
+When an agent starts Shopify CLI itself, prefix:
+
+```bash
+SHOPIFY_CLI_AGENT_INFO="n:cursor|v:none|p:none|m:<model>" \
+SHOPIFY_CLI_AGENT_IDS="s:<conversation-id>" \
+shopify ...
+```
 
 From the repo root:
 
@@ -1047,6 +1077,16 @@ env -u PLAYWRIGHT_BROWSERS_PATH shopify app dev \
 ```
 
 Omit `--store-password` only when there is no password page.
+
+Known destore used while writing this (password `1`):
+
+```bash
+env -u PLAYWRIGHT_BROWSERS_PATH shopify app dev \
+  --config pagepulse \
+  --store rishabh-dev-store-mdqu0epm.myshopify.com \
+  --store-password 1 \
+  --skip-dependencies-installation
+```
 
 Wait for `Preview URL` and `Ready, watching for changes`.
 
@@ -1078,7 +1118,7 @@ does `fetch("/apps/performance-scripts")` and expects JSON:
 - respect each field’s `*Enabled` toggle
 - `generateDeferredScript(deferArray, staticDefer)` — both arguments
   are **string arrays**
-- hide CSS from hide selectors (`html:not(.interacted) …`)
+- hide CSS from hide selectors (`html:not(.interacted) :is(…){display:none!important}`)
 
 **Never** pass `PerformanceScript.auditScript` into
 `generateDeferredScript`. That column is the raw audit report JSON
@@ -1205,7 +1245,7 @@ These are real. Do not “fix” them in docs by pretending they are wired.
     nested routes; both call `authenticate.admin`.
 11. **`embedCheck !== false`**: a failed embed read does not lock Step 1.
     An explicit `false` does.
-12. **Hardcoded `wpm/gtm/clarity` 12s gate** inside the generator is
+12. **Hardcoded `anime.js` 12s gate** inside the generator is
     separate from merchant Delay Scripts (6s every load).
 13. **`ShopDetails` GraphQL** does not select `ordersCount` or
     `shop.locale`; mapper still reads them → `Store.totalOrders` /
@@ -1424,14 +1464,18 @@ Shared: flags, `scriptTitles`, `metaobjectId`, timestamps.
 appEnabled, script1Enabled, script2Enabled, script3Enabled,
 scriptTitles: string[3],
 debugMode,
-auditDeferArray, auditHideSelectors, staticDeferDefaults,
+auditDeferArray, auditHideSelectors, staticDeferDefaults, firstUserDelayScripts,
 auditDeferArrayEnabled, auditHideSelectorsEnabled, staticDeferDefaultsEnabled,
+firstUserDelayScriptsEnabled,
 auditDeferArrayPreserved, auditHideSelectorsPreserved, staticDeferDefaultsPreserved,
+firstUserDelayScriptsPreserved, firstUserDelayMs, everyTimeDelayMs,
 auditComplete, appEndpoint
 ```
 
-`storefrontPassword` / `customPlpUrl` / `customPdpUrl` are **not** on
-`AppConfig`; the dashboard loader adds them onto the object it returns.
+`storefrontPassword` / `customPlpUrl` / `customPdpUrl` /
+`isPasswordProtected` / `cachedAppEndpoint` are **not** on `AppConfig`;
+the dashboard loader adds the ones the wizard needs onto the returned
+object.
 
 `PredefinedScript`: `id: script_1|script_2|script_3`, `name`,
 `type: script|style`, `code`, `defaultEnabled`. Unused while the export
@@ -1453,9 +1497,9 @@ array is empty.
 | Password-form nav | 30000 ms | `audit.server.ts` |
 | Progress / dashboard poll | 1000 ms | `audit.server.ts`, `app._index.jsx` |
 | Step 1 UI seconds/page | 30 | `Step1Activate.jsx` |
-| Storefront first-user delay | 12000 ms | `script-generator.js` (hardcoded wpm/gtm/clarity) |
-| Storefront every-load delay | 6000 ms | `script-generator.js` (`staticDeferDefaults`) |
-| Hide CSS gate | `html:not(.interacted)` | `api.storefront-scripts.jsx` |
+| Storefront first-user delay | `firstUserDelayMs` default 12000 | `StoreConfig` → `generateDeferredScript` |
+| Storefront every-load delay | `everyTimeDelayMs` default 6000 | `StoreConfig` → `generateDeferredScript` |
+| Hide CSS gate | `html:not(.interacted) :is(…)` + `display:none` | `script-generator.js` `buildHiddenCss` |
 | Major-element min size | 80 px (`SIZE`) | `audit-script.ts` |
 | Vite dev port | 9001 | `vite.config.js` |
 | Docker / serve port | 3000 | `Dockerfile` |
@@ -1473,6 +1517,7 @@ array is empty.
 | `MainThemeSettings` | `theme-embed.server.js` | embed check (1 query) |
 | `ActiveTheme` | `audit.server.ts` | password audit only (sortKey UPDATED_AT) |
 | `PageDiscovery` | `audit.server.ts` | collections(first:1) + products(first:1) unless custom URLs |
+| `OnlineStorePasswordStatus` | `app._index.jsx` loader | Slow path only; caches `isPasswordProtected` |
 
 No Storefront API. No `ordersCount` query exists despite the mapper.
 
@@ -1493,3 +1538,5 @@ No Storefront API. No `ordersCount` query exists despite the mapper.
 | Product metafield `app.demo_info` + metaobject `app.example` in TOML | Shopify CLI template cruft |
 | `prisma` model `AppTracking` | Delete-on-redact only |
 | `/audit-submit` | Written to `app_endpoint`; **no route file** |
+
+---

@@ -19,6 +19,7 @@ export default function Step1Activate({
   auditStatus,
   embedEnabled = false,
   embedActivateUrl = "",
+  passwordProtected = false,
 }) {
   const fetcher = useFetcher();
   const pwFetcher = useFetcher();
@@ -26,10 +27,15 @@ export default function Step1Activate({
 
   // Local draft for the storefront password, seeded from the saved value.
   const [pwDraft, setPwDraft] = useState(config.storefrontPassword || "");
-  const [pwEnabled, setPwEnabled] = useState(!!config.storefrontPassword);
   const savedPassword =
     pwFetcher.data?.storefrontPassword ?? (config.storefrontPassword || "");
   const pwDirty = pwDraft !== savedPassword;
+
+  // Password is required if store is protected AND no password saved yet
+  const passwordRequired = passwordProtected && !savedPassword;
+
+  // Main toggle is blocked if password is required but not saved
+  const mainToggleBlocked = passwordRequired;
 
   // Custom URL drafts — one Save writes both fields (matches the card layout).
   const [plpDraft, setPlpDraft] = useState(config.customPlpUrl || "");
@@ -65,13 +71,15 @@ export default function Step1Activate({
       : config.appEnabled);
   const appEnabled = embedEnabled ? rawEnabled : false;
 
-  // Show the loader/countdown for the whole audit. Do not require
-  // appEnabled — that can lag behind the DB while the audit is already running.
+  // Loader/countdown only while the main toggle is ON. If the switch is
+  // off (embed missing, password block, or merchant turned it off), keep
+  // existing Step 1 data visible and do not show an in-progress audit.
   const running =
+    appEnabled &&
     auditStatus?.running === true &&
     auditStatus?.complete !== true &&
     auditStatus?.failed !== true;
-  const failed = auditStatus?.failed === true;
+  const failed = appEnabled && auditStatus?.failed === true;
 
   // One clock drives both the bar and the countdown: completed pages from
   // the status poll, plus elapsed time within the current 30s page window.
@@ -136,13 +144,16 @@ export default function Step1Activate({
 
   const handleToggle = (checked) => {
     if (checked && !embedEnabled) {
-      window.open(
-        `/app/extension${window.location.search}${
-          window.location.search ? "&" : "?"
-        }from=toggle`,
-        "_blank",
-        "noopener,noreferrer",
-      );
+      // Open the theme editor directly so user can enable the app embed
+      if (embedActivateUrl) {
+        window.open(embedActivateUrl, "_blank", "noopener,noreferrer");
+      } else {
+        // Fallback to extension page if URL not available
+        window.location.assign("/app/extension?from=toggle");
+      }
+      return;
+    }
+    if (checked && mainToggleBlocked) {
       return;
     }
     fetcher.submit(
@@ -150,6 +161,21 @@ export default function Step1Activate({
       { method: "POST" },
     );
   };
+
+  // Server-side guard: the dashboard's embed status can be stale (e.g. the
+  // status check failed and the loader assumed enabled). If the action
+  // confirms the extension is not installed, send the merchant to the
+  // theme editor so they can enable it.
+  useEffect(() => {
+    if (fetcher.data?.error === "extension_required") {
+      const url = fetcher.data?.embedActivateUrl || embedActivateUrl;
+      if (url) {
+        window.open(url, "_blank", "noopener,noreferrer");
+      } else {
+        window.location.assign("/app/extension?from=toggle");
+      }
+    }
+  }, [fetcher.data?.error, fetcher.data?.embedActivateUrl, embedActivateUrl]);
 
   return (
     <s-section heading="Step 1: Activate">
@@ -230,19 +256,33 @@ export default function Step1Activate({
         {/* Toggle switch */}
         <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 8, padding: 8 }}>
           <s-switch
-            label=""
+            label="Enable Performance Improvement App"
             checked={appEnabled}
+            disabled={mainToggleBlocked}
             onChange={(e) => handleToggle(e.target.checked)}
           />
-          {!embedEnabled && (
+
+          {/* Show message if blocked due to password */}
+          {mainToggleBlocked && (
+            <s-text tone="caution">
+              Save your storefront password below before enabling the app.
+            </s-text>
+          )}
+
+          {!embedEnabled && !mainToggleBlocked && (
             <div style={{ fontSize: 13, color: "#6B7177", textAlign: "center", maxWidth: 420 }}>
               Enable the theme app embed first. Turning this ON opens the
-              installation page so you can switch it on in the theme editor.
+              theme editor where you can toggle the Performance Script Loader ON and save.
               {embedActivateUrl ? (
                 <>
                   {" "}
-                  <a href="/app/extension" style={{ color: "#00B856" }}>
-                    Open app extension page
+                  <a
+                    href={embedActivateUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    style={{ color: "#00B856" }}
+                  >
+                    Open theme editor now
                   </a>
                 </>
               ) : null}
@@ -260,66 +300,54 @@ export default function Step1Activate({
             margin: "0 0 16px 0",
           }}
         >
-          <div
-            style={{
-              flex: "1 1 280px",
-              backgroundColor: "#f5f5f5",
-              borderRadius: 8,
-              padding: 16,
-              minWidth: 260,
-            }}
-          >
+          {/* Only show if password protection is detected */}
+          {passwordProtected && (
             <div
               style={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between",
-                marginBottom: 12,
+                flex: "1 1 280px",
+                backgroundColor: "#f5f5f5",
+                borderRadius: 8,
+                padding: 16,
+                minWidth: 260,
               }}
             >
-              <div
-                style={{
-                  fontSize: 16,
-                  fontWeight: 700,
-                  color: "#222222",
-                }}
-              >
-                Password-protected store?
-              </div>
-              <s-switch
-                label=""
-                checked={pwEnabled}
-                onChange={(e) => setPwEnabled(e.target.checked)}
-              />
-            </div>
-
-            {pwEnabled && (
-              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <s-text-field
-                      type="text"
-                      label="Storefront password"
-                      labelAccessibilityVisibility="exclusive"
-                      placeholder="Storefront password"
-                      value={pwDraft}
-                      onChange={(e) => setPwDraft(e.target.value)}
-                    />
-                  </div>
-                  <s-button
-                    variant="secondary"
-                    disabled={!pwDirty || pwFetcher.state !== "idle"}
-                    onClick={handleSavePassword}
-                  >
-                    {pwFetcher.state !== "idle" ? "Saving…" : "Save"}
-                  </s-button>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+                <div style={{ fontSize: 16, fontWeight: 700, color: "#222222" }}>
+                  Password-protected store detected
                 </div>
-                {!pwDirty && pwFetcher.data?.ok && (
-                  <s-text tone="success">Saved</s-text>
-                )}
+                {/* Toggle always ON and disabled - informational only */}
+                <s-switch label="" checked={true} disabled />
               </div>
-            )}
-          </div>
+
+              <s-text tone="caution" style={{ marginBottom: 8 }}>
+                
+              </s-text>
+
+              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <s-text-field
+                    type="text"
+                    label="Storefront password"
+                    labelAccessibilityVisibility="exclusive"
+                    placeholder="Enter storefront password (required)"
+                    value={pwDraft}
+                    onChange={(e) => setPwDraft(e.target.value)}
+                    required
+                  />
+                </div>
+                <s-button
+                  variant="secondary"
+                  disabled={!pwDraft || !pwDirty || pwFetcher.state !== "idle"}
+                  onClick={handleSavePassword}
+                >
+                  {pwFetcher.state !== "idle" ? "Saving…" : "Save"}
+                </s-button>
+              </div>
+              {!pwDirty && savedPassword && (
+                <s-text tone="success">Password saved</s-text>
+              )}
+            </div>
+          )}
 
           <div
             style={{
