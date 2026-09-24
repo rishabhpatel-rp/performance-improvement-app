@@ -21,3 +21,28 @@ export function buildAuditScriptWithPages(pages: string[]): string {
     `var PAGES=${JSON.stringify(pages)};`,
   );
 }
+
+/**
+ * Single-page variant used by the parallel auditor. Same audit logic; the only
+ * substitutions are:
+ *   - `PAGES` becomes one entry (so the script audits just the current page and
+ *     never self-navigates), and
+ *   - the fixed `wait(WAIT_MS)` before measuring is replaced by
+ *     `window.__ppAuditGate`, a promise the runner resolves once the page has
+ *     actually settled (network idle) instead of always sleeping 30 s.
+ * The gate is created before the audit script runs (see `AUDIT_GATE_PREFIX`).
+ */
+export const AUDIT_GATE_PREFIX =
+  "window.__ppAuditGate=new Promise(function(r){window.__ppOpenGate=r});";
+
+export function buildGatedSinglePageAuditScript(pageUrl: string): string {
+  const withPage = buildAuditScriptWithPages([pageUrl]);
+  const gated = withPage.replace(
+    "await wait(WAIT_MS)",
+    "await (window.__ppAuditGate||wait(WAIT_MS))",
+  );
+  if (gated === withPage) {
+    throw new Error("Audit script changed: wait(WAIT_MS) not found.");
+  }
+  return AUDIT_GATE_PREFIX + gated;
+}

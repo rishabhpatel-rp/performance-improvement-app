@@ -516,10 +516,15 @@ export default function Step3Titles({ config }) {
         }
       `}</style>
       <div className="pp-audit-fields">
-        <s-text tone="subdued" style={{ marginTop: 0, marginBottom: 16 }}>
-          These arrays feed your storefront optimization. Toggle a field off to
-          stop using it — its data is preserved and restored when re-enabled.
-        </s-text>
+        {/* <s-text> is display:contents (no box), so offsets must go on a real
+            element. Shifts only the text up 20px; the cards below stay put. */}
+        <div style={{ position: "relative", top: -20 }}>
+          <s-text tone="subdued">
+            These arrays feed your storefront optimization. Toggle a field off
+            to stop using it — its data is preserved and restored when
+            re-enabled.
+          </s-text>
+        </div>
 
         {saveData && !saveData.ok && (
           <s-banner tone="critical" style={{ marginBottom: 16 }}>

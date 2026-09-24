@@ -1,27 +1,4 @@
-<script>
-  (function () {
-    fetch("/apps/performance-scripts", { credentials: "same-origin" })
-      .then(function (r) { return r.ok ? r.json() : null; })
-      .then(function (r) {
-        if (!r || !r.success || !r.data) return;
-        var data = r.data;
-        if (data.hiddenCss && data.hiddenCss.trim()) {
-          try {
-            var el = document.createElement("style");
-            el.id = "pp-hide-lastfold";
-            el.textContent = data.hiddenCss;
-            document.head.appendChild(el);
-          } catch (e) {}
-        }
-        if (data.auditScript && data.auditScript.trim()) {
-          try { new Function(data.auditScript)(); } catch (e) {}
-        }
-      })
-      .catch(function () {});
-    var cs = document.currentScript;
-    if (cs && cs.parentNode) cs.parentNode.removeChild(cs);
-  })();
-</script>
+<script src="/apps/performance-scripts"></script>
 
 {% schema %}
 {

@@ -1,4 +1,32 @@
 import prisma from "../db.server";
+import {
+  rebuildPerformanceScript,
+  readStringArray,
+} from "./performance-script.server";
+
+import type { AuditPageInfo } from "./audit.server";
+
+export { readStringArray };
+
+/**
+ * Safely coerce the `StoreConfig.auditPages` Json column (written by
+ * `describePages()`) into `[{ label, path }]`. Returns `[]` when the value is
+ * not an array, and drops any entry that is not an object with string `label`
+ * and `path` — never trusts the raw `JsonValue` from the DB.
+ */
+export function readAuditPages(value: unknown): AuditPageInfo[] {
+  if (!Array.isArray(value)) return [];
+  const pages: AuditPageInfo[] = [];
+  for (const item of value) {
+    if (item && typeof item === "object") {
+      const { label, path } = item as { label?: unknown; path?: unknown };
+      if (typeof label === "string" && typeof path === "string") {
+        pages.push({ label, path });
+      }
+    }
+  }
+  return pages;
+}
 
 // ============================================================
 // Type definitions
@@ -194,13 +222,16 @@ export async function upsertStore(data: ShopifyShopData) {
 // ============================================================
 
 export async function markStoreUninstalled(shopDomain: string) {
-  return prisma.store.updateMany({
+  const result = await prisma.store.updateMany({
     where: { shopDomain },
     data: {
       uninstalledAt: new Date(),
       isActive: false,
     },
   });
+  // Inactive store => empty script.
+  await rebuildPerformanceScript(shopDomain);
+  return result;
 }
 
 /**
@@ -505,6 +536,23 @@ export async function saveAuditReport(
   const activeDefer = deferOn ? report.deferArray : [];
   const activeHide = hideOn ? report.hideSelectors : [];
 
+  // On success the audit stays "running" here: the flag flips to complete only
+  // after the storefront script has been rebuilt and stored (below), so the
+  // dashboard never reaches Step 2 before the script exists.
+  const runState = completed
+    ? {
+        auditComplete: false,
+        auditRunning: true,
+        auditFailed: false,
+        auditError: null,
+      }
+    : {
+        auditComplete: false,
+        auditRunning: false,
+        auditFailed: true,
+        auditError: details ?? null,
+      };
+
   await prisma.storeConfig.upsert({
     where: { storeId: store.id },
     create: {
@@ -515,10 +563,7 @@ export async function saveAuditReport(
       script3Enabled: false,
       debugMode: false,
       scriptTitles: [],
-      auditComplete: completed,
-      auditRunning: false,
-      auditFailed: status === "failed",
-      auditError: status === "failed" ? details : null,
+      ...runState,
       lastAuditAt: new Date(),
       auditDeferArray: activeDefer,
       auditHideSelectors: activeHide,
@@ -527,26 +572,12 @@ export async function saveAuditReport(
       staticDeferDefaults: DEFAULT_STATIC_DEFER,
     },
     update: {
-      auditComplete: completed,
-      auditRunning: false,
-      auditFailed: status === "failed",
-      auditError: status === "failed" ? details : null,
+      ...runState,
       lastAuditAt: new Date(),
       auditDeferArray: activeDefer,
       auditHideSelectors: activeHide,
       auditDeferArrayPreserved: deferOn ? undefined : report.deferArray,
       auditHideSelectorsPreserved: hideOn ? undefined : report.hideSelectors,
-    },
-  });
-
-  await prisma.performanceScript.upsert({
-    where: { storeId: store.id },
-    create: {
-      storeId: store.id,
-      auditScript: JSON.stringify(report),
-    },
-    update: {
-      auditScript: JSON.stringify(report),
     },
   });
 
@@ -560,17 +591,16 @@ export async function saveAuditReport(
     },
   });
 
-  return { ok: true };
-}
+  await rebuildPerformanceScript(shopDomain);
 
-/**
- * Safely coerce a Prisma `Json` value (or any unknown) into a string array.
- * Returns `[]` when the value is not a JSON array of strings. Avoids
- * trusting raw `JsonValue` from the DB.
- */
-export function readStringArray(value: unknown): string[] {
-  if (!Array.isArray(value)) return [];
-  return value.filter((x): x is string => typeof x === "string");
+  if (completed) {
+    await prisma.storeConfig.update({
+      where: { storeId: store.id },
+      data: { auditComplete: true, auditRunning: false, auditPhase: null },
+    });
+  }
+
+  return { ok: true };
 }
 
 export interface AuditArrayPatch {
@@ -613,7 +643,7 @@ export async function updateAuditArrays(
     everyTimeDelayMs: patch.everyTimeDelayMs ?? 6000,
   };
 
-  return prisma.storeConfig.upsert({
+  const result = await prisma.storeConfig.upsert({
     where: { storeId: store.id },
     create: {
       storeId: store.id,
@@ -646,6 +676,9 @@ export async function updateAuditArrays(
         : {}),
     },
   });
+
+  await rebuildPerformanceScript(shopDomain);
+  return result;
 }
 
 type AuditField = "auditDeferArray" | "auditHideSelectors" | "staticDeferDefaults" | "firstUserDelayScripts";
@@ -715,7 +748,7 @@ export async function updateAuditFieldToggle(
     scriptTitles: [],
   } as const;
 
-  return prisma.storeConfig.upsert({
+  const result = await prisma.storeConfig.upsert({
     where: { storeId: store.id },
     create: {
       ...seed,
@@ -729,4 +762,7 @@ export async function updateAuditFieldToggle(
       [preservedKey]: nextPreserved,
     },
   });
+
+  await rebuildPerformanceScript(shopDomain);
+  return result;
 }

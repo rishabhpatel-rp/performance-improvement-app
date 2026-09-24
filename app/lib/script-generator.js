@@ -33,19 +33,37 @@ export function buildHiddenCss(selectors) {
   );
 }
 
-export function generateDeferredScript(
-  auditArray,
-  deferArray,
-  {
-    firstUserDelayScripts = ["anime.js"],
-    firstUserDelayMs = 12000,
-    everyTimeDelayMs = 6000,
-    hideSelectors = [],
-  } = {}
-) {
-  const auditJson = JSON.stringify(auditArray);
-  const deferJson = JSON.stringify(deferArray);
-  const firstUserJson = JSON.stringify(firstUserDelayScripts);
+/**
+ * Builds the obfuscated storefront script for one store.
+ *
+ * Every list holds URL fragments; a <script src> whose URL contains one of
+ * them is matched (as a regex-escaped alternation).
+ *
+ * @param {object}   options
+ * @param {string[]} options.interactionGatedScripts  Blocked until the visitor's
+ *   first interaction (pointer, scroll, key, touch...). Source: auditDeferArray.
+ * @param {string[]} options.firstVisitDelayedScripts Held for FIRST-TIME visitors
+ *   only, until interaction or `firstVisitDelayMs` (localStorage flag makes it a
+ *   no-op on later visits). Source: firstUserDelayScripts.
+ * @param {string[]} options.everyLoadDelayedScripts  Held on EVERY page load and
+ *   released after `everyLoadDelayMs`. Source: staticDeferDefaults.
+ * @param {number}   options.firstVisitDelayMs        Timeout for the first-visit list.
+ * @param {number}   options.everyLoadDelayMs         Timeout for the every-load list.
+ * @param {string[]} options.hideSelectors            CSS selectors hidden until the
+ *   first interaction (lastfold sections). Source: auditHideSelectors.
+ * @returns {string} Obfuscated JavaScript.
+ */
+export function generateDeferredScript({
+  interactionGatedScripts = [],
+  firstVisitDelayedScripts = [],
+  everyLoadDelayedScripts = [],
+  firstVisitDelayMs = 12000,
+  everyLoadDelayMs = 6000,
+  hideSelectors = [],
+} = {}) {
+  const interactionGatedJson = JSON.stringify(interactionGatedScripts);
+  const firstVisitDelayedJson = JSON.stringify(firstVisitDelayedScripts);
+  const everyLoadDelayedJson = JSON.stringify(everyLoadDelayedScripts);
   const hideCssJson = JSON.stringify(buildHiddenCss(hideSelectors));
 
   // Source script template
@@ -129,7 +147,7 @@ export function generateDeferredScript(
       }, { once: true, passive: true, capture: true });
     });
 
-    var P = ${auditJson};
+    var P = ${interactionGatedJson};
 
     var R = P.length
       ? new RegExp(
@@ -275,11 +293,11 @@ export function generateDeferredScript(
 
       if (alreadyRan) return;
 
-      var FIRST_USER_DELAY_SCRIPTS = ${firstUserJson};
-      var _delay = ${firstUserDelayMs};
-      var fudRe = FIRST_USER_DELAY_SCRIPTS.length
+      var FIRST_VISIT_DELAYED_SCRIPTS = ${firstVisitDelayedJson};
+      var _delay = ${firstVisitDelayMs};
+      var fudRe = FIRST_VISIT_DELAYED_SCRIPTS.length
         ? new RegExp(
-            FIRST_USER_DELAY_SCRIPTS.map(function (p) {
+            FIRST_VISIT_DELAYED_SCRIPTS.map(function (p) {
               return p.replace(/[.*+?^$\${}()|[\\]\\\\]/g, "\\\\$&");
             }).join("|")
           )
@@ -374,11 +392,11 @@ export function generateDeferredScript(
     })();
 
     (function () {
-      var EVERY_TIME_DELAY_SCRIPTS = ${deferJson};
+      var EVERY_LOAD_DELAYED_SCRIPTS = ${everyLoadDelayedJson};
 
-      var etRe = EVERY_TIME_DELAY_SCRIPTS.length
+      var etRe = EVERY_LOAD_DELAYED_SCRIPTS.length
         ? new RegExp(
-            EVERY_TIME_DELAY_SCRIPTS.map(function (p) {
+            EVERY_LOAD_DELAYED_SCRIPTS.map(function (p) {
               return p.replace(/[.*+?^$\${}()|[\\]\\\\]/g, "\\\\$&");
             }).join("|")
           )
@@ -441,32 +459,30 @@ export function generateDeferredScript(
       setTimeout(function () {
         etReleased = true;
         releaseHeldET();
-      }, ${everyTimeDelayMs});
+      }, ${everyLoadDelayMs});
     })();
   })();
   `;
 
-  // Server-side JavaScript obfuscation — maximum strength (new Function() safe)
+  // Server-side obfuscation. This file is a blocking <script> on every storefront
+  // page, so size matters as much as strength. Measured on this template: the old
+  // profile (control-flow flattening 1.0 + dead-code injection + rc4 + split
+  // strings) produced ~197 KB (54 KB gzip) in ~660 ms; this one gives ~19 KB
+  // (~7 KB gzip) in ~80 ms while still renaming identifiers, flattening part of
+  // the control flow and moving strings into an encoded array.
   const obfuscatedResult = JavaScriptObfuscator.obfuscate(rawScript, {
     compact: true,
     controlFlowFlattening: true,
-    controlFlowFlatteningThreshold: 1,
-    deadCodeInjection: true,
-    deadCodeInjectionThreshold: 1,
+    controlFlowFlatteningThreshold: 0.3,
+    deadCodeInjection: false,
     debugProtection: false,
-    debugProtectionInterval: 0,
     disableConsoleOutput: true,
     identifierNamesGenerator: "hexadecimal",
     renameGlobals: false,
     selfDefending: false,
     stringArray: true,
-    stringArrayCallsTransform: true,
-    stringArrayEncoding: ["rc4", "base64"],
-    stringArrayThreshold: 1,
-    splitStrings: true,
-    splitStringsChunkLength: 3,
-    transformObjectKeys: true,
-    unicodeEscapeSequence: true,
+    stringArrayEncoding: ["base64"],
+    stringArrayThreshold: 0.75,
   });
 
   return obfuscatedResult.getObfuscatedCode();

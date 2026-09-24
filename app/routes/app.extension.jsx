@@ -5,21 +5,40 @@ import { authenticate } from "../shopify.server";
 import {
   isAppEmbedEnabled,
   getAppEmbedDeepLink,
+  getSelectedThemeId,
+  listThemes,
 } from "../lib/theme-embed.server";
 
 export const loader = async ({ request }) => {
   const { admin, session } = await authenticate.admin(request);
-  const embedEnabled = await isAppEmbedEnabled(admin);
+  const selectedThemeId = await getSelectedThemeId(session.shop).catch(
+    () => null,
+  );
+  const [embedEnabled, themes] = await Promise.all([
+    isAppEmbedEnabled(admin, undefined, selectedThemeId),
+    listThemes(admin).catch(() => []),
+  ]);
+  const theme = themes.find((t) =>
+    selectedThemeId ? t.id === selectedThemeId : t.role === "MAIN",
+  );
   return {
     shop: session.shop,
     embedEnabled: embedEnabled === true,
     embedUnknown: embedEnabled === null,
-    embedActivateUrl: getAppEmbedDeepLink(session.shop),
+    themeName: theme?.name ?? "",
+    embedActivateUrl: getAppEmbedDeepLink(
+      session.shop,
+      undefined,
+      undefined,
+      selectedThemeId,
+    ),
   };
 };
 
 export default function ExtensionInstall() {
-  const { embedEnabled, embedUnknown, embedActivateUrl } = useLoaderData();
+  const { embedEnabled, embedUnknown, embedActivateUrl, themeName } =
+    useLoaderData();
+  const themeLabel = themeName ? `“${themeName}”` : "your live theme";
   const revalidator = useRevalidator();
   const [searchParams] = useSearchParams();
   const fromToggle = searchParams.get("from") === "toggle";
@@ -46,7 +65,7 @@ export default function ExtensionInstall() {
         <s-stack direction="block" gap="base">
           {embedEnabled ? (
             <s-banner tone="success">
-              The Performance Script Loader embed is on for your live theme.
+              The Performance Script Loader embed is on for {themeLabel}.
               You can now return to the dashboard and turn the app ON in
               Step 1.
             </s-banner>
@@ -57,8 +76,8 @@ export default function ExtensionInstall() {
             </s-banner>
           ) : (
             <s-banner tone="warning">
-              The theme app embed is off. Turn it on in the theme editor to
-              install the extension before starting an audit.
+              The theme app embed is off for {themeLabel}. Turn it on in the
+              theme editor to install the extension before starting an audit.
             </s-banner>
           )}
 

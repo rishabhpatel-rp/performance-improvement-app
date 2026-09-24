@@ -192,6 +192,12 @@ model StoreConfig {
   lastAuditAt  DateTime?
   auditPageIndex  Int? // 0-based page currently being audited (for progress UI)
   auditTotalPages Int? // total pages in the audit run
+  auditPages         Json?      // [{ label, path }] pages discovered for the current/last audit (paths only, no query)
+  auditPageStartedAt DateTime?  // when the page currently being audited started (countdown survives refresh)
+  auditPhase         String?    // "discovering" | "auditing" | "building" while auditRunning; null otherwise. auditPageIndex = pages finished.
+
+  // Theme the app extension (theme app embed) is installed in. null = live (MAIN) theme.
+  selectedThemeId String? // e.g. "gid://shopify/OnlineStoreTheme/123"
 
   // Timestamps
   createdAt DateTime @default(now())
@@ -245,9 +251,13 @@ model PerformanceScript {
   storeId String @unique // Makes relation 1:1 per store
   store   Store  @relation(fields: [storeId], references: [id])
 
-  auditScript String?  @map("audit_script")
+  auditScript String?  @map("audit_script") // legacy (raw audit report JSON); no longer written or read
+  // Final obfuscated storefront script, built by rebuildPerformanceScript() whenever
+  // its inputs change and served as-is by the app proxy (no per-request build).
   deferScript String?  @map("defer_script")
-  hiddenCss   String?  @map("hidden_css")
+  hiddenCss   String?  @map("hidden_css") // plain hide-lastfold CSS (already embedded in deferScript)
+  scriptHash    String?   @map("script_hash") // sha256 of deferScript, used as the HTTP ETag
+  scriptBuiltAt DateTime? @map("script_built_at")
   createdAt   DateTime @default(now()) @map("created_at")
   updatedAt   DateTime @updatedAt @map("updated_at")
 

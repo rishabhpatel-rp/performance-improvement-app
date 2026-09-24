@@ -16,19 +16,19 @@ import {
   upsertStore,
   syncConfigToDatabase,
   logActivity,
-  saveAuditReport,
   readStringArray,
+  readAuditPages,
   updateAuditArrays,
   updateAuditFieldToggle,
 } from "../lib/store-sync.server";
-import {
-  discoverPages,
-  runHiddenAudit,
-  getActiveThemeId,
-} from "../lib/audit.server";
+import { startAuditForStore } from "../lib/audit-runner.server";
+import { normalizeCustomUrl } from "../lib/page-urls.server";
+import { rebuildPerformanceScript } from "../lib/performance-script.server";
 import {
   isAppEmbedEnabled,
   getAppEmbedDeepLink,
+  getSelectedThemeId,
+  listThemes,
 } from "../lib/theme-embed.server";
 import { withShopifyTimeout, rethrowAuthRedirect } from "../lib/shopify-timeout.server";
 import prisma from "../db.server";
@@ -116,106 +116,36 @@ async function safeLogActivity(shop, eventType, description, metadata) {
   }
 }
 
-// Triggers the hidden backend headless-browser audit in the background.
-// Non-blocking: sets auditRunning in the DB and returns immediately so the
-// dashboard can poll /api/audit/status. The audit is invisible to the merchant.
-async function startHiddenAudit(admin, shopDomain) {
-  const prisma = (await import("../db.server")).default;
-  const store = await prisma.store.findUnique({
-    where: { shopDomain },
-  });
-  if (!store) {
-    console.warn(`[Audit] SKIPPED — no Store row for ${shopDomain}.`);
-    return;
-  }
-  await prisma.storeConfig.upsert({
-    where: { storeId: store.id },
-    create: {
-      storeId: store.id,
-      appEnabled: true,
-      script1Enabled: false,
-      script2Enabled: false,
-      script3Enabled: false,
-      debugMode: false,
-      scriptTitles: [],
-      auditRunning: true,
-      auditFailed: false,
-      auditError: null,
-    },
-    update: {
-      auditRunning: true,
-      auditFailed: false,
-      auditError: null,
-      auditComplete: false,
-      auditPageIndex: 0,
-      auditTotalPages: 0,
-    },
-  });
-  console.log(`[Audit] STARTED for ${shopDomain} (auditRunning=true)`);
-  // eslint-disable-next-line @typescript-eslint/no-floating-promises
-  (async () => {
-    try {
-      // If the store owner saved a storefront password (Step 1, for
-      // password-protected/dev stores), fetch the active theme id and pass
-      // both through so the audit hits the password-bypass URLs instead of
-      // Shopify's password page.
-      const storeConfig = await prisma.storeConfig.findUnique({
-        where: { storeId: store.id },
-      });
-      const password = storeConfig?.storefrontPassword || "";
-      const themeId = password ? await getActiveThemeId(admin) : undefined;
-      const customUrls = {
-        plp: storeConfig?.customPlpUrl || undefined,
-        pdp: storeConfig?.customPdpUrl || undefined,
-      };
-
-      const pages = await discoverPages(
-        admin,
-        shopDomain,
-        password || undefined,
-        themeId,
-        customUrls,
-      );
-      console.log(`[Audit] Pages discovered for ${shopDomain}:`, JSON.stringify(pages));
-      const report = await runHiddenAudit({
-        pages,
-        password: password || undefined,
-        onProgress: async ({ pageIndex, total }) => {
-          await prisma.storeConfig.update({
-            where: { storeId: store.id },
-            data: { auditPageIndex: pageIndex, auditTotalPages: total },
-          });
-        },
-      });
-      await saveAuditReport(shopDomain, report);
+// The theme app embed is definitely off but the app is still recorded as
+// enabled: persist OFF (DB + metaobject) so Shopify, Postgres and the admin
+// panel agree with the toggle the merchant sees. Best-effort — failures are
+// logged and swallowed. Never call this for an *unknown* embed status.
+async function disableAppBecauseEmbedOff({ admin, session, store }) {
+  try {
+    if (store?.id) {
       await prisma.storeConfig.update({
         where: { storeId: store.id },
-        data: {
-          auditRunning: false,
-          auditComplete: true,
-          auditFailed: false,
-          auditError: null,
-          auditPageIndex: 0,
-          auditTotalPages: pages ? Object.values(pages).filter(Boolean).length : 0,
-        },
-      });
-      console.log(
-        `[Audit] COMPLETED for ${shopDomain}: defer=${JSON.stringify(report.deferArray)} hide=${JSON.stringify(report.hideSelectors)}`,
-      );
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      console.error("[Audit] FAILED for " + shopDomain + ":", msg);
-      await prisma.storeConfig.update({
-        where: { storeId: store.id },
-        data: {
-          auditRunning: false,
-          auditFailed: true,
-          auditError: msg,
-          auditComplete: false,
-        },
+        data: { appEnabled: false },
       });
     }
-  })();
+    await withShopifyTimeout(
+      safeUpdateConfig(admin, { appEnabled: false }),
+      "autoDisableConfig",
+    );
+    await rebuildPerformanceScript(session.shop);
+    await safeLogActivity(
+      session.shop,
+      "config_changed",
+      "App auto-disabled: theme app embed is off",
+      { changedFields: ["appEnabled"], reason: "embed_disabled" },
+    );
+  } catch (err) {
+    rethrowAuthRedirect(err);
+    console.error(
+      "[Dashboard] Failed to persist auto-disable:",
+      err instanceof Error ? err.message : err,
+    );
+  }
 }
 
 const STORE_CONFIG_SELECT = {
@@ -231,6 +161,9 @@ const STORE_CONFIG_SELECT = {
   auditError: true,
   auditPageIndex: true,
   auditTotalPages: true,
+  auditPages: true,
+  auditPageStartedAt: true,
+  selectedThemeId: true,
   storefrontPassword: true,
   customPlpUrl: true,
   customPdpUrl: true,
@@ -263,6 +196,10 @@ function emptyAuditStatus() {
     pageIndex: 0,
     totalPages: 0,
     progress: 0,
+    pages: [],
+    pageStartedAt: null,
+    phase: null,
+    serverNow: Date.now(),
   };
 }
 
@@ -311,6 +248,26 @@ export const loader = async ({ request }) => {
 
   const hasActiveStore = store?.isActive === true;
   const sc = store?.configs?.[0];
+  const selectedThemeId = sc?.selectedThemeId ?? null;
+
+  // Always re-check the theme app embed (fast path included), in parallel with
+  // the Shopify calls below. It targets the theme the merchant picked (live
+  // theme when none). true = enabled, false = definitely off, null = unknown
+  // (error / timeout) — treated as OFF by the toggle.
+  const embedPromise = withShopifyTimeout(
+    isAppEmbedEnabled(admin, undefined, selectedThemeId),
+    "isAppEmbedEnabled",
+  ).catch((err) => {
+    rethrowAuthRedirect(err);
+    console.error(
+      "[Dashboard] Failed to read embed status:",
+      err instanceof Error ? err.message : err,
+    );
+    return null;
+  });
+  // The auth-redirect Response is re-thrown when embedPromise is awaited below;
+  // this only prevents an unhandled rejection if the loader exits before that.
+  embedPromise.catch(() => {});
 
   // Fast path: active store exists -> return from DB immediately
   // Safety gates A-D determine when we must refresh from Shopify
@@ -377,21 +334,7 @@ let shopResult = { shopData: null, isNewStore: false };
           return null;
         }
       })(),
-      (async () => {
-        try {
-          return await withShopifyTimeout(
-            isAppEmbedEnabled(admin),
-            "isAppEmbedEnabled",
-          );
-        } catch (err) {
-          rethrowAuthRedirect(err);
-          console.error(
-            "[Dashboard] Failed to read embed status:",
-            err instanceof Error ? err.message : err,
-          );
-          return null;
-        }
-      })(),
+      embedPromise,
       (async () => {
         try {
           const response = await withShopifyTimeout(
@@ -462,9 +405,8 @@ let shopResult = { shopData: null, isNewStore: false };
       );
     }
   } else {
-    // Fast path: use cached values from DB
-    // Gate D: embedEnabled uses unknown = not locking (same as before)
-    embedCheck = null; // will result in embedEnabled = true (unknown !== false)
+    // Fast path: use cached values from DB, but the embed is always re-checked.
+    embedCheck = await embedPromise;
 
     // NEW: Read cached passwordProtected from DB instead of assuming false
     passwordProtected = sc?.isPasswordProtected ?? false;
@@ -480,8 +422,26 @@ let shopResult = { shopData: null, isNewStore: false };
       ? { ...DEFAULT_CONFIG, ...dbConfig }
       : DEFAULT_CONFIG;
 
-  const embedEnabled = embedCheck !== false;
-  const embedActivateUrl = getAppEmbedDeepLink(session.shop);
+  // Fail closed: only a confirmed `true` counts as enabled. `false` (embed off)
+  // and `null` (check errored / timed out) both switch the toggle OFF.
+  const embedEnabled = embedCheck === true;
+  const embedStatus =
+    embedCheck === true ? "enabled" : embedCheck === false ? "disabled" : "unknown";
+  const embedActivateUrl = getAppEmbedDeepLink(
+    session.shop,
+    undefined,
+    undefined,
+    selectedThemeId,
+  );
+
+  // The embed is definitely off but the app is still recorded as enabled.
+  // Not done for `null` (unknown) — a transient failure must not rewrite state.
+  let autoDisabled = false;
+  if (embedCheck === false && (sc?.appEnabled || mergedConfig.appEnabled)) {
+    autoDisabled = true;
+    mergedConfig.appEnabled = false;
+    await disableAppBecauseEmbedOff({ admin, session, store });
+  }
 
   let auditStatus = emptyAuditStatus();
   let storefrontPassword = "";
@@ -501,6 +461,12 @@ let shopResult = { shopData: null, isNewStore: false };
       pageIndex,
       totalPages,
       progress: totalPages > 0 ? Math.round((pageIndex / totalPages) * 100) : 0,
+      pages: readAuditPages(sc.auditPages),
+      pageStartedAt: sc.auditPageStartedAt
+        ? sc.auditPageStartedAt.toISOString()
+        : null,
+      phase: sc.auditPhase ?? null,
+      serverNow: Date.now(),
     };
   }
 
@@ -559,14 +525,16 @@ let shopResult = { shopData: null, isNewStore: false };
   console.log(
     `[Dashboard] loader ${Date.now() - loaderStarted}ms shopifyConfig=${Boolean(
       shopifyConfig,
-    )} embed=${String(embedCheck)} fastPath=${!needsShopifyRefresh} pwProtected=${passwordProtected} endpointMatch=${sc?.cachedAppEndpoint === endpoint}`,
+    )} embed=${embedStatus} autoDisabled=${autoDisabled} fastPath=${!needsShopifyRefresh} pwProtected=${passwordProtected} endpointMatch=${sc?.cachedAppEndpoint === endpoint}`,
   );
 
   return {
     config: finalConfig,
     auditStatus,
     embedEnabled,
+    embedStatus,
     embedActivateUrl,
+    selectedThemeId,
     passwordProtected,
   };
 };
@@ -580,13 +548,27 @@ export const action = async ({ request }) => {
     const appEnabled = formData.get("appEnabled") === "true";
 
     if (appEnabled) {
-      const embedCheck = await isAppEmbedEnabled(admin);
+      // The embed must be on in the theme the merchant selected (live theme
+      // when none is selected).
+      const selectedThemeId = await getSelectedThemeId(session.shop).catch(
+        () => null,
+      );
+      const embedCheck = await isAppEmbedEnabled(
+        admin,
+        undefined,
+        selectedThemeId,
+      );
       if (embedCheck !== true) {
         return {
           ok: false,
           error: "extension_required",
           embedEnabled: false,
-          embedActivateUrl: getAppEmbedDeepLink(session.shop),
+          embedActivateUrl: getAppEmbedDeepLink(
+            session.shop,
+            undefined,
+            undefined,
+            selectedThemeId,
+          ),
           config: { appEnabled: false },
         };
       }
@@ -668,7 +650,9 @@ export const action = async ({ request }) => {
         );
       }
       try {
-        await startHiddenAudit(admin, session.shop);
+        await startAuditForStore(admin, session.shop, {
+          enableOnCreate: true,
+        });
       } catch (err) {
         console.warn(
           "[Dashboard] Failed to start hidden audit:",
@@ -724,6 +708,9 @@ export const action = async ({ request }) => {
     }
 
     await safeSyncConfig(session.shop, config);
+    // appEnabled just changed in the DB: rebuild the stored storefront script
+    // (empty when OFF). The audit rebuilds it again once it completes.
+    await rebuildPerformanceScript(session.shop);
     await safeLogActivity(
       session.shop,
       "config_changed",
@@ -735,6 +722,70 @@ export const action = async ({ request }) => {
     // can show and the dashboard can start polling immediately after the
     // toggle (see the useEffect below).
     return { ok: true, config, auditRunning: appEnabled };
+  }
+
+  if (intent === "select-theme") {
+    const themeId = String(formData.get("themeId") || "");
+
+    let theme;
+    try {
+      const themes = await withShopifyTimeout(listThemes(admin), "listThemes");
+      // Also enforces the selectable roles (no development/archived themes).
+      theme = themes.find((t) => t.id === themeId);
+    } catch (err) {
+      rethrowAuthRedirect(err);
+      return { ok: false, error: "Couldn't load themes. Please try again." };
+    }
+    if (!theme) return { ok: false, error: "Theme not found." };
+
+    const store = await prisma.store.findUnique({
+      where: { shopDomain: session.shop },
+      select: { id: true },
+    });
+    if (!store) return { ok: false, error: "Store record not found." };
+
+    const saved = await prisma.storeConfig.upsert({
+      where: { storeId: store.id },
+      create: {
+        storeId: store.id,
+        appEnabled: false,
+        script1Enabled: false,
+        script2Enabled: false,
+        script3Enabled: false,
+        debugMode: false,
+        scriptTitles: [],
+        selectedThemeId: theme.id,
+      },
+      update: { selectedThemeId: theme.id },
+    });
+
+    // Switching themes while the app is ON: if the new theme does not have the
+    // embed, the app can no longer work — turn it OFF (fail closed). An
+    // unknown result is left to the loader, which shows OFF without persisting.
+    const embed = await isAppEmbedEnabled(admin, undefined, theme.id);
+    if (embed === false && saved.appEnabled) {
+      await disableAppBecauseEmbedOff({ admin, session, store });
+    }
+
+    await safeLogActivity(
+      session.shop,
+      "config_changed",
+      `Extension theme set to ${theme.name}`,
+      { changedFields: ["selectedThemeId"], themeId: theme.id },
+    );
+
+    return {
+      ok: true,
+      selectedThemeId: theme.id,
+      embedStatus:
+        embed === true ? "enabled" : embed === false ? "disabled" : "unknown",
+      embedActivateUrl: getAppEmbedDeepLink(
+        session.shop,
+        undefined,
+        undefined,
+        theme.id,
+      ),
+    };
   }
 
   if (intent === "toggle-script") {
@@ -941,8 +992,19 @@ export const action = async ({ request }) => {
   }
 
   if (intent === "save-custom-page-urls") {
-    const customPlpUrl = (formData.get("customPlpUrl") || "").trim();
-    const customPdpUrl = (formData.get("customPdpUrl") || "").trim();
+    // Must be pages on this store; share-link params (_bt, key, preview_theme_id…)
+    // are stripped. Nothing is saved unless both fields are valid.
+    const plp = normalizeCustomUrl(formData.get("customPlpUrl"), session.shop, "plp");
+    const pdp = normalizeCustomUrl(formData.get("customPdpUrl"), session.shop, "pdp");
+    if (!plp.ok || !pdp.ok) {
+      return {
+        ok: false,
+        plpError: plp.ok ? "" : plp.error,
+        pdpError: pdp.ok ? "" : pdp.error,
+      };
+    }
+    const customPlpUrl = plp.url || "";
+    const customPdpUrl = pdp.url || "";
     const prisma = (await import("../db.server")).default;
     const store = await prisma.store.findUnique({
       where: { shopDomain: session.shop },
@@ -967,7 +1029,13 @@ export const action = async ({ request }) => {
         customPdpUrl: customPdpUrl || null,
       },
     });
-    return { ok: true, customPlpUrl, customPdpUrl };
+    return {
+      ok: true,
+      customPlpUrl,
+      customPdpUrl,
+      plpWarning: plp.warning || "",
+      pdpWarning: pdp.warning || "",
+    };
   }
 
   return { ok: false };
@@ -978,7 +1046,9 @@ export default function Dashboard() {
     config,
     auditStatus: initialAuditStatus,
     embedEnabled = false,
+    embedStatus = "unknown",
     embedActivateUrl = "",
+    selectedThemeId = null,
     passwordProtected = false,
   } = useLoaderData();
   const revalidator = useRevalidator();
@@ -1071,6 +1141,9 @@ export default function Dashboard() {
         pageIndex: 0,
         totalPages: 0,
         progress: 0,
+        pages: [],
+        pageStartedAt: null,
+        phase: "discovering",
       }));
     }
   }, [enablingAudit, appEnabled]);
@@ -1149,7 +1222,9 @@ export default function Dashboard() {
           config={config}
           auditStatus={auditStatus}
           embedEnabled={embedEnabled}
+          embedStatus={embedStatus}
           embedActivateUrl={embedActivateUrl}
+          selectedThemeId={selectedThemeId}
           passwordProtected={passwordProtected}
         />
       )}
