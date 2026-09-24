@@ -485,5 +485,64 @@ export function generateDeferredScript({
     stringArrayThreshold: 0.75,
   });
 
-  return obfuscatedResult.getObfuscatedCode();
+  const obfuscated = obfuscatedResult.getObfuscatedCode();
+  return TEMP_TIMING_LOG ? withTimingLog(obfuscated) : obfuscated;
+}
+
+// ---------------------------------------------------------------------------
+// TEMPORARY — injection timing log. Set TEMP_TIMING_LOG to false (or delete
+// this block and the `withTimingLog` call above) once you have the numbers,
+// then rebuild the script (toggle the app off/on or save a Step 2 field).
+//
+// Kept OUTSIDE the obfuscated code on purpose: the obfuscator option
+// `disableConsoleOutput` replaces console.log with a no-op for everything that
+// runs after it, so the logger captures a bound console.log first.
+// ---------------------------------------------------------------------------
+const TEMP_TIMING_LOG = true;
+
+function withTimingLog(obfuscated) {
+  const before = `
+  var pp = { log: null, t0: 0, tag: "[PagePulse] " };
+  try {
+    pp.log = console.log.bind(console);
+    pp.t0 = performance.now();
+    var rt = null;
+    var resourceLine = function () {
+      try {
+        var list = performance.getEntriesByType("resource");
+        for (var i = 0; i < list.length; i++) {
+          if (list[i].name.indexOf("/apps/performance-scripts") !== -1) { rt = list[i]; break; }
+        }
+        if (!rt) return "";
+        var fromCache = rt.transferSize === 0 && rt.decodedBodySize > 0;
+        return "script file: requested at " + rt.requestStart.toFixed(0) + " ms, finished at " +
+          rt.responseEnd.toFixed(0) + " ms (download " + (rt.responseEnd - rt.startTime).toFixed(0) +
+          " ms, " + (rt.encodedBodySize / 1024).toFixed(1) + " KB, " + (fromCache ? "from browser cache" : "from network") + ")";
+      } catch (e) { return ""; }
+    };
+    pp.log(pp.tag + "script started executing " + pp.t0.toFixed(0) + " ms after navigation start" +
+      " (readyState: " + document.readyState + ", <script> tags parsed before it: " +
+      (document.getElementsByTagName("script").length - 1) + ")");
+    var line = resourceLine();
+    if (line) pp.log(pp.tag + line);
+    document.addEventListener("DOMContentLoaded", function () {
+      var now = performance.now();
+      pp.log(pp.tag + "DOMContentLoaded at " + now.toFixed(0) + " ms (" + (now - pp.t0).toFixed(0) + " ms after the script started)");
+    });
+    window.addEventListener("load", function () {
+      var now = performance.now();
+      var fcp = performance.getEntriesByName("first-contentful-paint")[0];
+      pp.log(pp.tag + "window load at " + now.toFixed(0) + " ms; first-contentful-paint: " +
+        (fcp ? fcp.startTime.toFixed(0) + " ms" : "n/a") +
+        (fcp ? (fcp.startTime > pp.t0 ? " (script ran BEFORE first paint)" : " (script ran AFTER first paint)") : ""));
+      if (!line) { line = resourceLine(); if (line) pp.log(pp.tag + line); }
+    });
+  } catch (e) { pp.log = null; }
+  `;
+  const after = `
+  try {
+    if (pp.log) pp.log(pp.tag + "defer logic installed in " + (performance.now() - pp.t0).toFixed(1) + " ms");
+  } catch (e) {}
+  `;
+  return "(function () {" + before + "\n" + obfuscated + "\n;" + after + "})();";
 }

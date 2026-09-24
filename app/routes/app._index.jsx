@@ -47,7 +47,7 @@ const DEFAULT_CONFIG = {
   debugMode: false,
   auditDeferArray: [],
   auditHideSelectors: [],
-  staticDeferDefaults: ["anime.js"],
+  staticDeferDefaults: ["wpm","gtm"],
   auditDeferArrayEnabled: true,
   auditHideSelectorsEnabled: true,
   staticDeferDefaultsEnabled: true,
@@ -59,7 +59,7 @@ const DEFAULT_CONFIG = {
   storefrontPassword: "",
 
   // NEW
-  firstUserDelayScripts: ["anime.js"],
+  firstUserDelayScripts: ["wpm","gtm"],
   firstUserDelayScriptsEnabled: true,
   firstUserDelayScriptsPreserved: [],
   firstUserDelayMs: 12000,
@@ -472,7 +472,7 @@ let shopResult = { shopData: null, isNewStore: false };
 
   let auditDeferArray = readStringArray(mergedConfig.auditDeferArray);
   let auditHideSelectors = readStringArray(mergedConfig.auditHideSelectors);
-  let staticDeferDefaults = ["anime.js"];
+  let staticDeferDefaults = ["wpm","gtm"];
   let dbToggle = null;
   let dbPreserved = null;
   if (sc) {
@@ -515,7 +515,7 @@ let shopResult = { shopData: null, isNewStore: false };
     customPdpUrl,
 
     // NEW
-    firstUserDelayScripts: readStringArray(sc?.firstUserDelayScripts) || ["anime.js"],
+    firstUserDelayScripts: readStringArray(sc?.firstUserDelayScripts) || ["wpm","gtm"],
     firstUserDelayScriptsEnabled: sc?.firstUserDelayScriptsEnabled ?? true,
     firstUserDelayScriptsPreserved: readStringArray(sc?.firstUserDelayScriptsPreserved) || [],
     firstUserDelayMs: sc?.firstUserDelayMs ?? 12000,

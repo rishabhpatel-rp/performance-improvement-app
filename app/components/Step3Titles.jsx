@@ -28,8 +28,8 @@ const FIELDS = [
     delayKey: "firstUserDelayMs",
     delayDefault: 12000,
     label: "Delay Scripts for First User",
-    hint: "Released on interaction or after delay timeout for first-time visitors.",
-    placeholder: '["anime.js"]',
+    hint: "Add the script names you want to delay for first-time visitors.",
+    placeholder: '["wpm","gtm"]',
   },
   {
     key: "staticDeferDefaults",
@@ -38,8 +38,8 @@ const FIELDS = [
     delayKey: "everyTimeDelayMs",
     delayDefault: 6000,
     label: "Delay Scripts",
-    hint: "Released after delay timeout on every page load.",
-    placeholder: '["anime.js"]',
+    hint: "Add the script names you want to delay on every page load.",
+    placeholder: '["wpm","gtm"]',
   },
 ];
 
@@ -520,9 +520,8 @@ export default function Step3Titles({ config }) {
             element. Shifts only the text up 20px; the cards below stay put. */}
         <div style={{ position: "relative", top: -20 }}>
           <s-text tone="subdued">
-            These arrays feed your storefront optimization. Toggle a field off
-            to stop using it — its data is preserved and restored when
-            re-enabled.
+            These arrays feed your storefront optimization. Add or remove
+            script names (and selectors) in any list below.
           </s-text>
         </div>
 

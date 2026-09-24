@@ -144,7 +144,7 @@ model StoreConfig {
   scriptTitles       Json @default("[]") // ["Title1","Title2","Title3"]
   auditDeferArray    Json @default("[]") // Defer/blocklist entries
   auditHideSelectors Json @default("[]") // CSS selectors to hide
-  staticDeferDefaults Json @default("[\"anime.js\"]") // Static always-defer defaults e.g. ["anime.js"]
+  staticDeferDefaults Json @default("[\"wpm\",\"gtm\"]") // Static always-defer defaults e.g. ["wpm","gtm"]
 
   // Audit field toggle states (on/off) — Step 3 "Audit Results" textareas
   auditDeferArrayEnabled      Boolean @default(true)
@@ -174,7 +174,7 @@ model StoreConfig {
   // First User Delay Scripts (maps to FIRST_USER_DELAY_SCRIPTS in script)
   // Only runs for first-time visitors (localStorage check)
   // ============================================================
-  firstUserDelayScripts          Json    @default("[\"anime.js\"]")
+  firstUserDelayScripts          Json    @default("[\"wpm\",\"gtm\"]")
   firstUserDelayScriptsEnabled   Boolean @default(true)
   firstUserDelayScriptsPreserved Json    @default("[]")
   firstUserDelayMs               Int     @default(12000)  // 12 seconds in milliseconds

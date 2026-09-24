@@ -475,7 +475,7 @@ URLs, four arrays + enabled/preserved, `firstUserDelayMs`,
 3. `auditStatus` from DB (`progress = round(pageIndex/totalPages*100)`).
 4. First-install `StoreActivity` if `isNewStore`.
 5. Overlay non-empty DB defer/hide; static defaults fall back to
-   `["anime.js"]` if DB empty.
+   `["wpm","gtm"]` if DB empty.
 6. Return `{ config: finalConfig, auditStatus, embedEnabled, embedActivateUrl }`.
 
 `finalConfig` fields the React wizard uses:
@@ -787,7 +787,7 @@ tags into `document.head`.
 ### 11.3 First-user delay (once per browser)
 
 Merchant “Delay Scripts for First User” (`firstUserDelayScripts`,
-default `anime.js`). Hold for `firstUserDelayMs` (default 12s)
+default `wpm`, `gtm`). Hold for `firstUserDelayMs` (default 12s)
 **or** first interaction, whichever first.
 `localStorage.__wpmDelayDone=1` so later page views skip this gate.
 Intercepts `HTMLScriptElement` `src` setter.
@@ -795,7 +795,7 @@ Intercepts `HTMLScriptElement` `src` setter.
 ### 11.4 Every-load delay (`var EVERY_TIME_DELAY_SCRIPTS = deferArray`)
 
 Merchant “Delay Scripts” (`staticDeferDefaults`, default
-`anime.js`). Timer is `everyTimeDelayMs` (default 6s), **every
+`wpm`, `gtm`). Timer is `everyTimeDelayMs` (default 6s), **every
 page load**, no interaction release. Marks `data-et-deferred`.
 
 `parseToArray` exists for string/CSV input; `api.storefront-scripts.jsx`
@@ -810,7 +810,7 @@ required or Admin GraphQL finds nothing.
 
 | Export | Behavior |
 |---|---|
-| `defaultAppConfig()` | All flags false; static defaults `anime.js` |
+| `defaultAppConfig()` | All flags false; static defaults `wpm`, `gtm` |
 | `getConfig` | One `fetchConfigMetaobject` |
 | `updateConfig` | Partial field write; create if no id |
 | `ensureConfig` | Get or create; swallow missing definition |
@@ -828,7 +828,7 @@ JSON-encoded arrays; blank titles are stripped (Shopify rejects `""`).
 
 | Export | Used by (this app) | Notes |
 |---|---|---|
-| `DEFAULT_STATIC_DEFER` | `saveAuditReport` create path | `["anime.js"]` |
+| `DEFAULT_STATIC_DEFER` | `saveAuditReport` create path | `["wpm","gtm"]` |
 | `fetchShopDetailsFromShopify` | dashboard loader | See query gap above |
 | `upsertStore` | dashboard loader | Reinstall: `isActive=true`, `uninstalledAt=null` |
 | `markStoreUninstalled` | `webhooks.app.uninstalled` | Soft delete |
@@ -1245,8 +1245,10 @@ These are real. Do not “fix” them in docs by pretending they are wired.
     nested routes; both call `authenticate.admin`.
 11. **`embedCheck !== false`**: a failed embed read does not lock Step 1.
     An explicit `false` does.
-12. **Hardcoded `anime.js` 12s gate** inside the generator is
-    separate from merchant Delay Scripts (6s every load).
+12. **First-user delay (`wpm`, `gtm` by default, 12s)** is separate
+    from merchant Delay Scripts (`wpm`, `gtm` by default, 6s every
+    load). Both lists come from the DB; nothing is hardcoded in the
+    generator.
 13. **`ShopDetails` GraphQL** does not select `ordersCount` or
     `shop.locale`; mapper still reads them → `Store.totalOrders` /
     `Store.locale` stay unset on destore sync.
