@@ -3,6 +3,7 @@ import prisma from "../db.server";
 import {
   isAppEmbedEnabled,
   getAppEmbedDeepLink,
+  getSelectedThemeId,
 } from "../lib/theme-embed.server";
 import { withShopifyTimeout, rethrowAuthRedirect } from "../lib/shopify-timeout.server";
 
@@ -43,7 +44,16 @@ export const action = async ({ request }) => {
 
   const formData = await request.formData();
   const intent = formData.get("intent");
-  const embedActivateUrl = getAppEmbedDeepLink(session.shop);
+  // The embed must be on in the theme the merchant picked (null = live theme).
+  const selectedThemeId = await getSelectedThemeId(session.shop).catch(
+    () => null,
+  );
+  const embedActivateUrl = getAppEmbedDeepLink(
+    session.shop,
+    undefined,
+    undefined,
+    selectedThemeId,
+  );
 
   if (intent !== "validate-toggle") {
     return { ok: false, allowed: false, blockReason: null, embedActivateUrl };
@@ -55,7 +65,7 @@ export const action = async ({ request }) => {
   const [embedResult, passwordProtectedResult, savedPasswordResult] =
     await Promise.allSettled([
       withShopifyTimeout(
-        isAppEmbedEnabled(admin),
+        isAppEmbedEnabled(admin, undefined, selectedThemeId),
         "isAppEmbedEnabled",
         VALIDATE_TIMEOUT_MS,
       ),

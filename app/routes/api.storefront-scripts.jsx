@@ -1,96 +1,96 @@
 import { authenticate } from "../shopify.server";
 import prisma from "../db.server";
-import { generateDeferredScript, buildHiddenCss } from "../lib/script-generator";
-import { readStringArray } from "../lib/store-sync.server";
+import { rebuildPerformanceScript } from "../lib/performance-script.server";
 
-const JSON_HEADERS = {
-  "Content-Type": "application/json",
-  "Cache-Control": "private, no-store",
-};
+// Storefront script endpoint, reached through the app proxy
+// (/apps/performance-scripts) by the blocking <script src> in the theme app
+// embed (extensions/script-injector/blocks/performance-loader.liquid).
+//
+// The script is obfuscated once, when its inputs change
+// (rebuildPerformanceScript), and stored in PerformanceScript.deferScript.
+// This route only reads it, so it must stay cheap: it blocks HTML parsing.
 
-function json(data, status = 200) {
-  return new Response(JSON.stringify(data), {
-    status,
-    headers: JSON_HEADERS,
-  });
+const OFF_SCRIPT = "/* pp:off */";
+
+// Merchant edits reach browsers within max-age; the ETag makes revalidation
+// a 304 once that expires.
+const CACHE_CONTROL = "public, max-age=300, stale-while-revalidate=86400";
+
+function scriptResponse(request, body, hash) {
+  const headers = {
+    "Content-Type": "application/javascript; charset=utf-8",
+    "Cache-Control": CACHE_CONTROL,
+  };
+  if (hash) {
+    const etag = `"${hash}"`;
+    headers.ETag = etag;
+    if (request.headers.get("If-None-Match") === etag) {
+      return new Response(null, { status: 304, headers });
+    }
+  }
+  return new Response(body, { status: 200, headers });
 }
 
-async function loadStorefrontScripts(shopDomain) {
+async function loadStorefrontScript(request, shopDomain) {
   if (!shopDomain) {
-    return json({ success: false, error: "Missing shop" }, 400);
+    return new Response("/* pp:missing-shop */", {
+      status: 400,
+      headers: {
+        "Content-Type": "application/javascript; charset=utf-8",
+        "Cache-Control": "no-store",
+      },
+    });
   }
 
   const store = await prisma.store.findUnique({
     where: { shopDomain },
-    include: {
-      configs: { orderBy: { updatedAt: "desc" }, take: 1 },
+    select: {
+      isActive: true,
+      configs: {
+        select: { appEnabled: true },
+        orderBy: { updatedAt: "desc" },
+        take: 1,
+      },
+      performanceScript: {
+        select: { deferScript: true, scriptHash: true },
+      },
     },
   });
 
-  const config = store?.configs?.[0];
-  if (!store?.isActive || !config?.appEnabled) {
-    return json({
-      success: true,
-      data: { auditScript: "", hiddenCss: "" },
-    });
+  // Checked on every request (cheap) so a disabled/uninstalled store never
+  // gets a stale script, even if a rebuild was missed.
+  if (!store?.isActive || !store.configs[0]?.appEnabled) {
+    return scriptResponse(request, OFF_SCRIPT, null);
   }
 
-  const deferArray = config.auditDeferArrayEnabled
-    ? readStringArray(config.auditDeferArray)
-    : [];
-  const staticDefer = config.staticDeferDefaultsEnabled
-    ? readStringArray(config.staticDeferDefaults)
-    : [];
-  const hideSelectors = config.auditHideSelectorsEnabled
-    ? readStringArray(config.auditHideSelectors)
-    : [];
+  let script = store.performanceScript?.deferScript || "";
+  let hash = store.performanceScript?.scriptHash || null;
 
-  // Read first user delay scripts
-  const firstUserDelayScripts = config.firstUserDelayScriptsEnabled
-    ? readStringArray(config.firstUserDelayScripts)
-    : [];
+  // Existing installs / a failed earlier build: build once, then it is stored.
+  if (!script) {
+    const built = await rebuildPerformanceScript(shopDomain);
+    script = built?.deferScript || "";
+    hash = built?.scriptHash || null;
+  }
 
-  const compiled = generateDeferredScript(deferArray, staticDefer, {
-    firstUserDelayScripts,
-    firstUserDelayMs: config.firstUserDelayMs ?? 12000,
-    everyTimeDelayMs: config.everyTimeDelayMs ?? 6000,
-    hideSelectors,
-  });
-
-  return json({
-    success: true,
-    data: {
-      auditScript: compiled,
-      hiddenCss: buildHiddenCss(hideSelectors),
-    },
-  });
-}
-
-async function handleProxy(request) {
-  const auth = await authenticate.public.appProxy(request);
-  const shopDomain =
-    auth?.session?.shop || new URL(request.url).searchParams.get("shop");
-  return loadStorefrontScripts(shopDomain);
+  return scriptResponse(request, script || OFF_SCRIPT, script ? hash : null);
 }
 
 export const loader = async ({ request }) => {
   try {
-    return await handleProxy(request);
+    const auth = await authenticate.public.appProxy(request);
+    const shopDomain =
+      auth?.session?.shop || new URL(request.url).searchParams.get("shop");
+    return await loadStorefrontScript(request, shopDomain);
   } catch (error) {
     console.error("[api.storefront-scripts] loader failed:", error);
-    return json({ success: false, error: "Failed to load scripts" });
-  }
-};
-
-export const action = async ({ request }) => {
-  if (request.method === "OPTIONS") {
-    return new Response(null, { status: 204, headers: JSON_HEADERS });
-  }
-
-  try {
-    return await handleProxy(request);
-  } catch (error) {
-    console.error("[api.storefront-scripts] action failed:", error);
-    return json({ success: false, error: "Failed to load scripts" });
+    // A failing script tag must never break the storefront; don't cache it.
+    return new Response("/* pp:error */", {
+      status: 200,
+      headers: {
+        "Content-Type": "application/javascript; charset=utf-8",
+        "Cache-Control": "no-store",
+      },
+    });
   }
 };

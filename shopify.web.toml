@@ -3,4 +3,6 @@ roles = ["frontend", "backend"]
 webhooks_path = "/webhooks/app/uninstalled"
 [commands]
 predev = "npm exec prisma generate"
-dev = "npm exec prisma migrate deploy && npm exec react-router dev"
+# Unset Cursor's PLAYWRIGHT_BROWSERS_PATH so audits use ~/.cache/ms-playwright
+# instead of the empty /tmp/cursor-sandbox-cache Playwright directory.
+dev = "env -u PLAYWRIGHT_BROWSERS_PATH npm exec prisma migrate deploy && env -u PLAYWRIGHT_BROWSERS_PATH npm exec react-router dev"

@@ -1,9 +1,17 @@
 /* eslint-disable react/prop-types */
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect } from "react";
 import { useFetcher } from "react-router";
 
-const DEFAULT_PAGES = 3;
-const SECONDS_PER_PAGE = 30;
+// The audit script waits this long on every page it visits.
+
+const ROLE_LABEL = { MAIN: "Live", UNPUBLISHED: "Unpublished", DEMO: "Demo" };
+
+// "/collections/a-very-long-handle-name-here" -> "/collections/a-v…ere"
+function shortPath(path, max = 40) {
+  if (!path || path.length <= max) return path || "";
+  const half = Math.floor((max - 1) / 2);
+  return `${path.slice(0, half)}…${path.slice(-half)}`;
+}
 
 /**
  * Step 1 — single toggle: "Enable Performance Improvement App" (app_enabled).
@@ -18,13 +26,73 @@ export default function Step1Activate({
   config,
   auditStatus,
   embedEnabled = false,
+  embedStatus = "unknown",
   embedActivateUrl = "",
+  selectedThemeId = null,
   passwordProtected = false,
 }) {
   const fetcher = useFetcher();
   const pwFetcher = useFetcher();
   const urlFetcher = useFetcher();
   const validationFetcher = useFetcher();
+  const themesFetcher = useFetcher();
+  const selectFetcher = useFetcher();
+
+  // --- Theme picker -------------------------------------------------------
+  // The app extension (theme app embed) is installed in ONE theme. The list is
+  // fetched on mount so the dashboard loader stays fast.
+  useEffect(() => {
+    themesFetcher.load("/api/themes");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  const themesLoaded = themesFetcher.data !== undefined;
+  const themesFailed = themesLoaded && themesFetcher.data.ok === false;
+  const themes = themesFetcher.data?.themes ?? [];
+  const savingTheme = selectFetcher.state !== "idle";
+  // Selected theme no longer exists (e.g. deleted in Shopify).
+  const themeMissing =
+    themesLoaded &&
+    !themesFailed &&
+    Boolean(selectedThemeId) &&
+    !themes.some((t) => t.id === selectedThemeId);
+  // In-flight choice -> saved choice -> live theme.
+  const shownThemeId = themeMissing
+    ? ""
+    : (selectFetcher.formData?.get("themeId") ??
+      selectedThemeId ??
+      themesFetcher.data?.liveThemeId ??
+      "");
+  const shownTheme = themes.find((t) => t.id === shownThemeId);
+  const themeName = shownTheme?.name ?? "your theme";
+  // Fail closed once we know the list: no usable theme => no toggle.
+  const themeBlocked =
+    themesLoaded && (themesFailed || themeMissing || !shownThemeId);
+  const installUrl =
+    selectFetcher.data?.ok && selectFetcher.data.selectedThemeId === shownThemeId
+      ? selectFetcher.data.embedActivateUrl
+      : embedActivateUrl;
+
+  const handleSelectTheme = (themeId) => {
+    if (!themeId || themeId === shownThemeId || savingTheme) return;
+    selectFetcher.submit(
+      { intent: "select-theme", themeId },
+      { method: "POST" },
+    );
+  };
+
+  // <s-select> keeps its own value like <s-switch>: remount it from the real
+  // value if the save is refused.
+  const [selectKey, setSelectKey] = useState(0);
+  useEffect(() => {
+    if (selectFetcher.data?.ok === false) setSelectKey((k) => k + 1);
+  }, [selectFetcher.data]);
+
+  // <s-switch> flips itself visually on click, but our `checked` prop stays
+  // false when validation / the toggle-app action refuses, so React never
+  // resets it and the switch would sit ON next to the error. Bumping this key
+  // remounts the switch from the (still false) `checked` prop => back to OFF.
+  const [switchKey, setSwitchKey] = useState(0);
+  const resetSwitch = () => setSwitchKey((k) => k + 1);
   // Deriving "validating" from the fetcher's own state (rather than a
   // separate useState) keeps the spinner/disabled state always in sync with
   // the in-flight request, including on late/slow responses.
@@ -39,8 +107,9 @@ export default function Step1Activate({
   // Password is required if store is protected AND no password saved yet
   const passwordRequired = passwordProtected && !savedPassword;
 
-  // Main toggle is blocked if password is required but not saved
-  const mainToggleBlocked = passwordRequired;
+  // Main toggle is blocked if password is required but not saved, or if there
+  // is no usable theme to install the extension in.
+  const mainToggleBlocked = passwordRequired || themeBlocked;
 
   // Custom URL drafts — one Save writes both fields (matches the card layout).
   const [plpDraft, setPlpDraft] = useState(config.customPlpUrl || "");
@@ -48,6 +117,15 @@ export default function Step1Activate({
   const savedPlp = urlFetcher.data?.customPlpUrl ?? (config.customPlpUrl || "");
   const savedPdp = urlFetcher.data?.customPdpUrl ?? (config.customPdpUrl || "");
   const urlsDirty = plpDraft !== savedPlp || pdpDraft !== savedPdp;
+
+  // The server saves a cleaned URL (full https URL on this store, share-link
+  // params stripped). Show that value so the fields are not "dirty" afterwards.
+  useEffect(() => {
+    if (urlFetcher.data?.ok) {
+      setPlpDraft(urlFetcher.data.customPlpUrl || "");
+      setPdpDraft(urlFetcher.data.customPdpUrl || "");
+    }
+  }, [urlFetcher.data]);
 
   const handleSavePassword = () => {
     pwFetcher.submit(
@@ -86,66 +164,38 @@ export default function Step1Activate({
     auditStatus?.failed !== true;
   const failed = appEnabled && auditStatus?.failed === true;
 
-  // One clock drives both the bar and the countdown: completed pages from
-  // the status poll, plus elapsed time within the current 30s page window.
-  const pageStartTimeRef = useRef(Date.now());
-  const lastPageIndexRef = useRef(auditStatus?.pageIndex ?? 0);
-  const [ui, setUi] = useState({
-    progress: 0,
-    remaining: DEFAULT_PAGES * SECONDS_PER_PAGE,
-  });
-
-  useEffect(() => {
-    const totalPages = Math.max(
-      1,
-      auditStatus?.totalPages > 0 ? auditStatus.totalPages : DEFAULT_PAGES,
-    );
-
-    if (!running) {
-      pageStartTimeRef.current = Date.now();
-      lastPageIndexRef.current = auditStatus?.pageIndex ?? 0;
-      setUi({ progress: 0, remaining: totalPages * SECONDS_PER_PAGE });
-      return;
-    }
-
-    const tick = () => {
-      const pages = Math.max(
-        1,
-        auditStatus?.totalPages > 0 ? auditStatus.totalPages : DEFAULT_PAGES,
-      );
-      let pageIndex = auditStatus?.pageIndex ?? 0;
-      if (pageIndex !== lastPageIndexRef.current) {
-        pageStartTimeRef.current = Date.now();
-        lastPageIndexRef.current = pageIndex;
-      }
-      pageIndex = Math.min(Math.max(0, pageIndex), pages - 1);
-      const elapsedOnPage = Math.min(
-        SECONDS_PER_PAGE,
-        (Date.now() - pageStartTimeRef.current) / 1000,
-      );
-      const pageShare = 100 / pages;
-      const progress = Math.min(
-        99,
-        pageIndex * pageShare + (elapsedOnPage / SECONDS_PER_PAGE) * pageShare,
-      );
-      const remaining = Math.max(
-        0,
-        (pages - pageIndex - 1) * SECONDS_PER_PAGE +
-          (SECONDS_PER_PAGE - elapsedOnPage),
-      );
-      setUi({ progress, remaining });
-    };
-
-    tick();
-    const timer = setInterval(tick, 250);
-    return () => clearInterval(timer);
-  }, [running, auditStatus?.pageIndex, auditStatus?.totalPages]);
-
-  const progressPct = ui.progress;
-  const remaining = ui.remaining;
-  const page = auditStatus?.pageIndex ?? 0;
-  const total =
-    auditStatus?.totalPages > 0 ? auditStatus.totalPages : DEFAULT_PAGES;
+  // Audit progress comes from the server (real phases, no guessed timers):
+  // discovering pages -> scanning them (in parallel, `pageIndex` = pages
+  // finished) -> building the storefront script. Step 2 only opens once the
+  // script is stored.
+  const auditPages = Array.isArray(auditStatus?.pages) ? auditStatus.pages : [];
+  const totalPages = auditStatus?.totalPages > 0 ? auditStatus.totalPages : 0;
+  const donePages = Math.min(Math.max(0, auditStatus?.pageIndex ?? 0), totalPages);
+  const phase = auditStatus?.phase || "discovering";
+  const progressPct =
+    phase === "building"
+      ? 92
+      : phase === "auditing"
+        ? 10 + (totalPages > 0 ? (donePages / totalPages) * 75 : 0)
+        : 5;
+  const auditSteps = [
+    {
+      key: "discovering",
+      label:
+        auditPages.length > 0
+          ? `Found ${auditPages.length} page${auditPages.length === 1 ? "" : "s"} to scan`
+          : "Finding pages to scan",
+    },
+    {
+      key: "auditing",
+      label:
+        totalPages > 0
+          ? `Scanning pages (${donePages} of ${totalPages} done)`
+          : "Scanning pages",
+    },
+    { key: "building", label: "Building your optimized script" },
+  ];
+  const activeStepIndex = auditSteps.findIndex((st) => st.key === phase);
 
   const focusPasswordField = () => {
     const pwField = document.querySelector(
@@ -181,7 +231,7 @@ export default function Step1Activate({
     // Fast client-side check against the last-known loader data, so an
     // obviously-blocked toggle doesn't even wait on a round trip.
     if (mainToggleBlocked) {
-      focusPasswordField();
+      if (passwordRequired) focusPasswordField();
       return;
     }
 
@@ -202,6 +252,7 @@ export default function Step1Activate({
       // FAIL-CLOSED: toggle never flips ON. Take the corrective action for
       // whichever check failed (or, for an unrecognized/empty response,
       // just leave the toggle OFF with the generic banner below).
+      resetSwitch();
       if (result?.blockReason === "extension_required") {
         openThemeEditor(result.embedActivateUrl || embedActivateUrl);
       } else if (result?.blockReason === "password_required") {
@@ -223,13 +274,15 @@ export default function Step1Activate({
   // the loader assumed enabled). If the toggle-app action itself blocks,
   // take the same corrective action as the client-side validation does.
   useEffect(() => {
+    // Any refused/failed toggle-app response leaves the switch OFF.
+    if (fetcher.data?.ok === false) resetSwitch();
     if (fetcher.data?.error === "extension_required") {
       openThemeEditor(fetcher.data?.embedActivateUrl || embedActivateUrl);
     } else if (fetcher.data?.error === "password_required") {
       focusPasswordField();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fetcher.data?.error, fetcher.data?.embedActivateUrl, embedActivateUrl]);
+  }, [fetcher.data, embedActivateUrl]);
 
   return (
     <s-section heading="Step 1: Activate">
@@ -296,6 +349,115 @@ export default function Step1Activate({
           </div>
         </div>
 
+        {/* Theme picker: which theme gets the app extension */}
+        <div
+          style={{
+            margin: "0 auto",
+            width: "100%",
+            maxWidth: 410,
+            backgroundColor: "#f5f5f5",
+            borderRadius: 8,
+            padding: 16,
+          }}
+        >
+          <div
+            style={{
+              fontSize: 16,
+              fontWeight: 700,
+              color: "#222222",
+              marginBottom: 12,
+            }}
+          >
+            Choose the theme for the app extension
+          </div>
+          {!themesLoaded ? (
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <s-spinner size="small" />
+              <s-text tone="subdued">Loading themes…</s-text>
+            </div>
+          ) : themesFailed ? (
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <s-text tone="critical">
+                Couldn&apos;t load your themes.
+              </s-text>
+              <s-button
+                variant="secondary"
+                onClick={() => themesFetcher.load("/api/themes")}
+              >
+                Retry
+              </s-button>
+            </div>
+          ) : (
+            <>
+              <div
+                style={{
+                  display: "flex",
+                  gap: 8,
+                  alignItems: "flex-end",
+                  flexWrap: "wrap",
+                }}
+              >
+                <div style={{ flex: "1 1 260px", minWidth: 0 }}>
+                  <s-select
+                    key={selectKey}
+                    label="Theme"
+                    labelAccessibilityVisibility="exclusive"
+                    placeholder="Select a theme"
+                    value={shownThemeId}
+                    disabled={savingTheme}
+                    onChange={(e) => handleSelectTheme(e.target.value)}
+                  >
+                    {themes.map((t) => (
+                      <s-option key={t.id} value={t.id}>
+                        {`${t.name} (${ROLE_LABEL[t.role] || t.role})`}
+                      </s-option>
+                    ))}
+                  </s-select>
+                </div>
+                <s-button
+                  variant={embedStatus === "enabled" ? "secondary" : "primary"}
+                  disabled={!shownThemeId || savingTheme}
+                  onClick={() => openThemeEditor(installUrl)}
+                >
+                  {embedStatus === "enabled"
+                    ? "Open theme editor"
+                    : "Install extension in this theme"}
+                </s-button>
+              </div>
+
+              <div style={{ marginTop: 8 }}>
+                {savingTheme ? (
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <s-spinner size="small" />
+                    <s-text tone="subdued">Checking {themeName}…</s-text>
+                  </div>
+                ) : themeMissing ? (
+                  <s-text tone="caution">
+                    The theme you chose earlier no longer exists. Choose another
+                    theme.
+                  </s-text>
+                ) : selectFetcher.data?.ok === false ? (
+                  <s-text tone="critical">{selectFetcher.data.error}</s-text>
+                ) : embedStatus === "enabled" ? (
+                  <s-text tone="success">
+                    ✔ Extension is enabled in “{themeName}”.
+                  </s-text>
+                ) : embedStatus === "disabled" ? (
+                  <s-text tone="caution">
+                    Extension is not enabled in “{themeName}”. Install it, turn
+                    it on and save in the theme editor, then come back here.
+                  </s-text>
+                ) : (
+                  <s-text tone="caution">
+                    We couldn&apos;t verify the extension in “{themeName}”, so
+                    the app stays off until we can.
+                  </s-text>
+                )}
+              </div>
+            </>
+          )}
+        </div>
+
         {/* Rocket illustration */}
         <div style={{ textAlign: "center", margin: "24px 0" }}>
           <div style={{ fontSize: 64 }}>🚀</div>
@@ -310,6 +472,7 @@ export default function Step1Activate({
         {/* Toggle switch */}
         <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 8, padding: 8 }}>
           <s-switch
+            key={switchKey}
             label="Enable Performance Improvement App"
             checked={appEnabled}
             disabled={mainToggleBlocked || validating}
@@ -325,9 +488,15 @@ export default function Step1Activate({
           )}
 
           {/* Show message if blocked due to password (stale loader data) */}
-          {mainToggleBlocked && !validating && (
+          {passwordRequired && !validating && (
             <s-text tone="caution">
               Save your storefront password below before enabling the app.
+            </s-text>
+          )}
+          {themeBlocked && !passwordRequired && !validating && (
+            <s-text tone="caution">
+              Choose a theme for the app extension above before enabling the
+              app.
             </s-text>
           )}
 
@@ -438,7 +607,7 @@ export default function Step1Activate({
                   <s-text-field
                     label="PLP URL (Collection Page)"
                     labelAccessibilityVisibility="exclusive"
-                    placeholder="https://yourstore.com/collections/your-collection"
+                    placeholder="/collections/all"
                     value={plpDraft}
                     onChange={(e) => setPlpDraft(e.target.value)}
                   />
@@ -447,7 +616,7 @@ export default function Step1Activate({
                   <s-text-field
                     label="PDP URL (Product Page)"
                     labelAccessibilityVisibility="exclusive"
-                    placeholder="https://yourstore.com/products/your-product"
+                    placeholder="/products/your-product"
                     value={pdpDraft}
                     onChange={(e) => setPdpDraft(e.target.value)}
                   />
@@ -460,8 +629,24 @@ export default function Step1Activate({
                   {urlFetcher.state !== "idle" ? "Saving…" : "Save"}
                 </s-button>
               </div>
+              {urlFetcher.data?.plpError && (
+                <s-text tone="critical">
+                  Collection page: {urlFetcher.data.plpError}
+                </s-text>
+              )}
+              {urlFetcher.data?.pdpError && (
+                <s-text tone="critical">
+                  Product page: {urlFetcher.data.pdpError}
+                </s-text>
+              )}
               {!urlsDirty && urlFetcher.data?.ok && (
                 <s-text tone="success">Saved</s-text>
+              )}
+              {!urlsDirty && urlFetcher.data?.plpWarning && (
+                <s-text tone="caution">{urlFetcher.data.plpWarning}</s-text>
+              )}
+              {!urlsDirty && urlFetcher.data?.pdpWarning && (
+                <s-text tone="caution">{urlFetcher.data.pdpWarning}</s-text>
               )}
             </div>
           </div>
@@ -482,11 +667,9 @@ export default function Step1Activate({
           >
             <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
               <s-spinner />
-              <span>
-                Running audit… Scanning {Math.min(page + 1, total)}/{Math.max(total, 1)}{" "}
-                pages
-              </span>
+              <span>{auditSteps[Math.max(activeStepIndex, 0)].label}…</span>
             </div>
+
             <div style={{ width: "100%", maxWidth: 360 }}>
               <div
                 style={{
@@ -502,14 +685,84 @@ export default function Step1Activate({
                     width: `${progressPct}%`,
                     backgroundColor: "#00B856",
                     borderRadius: 6,
-                    transition: "width 250ms linear",
+                    transition: "width 400ms ease",
                   }}
                 />
               </div>
             </div>
-            <div style={{ fontSize: 13, color: "#6B7177" }}>
-              {Math.ceil(remaining)}s remaining
+
+            <div
+              style={{
+                display: "flex",
+                flexDirection: "column",
+                gap: 4,
+                fontSize: 13,
+                color: "#6B7177",
+              }}
+            >
+              {auditSteps.map((st, i) => {
+                const state =
+                  i < activeStepIndex
+                    ? "done"
+                    : i === activeStepIndex
+                      ? "current"
+                      : "pending";
+                return (
+                  <div
+                    key={st.key}
+                    style={{
+                      fontWeight: state === "current" ? 600 : 400,
+                      color: state === "pending" ? "#8A9099" : "#1E3A2B",
+                    }}
+                  >
+                    {state === "done" ? "✓" : state === "current" ? "●" : "○"}{" "}
+                    {st.label}
+                  </div>
+                );
+              })}
             </div>
+
+            {auditPages.length > 0 && (
+              <div
+                style={{
+                  display: "flex",
+                  gap: 8,
+                  flexWrap: "wrap",
+                  justifyContent: "center",
+                }}
+              >
+                {auditPages.map((p, i) => (
+                  <span
+                    key={`${p.label}-${i}`}
+                    title={p.path}
+                    style={{
+                      padding: "2px 10px",
+                      borderRadius: 12,
+                      fontSize: 12,
+                      backgroundColor: "#F1F3F5",
+                      color: "#1E3A2B",
+                    }}
+                  >
+                    {p.label} · {shortPath(p.path)}
+                  </span>
+                ))}
+              </div>
+            )}
+
+            {auditPages.length > 0 && auditPages.length < 3 && (
+              <div
+                style={{
+                  fontSize: 12,
+                  color: "#6B7177",
+                  textAlign: "center",
+                  maxWidth: 420,
+                }}
+              >
+                Only {auditPages.map((p) => p.label).join(" and ")}{" "}
+                {auditPages.length === 1 ? "was" : "were"} found on your store.
+                Add a collection/product URL below for a fuller audit.
+              </div>
+            )}
           </div>
         )}
         {failed && (
