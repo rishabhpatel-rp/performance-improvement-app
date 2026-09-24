@@ -82,7 +82,7 @@ function mapConfigFields(
     staticDeferDefaults:
       parseJsonArray(result.static_defer_defaults).length > 0
         ? parseJsonArray(result.static_defer_defaults)
-        : ["anime.js"],
+        : ["wpm","gtm"],
     // Toggle states + preserved snapshots are DB-only (see
     // IMPLEMENTATION_PLAN_6.md) and are never read from or written to the
     // metaobject. These defaults exist only to satisfy the AppConfig type;
@@ -97,7 +97,7 @@ function mapConfigFields(
     appEndpoint: typeof result.app_endpoint === "string" ? result.app_endpoint : "",
 
     // NEW: First User Delay Scripts and Every Time Delay - DB-only, not in metaobject
-    firstUserDelayScripts: ["anime.js"],
+    firstUserDelayScripts: ["wpm","gtm"],
     firstUserDelayScriptsEnabled: true,
     firstUserDelayScriptsPreserved: [],
     firstUserDelayMs: 12000,
@@ -117,7 +117,7 @@ export function defaultAppConfig(): AppConfig {
     debugMode: false,
     auditDeferArray: [],
     auditHideSelectors: [],
-    staticDeferDefaults: ["anime.js"],
+    staticDeferDefaults: ["wpm","gtm"],
     // DB-only (see IMPLEMENTATION_PLAN_6.md) — defaults here only satisfy the
     // AppConfig type; the loader always overlays the real DB values.
     auditDeferArrayEnabled: true,
@@ -130,7 +130,7 @@ export function defaultAppConfig(): AppConfig {
     appEndpoint: "",
 
     // NEW: First User Delay Scripts and Every Time Delay - DB-only, not in metaobject
-    firstUserDelayScripts: ["anime.js"],
+    firstUserDelayScripts: ["wpm","gtm"],
     firstUserDelayScriptsEnabled: true,
     firstUserDelayScriptsPreserved: [],
     firstUserDelayMs: 12000,

@@ -85,7 +85,7 @@ type AdminClient = any;
 
 // Static defaults the app always defers, independent of the audit results.
 // Stored DB-only (not on the metaobject) and editable per store in Step 3.
-export const DEFAULT_STATIC_DEFER = ["anime.js"];
+export const DEFAULT_STATIC_DEFER = ["wpm","gtm"];
 
 // ============================================================
 // FUNCTION 1: Fetch shop details from Shopify Admin API
@@ -323,7 +323,7 @@ const storeConfig = await prisma.storeConfig.upsert({
       staticDeferDefaultsPreserved: config.staticDeferDefaultsPreserved ?? [],
 
       // NEW
-      firstUserDelayScripts: config.firstUserDelayScripts ?? ["anime.js"],
+      firstUserDelayScripts: config.firstUserDelayScripts ?? ["wpm","gtm"],
       firstUserDelayScriptsEnabled: config.firstUserDelayScriptsEnabled ?? true,
       firstUserDelayScriptsPreserved: config.firstUserDelayScriptsPreserved ?? [],
       firstUserDelayMs: config.firstUserDelayMs ?? 12000,
@@ -638,7 +638,7 @@ export async function updateAuditArrays(
     auditDeferArray: patch.auditDeferArray ?? [],
     auditHideSelectors: patch.auditHideSelectors ?? [],
     staticDeferDefaults: patch.staticDeferDefaults ?? DEFAULT_STATIC_DEFER,
-    firstUserDelayScripts: patch.firstUserDelayScripts ?? ["anime.js"],
+    firstUserDelayScripts: patch.firstUserDelayScripts ?? ["wpm","gtm"],
     firstUserDelayMs: patch.firstUserDelayMs ?? 12000,
     everyTimeDelayMs: patch.everyTimeDelayMs ?? 6000,
   };

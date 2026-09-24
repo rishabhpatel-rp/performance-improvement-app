@@ -50,7 +50,7 @@ type AdminClient = any;
 
 // Static defaults the app always defers, independent of the audit results.
 // Stored DB-only (not on the metaobject) and editable per store in Step 3.
-export const DEFAULT_STATIC_DEFER = ["anime.js"];
+export const DEFAULT_STATIC_DEFER = ["wpm","gtm"];
 
 // ============================================================
 // FUNCTION 1: Fetch shop details from Shopify Admin API

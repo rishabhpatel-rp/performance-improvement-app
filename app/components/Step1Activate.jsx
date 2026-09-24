@@ -354,7 +354,7 @@ export default function Step1Activate({
           style={{
             margin: "0 auto",
             width: "100%",
-            maxWidth: 410,
+            maxWidth: 470,
             backgroundColor: "#f5f5f5",
             borderRadius: 8,
             padding: 16,
