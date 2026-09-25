@@ -6,24 +6,15 @@ import {
   getSelectedThemeId,
 } from "../lib/theme-embed.server";
 import { withShopifyTimeout, rethrowAuthRedirect } from "../lib/shopify-timeout.server";
+import { getPasswordProtection } from "../lib/password-protection.server";
 
 // Per-call budget. Two Shopify calls run in parallel, so worst case is
 // ~2s + network, well inside the <3s client budget in the plan.
 const VALIDATE_TIMEOUT_MS = 2000;
 
-async function fetchPasswordProtected(admin) {
-  const response = await admin.graphql(`#graphql
-    query OnlineStorePasswordStatus {
-      onlineStore {
-        passwordProtection {
-          enabled
-        }
-      }
-    }
-  `);
-  const data = await response.json();
-  return data.data?.onlineStore?.passwordProtection?.enabled ?? false;
-}
+// Only used when the background check has not stored an answer yet: a live
+// check (Chromium redirect probe + Shopify setting) may take a few seconds.
+const PASSWORD_CHECK_TIMEOUT_MS = 10000;
 
 /**
  * POST /api/toggle-validate
@@ -31,9 +22,11 @@ async function fetchPasswordProtected(admin) {
  *
  * Re-checks, live, the two conditions required to flip "Enable Performance
  * Improvement App" ON: the theme app embed is enabled, and (if the store is
- * password protected) a storefront password has been saved. Always
- * fail-closed — any timeout, error, or unexpected shape results in
- * `allowed: false` so the caller never flips the toggle ON.
+ * password protected) a storefront password has been saved. The embed check
+ * is fail-closed (any timeout/error => `allowed: false`). The password check
+ * only blocks when protection is CONFIRMED and no password is saved; if it
+ * cannot be determined the toggle is allowed and the audit (which stops with
+ * PASSWORD_REQUIRED on a password page) is the safety net.
  */
 export const action = async ({ request }) => {
   const { admin, session } = await authenticate.admin(request);
@@ -70,9 +63,9 @@ export const action = async ({ request }) => {
         VALIDATE_TIMEOUT_MS,
       ),
       withShopifyTimeout(
-        fetchPasswordProtected(admin),
+        getPasswordProtection(admin, session.shop),
         "passwordProtection",
-        VALIDATE_TIMEOUT_MS,
+        PASSWORD_CHECK_TIMEOUT_MS,
       ),
       prisma.store
         .findUnique({
@@ -94,10 +87,10 @@ export const action = async ({ request }) => {
   const appEmbedEnabled =
     embedResult.status === "fulfilled" && embedResult.value === true;
 
-  // Unknown password-protection status is treated as protected, so a failed
-  // check can never let the toggle through unvalidated.
+  // Only a confirmed `true` counts as protected. Unknown (null / timeout) is
+  // not treated as protected: the audit will report a password page itself.
   const passwordProtected =
-    passwordProtectedResult.status !== "fulfilled" ||
+    passwordProtectedResult.status === "fulfilled" &&
     passwordProtectedResult.value === true;
 
   const savedPassword =

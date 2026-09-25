@@ -1,11 +1,13 @@
 import type { PredefinedScript } from "../types/script";
 
 /**
- * The predefined scripts shown in the Step-2 wizard. The audit script has
- * been removed — script_1 is now a small dummy placeholder that only
- * exercises the delivery path (see api.script.jsx, which is the actual
- * injection point). These entries exist so the wizard still has 3 defined
- * slots to toggle; real logic is added before go-live.
+ * The predefined scripts shown in the Step-2 wizard. `PREDEFINED_SCRIPTS` is
+ * still empty and `script1/2/3Enabled` have no effect on the storefront
+ * bundle (see `performance-script.server.ts`, which builds the real
+ * storefront script from the audit's defer/hide arrays). Filling these in
+ * with real script content and wiring the per-script toggles into the
+ * generated bundle is open work (REQUIREMENTS_AND_PLANS.md, R1 issue #3) —
+ * not done here because it needs the actual script content decided first.
  */
 
 const SCRIPT_1_DUMMY = `

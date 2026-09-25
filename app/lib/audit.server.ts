@@ -23,6 +23,24 @@ export interface HiddenAuditResult {
   completedAt: string;
 }
 
+/** The storefront could not be audited because of its password page. The
+ * `code` is stored in `StoreConfig.auditError` and mapped to a message in the
+ * Step 1 UI (which also reveals the password box). */
+export type AuditBlockCode = "PASSWORD_REQUIRED" | "PASSWORD_INCORRECT";
+
+export class AuditBlockedError extends Error {
+  code: AuditBlockCode;
+  constructor(code: AuditBlockCode) {
+    super(
+      code === "PASSWORD_REQUIRED"
+        ? "The store is password protected and no storefront password is saved."
+        : "The saved storefront password did not unlock the store.",
+    );
+    this.name = "AuditBlockedError";
+    this.code = code;
+  }
+}
+
 interface CustomUrls {
   plp?: string;
   pdp?: string;
@@ -70,7 +88,7 @@ async function getBrowser(): Promise<Browser> {
   return launching;
 }
 
-async function withBrowser<T>(fn: (browser: Browser) => Promise<T>): Promise<T> {
+export async function withBrowser<T>(fn: (browser: Browser) => Promise<T>): Promise<T> {
   if (browserIdleTimer) {
     clearTimeout(browserIdleTimer);
     browserIdleTimer = null;
@@ -128,6 +146,7 @@ const PAGE_LABELS: Array<[keyof DiscoveredPages, string]> = [
 export interface AuditPageInfo {
   label: string;
   path: string;
+  done?: boolean; // set as each page finishes in the parallel audit
 }
 
 /** Human-readable list of the pages the audit will walk (Home -> PLP -> PDP,
@@ -236,42 +255,60 @@ export function isPasswordPageHtml(finalUrl: string, html: string): boolean {
 /** If `page` is showing the storefront password page, submit `password` and
  * wait for the storefront to load. Returns true when the page was locked.
  * Shared by page discovery and the audit itself. */
+/** True when `page` is showing Shopify's storefront password page: the
+ * `/password` route, or its form (`action="/password"` + `name="password"`). */
+export async function isPasswordPage(page: Page): Promise<boolean> {
+  return page
+    .evaluate(() => {
+      if (/(^|\/)password\/?$/.test(location.pathname)) return true;
+      const input = document.querySelector<HTMLInputElement>(
+        'input[name="password"], input[type="password"]',
+      );
+      const form = input?.closest("form");
+      if (!form) return false;
+      const action = form.getAttribute("action") || "";
+      try {
+        return /(^|\/)password\/?$/.test(
+          new URL(action, location.href).pathname,
+        );
+      } catch {
+        return /(^|\/)password\/?$/i.test(action);
+      }
+    })
+    .catch(() => false);
+}
+
 export async function unlockPasswordPage(
   page: Page,
   password: string,
 ): Promise<boolean> {
-  const isPasswordPage = await page
-    .evaluate(() => {
-      const form = document.querySelector(
-        'form[action="/password"], form[action*="password"]',
-      );
-      const input = document.querySelector('input[name="password"]');
-      return Boolean(form || input);
-    })
-    .catch(() => false);
-  if (!isPasswordPage) return false;
+  if (!(await isPasswordPage(page))) return false;
 
   console.log("[audit] Password page detected — submitting bypass form.");
-  // Start waiting for the navigation BEFORE submitting so it cannot be missed.
-  await Promise.all([
-    page
-      .waitForNavigation({ waitUntil: "load", timeout: 30000 })
-      .catch(() => {}),
-    page
-      .evaluate((pw) => {
-        const input = document.querySelector(
-          'input[name="password"]',
-        ) as HTMLInputElement | null;
-        const form = document.querySelector(
-          'form[action="/password"], form',
-        ) as HTMLFormElement | null;
-        if (input && form) {
-          input.value = pw;
-          form.submit();
-        }
-      }, password)
-      .catch(() => {}),
-  ]);
+  const navigation = page
+    .waitForNavigation({ waitUntil: "load", timeout: 30000 })
+    .catch(() => undefined);
+  const submitted = await page
+    .evaluate((pw) => {
+      const input = document.querySelector<HTMLInputElement>(
+        'input[name="password"], input[type="password"]',
+      );
+      const form = (input?.closest("form") ??
+        document.querySelector<HTMLFormElement>('form[action*="password"], form')) as
+        | HTMLFormElement
+        | null;
+      if (!input || !form) return false;
+      input.value = pw;
+      if (typeof form.requestSubmit === "function") {
+        form.requestSubmit();
+      } else {
+        form.submit();
+      }
+      return true;
+    }, password)
+    .catch(() => false);
+  if (!submitted) return false;
+  await navigation;
   return true;
 }
 
@@ -300,7 +337,7 @@ export async function returnToRequestedUrl(
  * HTML with a plain HTTP request, ~10x faster than launching Chromium. */
 async function discoverViaHtml(
   home: string,
-): Promise<{ plp?: string; pdp?: string }> {
+): Promise<{ plp?: string; pdp?: string; passwordPage?: boolean }> {
   try {
     const res = await fetch(home, {
       redirect: "follow",
@@ -310,8 +347,9 @@ async function discoverViaHtml(
     if (!res.ok) return {};
     const html = await res.text();
     // A password-protected store answers with the password page (no product or
-    // collection links to find) — let the browser fallback unlock it instead.
-    if (isPasswordPageHtml(res.url, html)) return {};
+    // collection links to find). Report it so the caller can stop early (no
+    // saved password) or let the browser fallback unlock it (password saved).
+    if (isPasswordPageHtml(res.url, html)) return { passwordPage: true };
     const find = (segment: string) => {
       const m = html.match(
         new RegExp(`href=["']([^"'#?]*/${segment}/[a-z0-9_-][^"'#?]*)`, "i"),
@@ -452,7 +490,12 @@ export async function discoverPages(
   }
 
   if (!plp || !pdp) {
-    adopt(await discoverViaHtml(appendPreviewParams(home, params)), "html");
+    const htmlFound = await discoverViaHtml(appendPreviewParams(home, params));
+    // Password page and nothing to unlock it with: no page can be audited.
+    if (htmlFound.passwordPage && !password) {
+      throw new AuditBlockedError("PASSWORD_REQUIRED");
+    }
+    adopt(htmlFound, "html");
   }
 
   if (!plp || !pdp) {
@@ -491,6 +534,7 @@ export type AuditPhase = "discovering" | "auditing" | "building";
 export type AuditProgress = {
   done: number; // pages whose audit has finished
   total: number; // total pages to audit
+  path?: string; // pathname of the page that just finished (parallel audit)
 };
 
 // Audit timing. The old script slept a fixed 30 s per page; now each page is
@@ -511,6 +555,8 @@ interface MeasuredPage {
   context: BrowserContext;
   page: Page;
   acc: PageAccumulators;
+  /** Still on the storefront password page (none saved, or it was wrong). */
+  blocked?: boolean;
 }
 
 /** Loads one page in its own isolated browser context and runs the audit
@@ -552,6 +598,12 @@ async function measurePage(
       if (!scriptRan) {
         return { context, page, acc: { p: [], vis: [], off: [] } };
       }
+    }
+
+    // Still on the password page (no password saved, or the saved one did not
+    // unlock it): there is nothing to measure — stop now instead of scanning it.
+    if (await isPasswordPage(page)) {
+      return { context, page, acc: { p: [], vis: [], off: [] }, blocked: true };
     }
 
     // Let the page settle: network quiet, a mouse move to wake pointer-gated
@@ -704,13 +756,24 @@ export async function runHiddenAudit({
           const m = await measurePage(browser, url, password);
           measured.push(m);
           done++;
+          let path: string | undefined;
           try {
-            await onProgress?.({ done, total: urls.length });
+            path = new URL(url).pathname || "/";
+          } catch {
+            path = url;
+          }
+          try {
+            await onProgress?.({ done, total: urls.length, path });
           } catch {
             // progress is best-effort
           }
         }),
       );
+      if (measured.some((m) => m.blocked)) {
+        throw new AuditBlockedError(
+          password ? "PASSWORD_INCORRECT" : "PASSWORD_REQUIRED",
+        );
+      }
       if (measured.length === 0) {
         const failure = settled.find((r) => r.status === "rejected");
         throw failure && failure.status === "rejected"

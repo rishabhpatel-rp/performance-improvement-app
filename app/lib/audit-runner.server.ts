@@ -1,10 +1,17 @@
 import prisma from "../db.server";
-import { discoverPages, runHiddenAudit, describePages } from "./audit.server";
+import {
+  discoverPages,
+  runHiddenAudit,
+  describePages,
+  AuditBlockedError,
+} from "./audit.server";
 import { saveAuditReport } from "./store-sync.server";
 import { listThemes, numericThemeId } from "./theme-embed.server";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AdminClient = any;
+
+const auditRunGenerations = new Map<string, number>();
 
 /**
  * `preview_theme_id` for the audit, or undefined when it is not needed.
@@ -56,6 +63,9 @@ export async function startAuditForStore(
     return { started: false };
   }
   const storeId = store.id;
+  const runGeneration = (auditRunGenerations.get(shopDomain) ?? 0) + 1;
+  auditRunGenerations.set(shopDomain, runGeneration);
+  const isCurrentRun = () => auditRunGenerations.get(shopDomain) === runGeneration;
 
   await prisma.storeConfig.upsert({
     where: { storeId },
@@ -89,6 +99,7 @@ export async function startAuditForStore(
   // eslint-disable-next-line @typescript-eslint/no-floating-promises
   (async () => {
     try {
+      if (!isCurrentRun()) return;
       // Storefront password (Step 1, password-protected stores), custom PLP/PDP
       // URLs and the theme the merchant chose for the extension.
       const config = await prisma.storeConfig.findUnique({
@@ -120,6 +131,7 @@ export async function startAuditForStore(
       );
 
       // Publish the real page list + count now, before Chromium launches.
+      if (!isCurrentRun()) return;
       await prisma.storeConfig.update({
         where: { storeId },
         data: {
@@ -130,15 +142,29 @@ export async function startAuditForStore(
         },
       });
 
+      // Mutated in place as each page finishes, so `auditPages` in the DB
+      // (and therefore the Step 1 chips) can show per-page done/pending state
+      // even though the pages run in parallel and can finish in any order.
+      const pagesState: typeof described = described.map((p) => ({ ...p }));
+
       const report = await runHiddenAudit({
         pages,
         password: password || undefined,
         // Pages are audited in parallel: `done` counts finished pages.
-        onProgress: async ({ done, total }) => {
+        onProgress: async ({ done, total, path }) => {
+          if (!isCurrentRun()) return;
           try {
+            if (path) {
+              const page = pagesState.find((p) => p.path === path && !p.done);
+              if (page) page.done = true;
+            }
             await prisma.storeConfig.update({
               where: { storeId },
-              data: { auditPageIndex: done, auditTotalPages: total },
+              data: {
+                auditPageIndex: done,
+                auditTotalPages: total,
+                auditPages: pagesState,
+              },
             });
           } catch (err) {
             console.warn(
@@ -149,6 +175,7 @@ export async function startAuditForStore(
         },
       });
 
+      if (!isCurrentRun()) return;
       // Building the storefront script happens inside saveAuditReport; it
       // flips auditComplete only once the script is stored.
       await prisma.storeConfig.update({
@@ -156,6 +183,7 @@ export async function startAuditForStore(
         data: { auditPhase: "building" },
       });
       await saveAuditReport(shopDomain, report);
+      if (!isCurrentRun()) return;
       await prisma.storeConfig.update({
         where: { storeId },
         data: {
@@ -172,15 +200,20 @@ export async function startAuditForStore(
         `[Audit] COMPLETED for ${shopDomain}: defer=${JSON.stringify(report.deferArray)} hide=${JSON.stringify(report.hideSelectors)}`,
       );
     } catch (err) {
+      if (!isCurrentRun()) return;
       const msg = err instanceof Error ? err.message : String(err);
       console.error(`[Audit] FAILED for ${shopDomain}:`, msg);
+      // A password-page failure stores its code (PASSWORD_REQUIRED /
+      // PASSWORD_INCORRECT) so the Step 1 UI can show the right message and
+      // reveal the password box; anything else keeps the raw message.
+      const auditError = err instanceof AuditBlockedError ? err.code : msg;
       await prisma.storeConfig
         .update({
           where: { storeId },
           data: {
             auditRunning: false,
             auditFailed: true,
-            auditError: msg,
+            auditError,
             auditComplete: false,
             auditPhase: null,
           },
@@ -198,6 +231,8 @@ export async function startAuditForStore(
         .catch(() => {
           // ignore audit-log write failures on the error path
         });
+    } finally {
+      if (isCurrentRun()) auditRunGenerations.delete(shopDomain);
     }
   })();
 

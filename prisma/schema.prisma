@@ -160,7 +160,7 @@ model StoreConfig {
   storefrontPassword String?   // Owner's storefront password — used to bypass the password page during audit
 
   // Cached values for fast path
-  isPasswordProtected Boolean @default(false) // Cached from Shopify onlineStore.passwordProtection.enabled
+  isPasswordProtected Boolean? // true/false once confirmed (storefront redirect probe + Shopify setting); NULL = not determined yet
   cachedAppEndpoint   String?                 // Last known SHOPIFY_APP_URL + /audit-submit for Gate C check
 
   // Custom page URLs for audit (merchant-specified, optional)
