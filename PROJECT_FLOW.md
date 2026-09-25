@@ -335,19 +335,22 @@ Browser GET /app
   → app._index.jsx loader: authenticate.admin AGAIN
        → Prisma: Store + StoreConfig (one read)
        → FAST PATH if Store.isActive and no safety gate fires
-            (use cached isPasswordProtected + cachedAppEndpoint)
+            (use cached cachedAppEndpoint; isPasswordProtected is read as-is)
        → SLOW PATH (Promise.all, 3s timeout each) if:
             A. no Store / isActive=false
             B. lastSyncedAt older than 10 min
             C. cachedAppEndpoint ≠ current SHOPIFY_APP_URL/audit-submit
             D. ?refresh=1
-            Then: ShopDetails + upsert, ensureConfig+endpoint,
-            embed check, OnlineStorePasswordStatus
-            Cache isPasswordProtected + cachedAppEndpoint on StoreConfig
+            Then: ShopDetails + upsert, ensureConfig+endpoint, embed check.
+            Cache cachedAppEndpoint on StoreConfig.
+       → BACKGROUND (never awaited): refreshPasswordProtection() when
+            isPasswordProtected is NULL or the slow path ran — Chromium
+            redirect probe of the live URL + Shopify's setting; only a
+            definite true/false is stored (NULL = not determined)
        → overlay DB arrays/toggles/password/custom URLs
   → Browser receives:
        { config, auditStatus, embedEnabled, embedActivateUrl,
-         passwordProtected }
+         passwordProtected: true | false | null }
 ```
 
 Warm loads measured after the parallel rewrite: **~410–466ms**
@@ -366,7 +369,7 @@ this loader shape.
 | Change (done) | File | What it does | Do not regress |
 |---|---|---|---|
 | Fast path vs Shopify | `app/routes/app._index.jsx` | Active Store + fresh `lastSyncedAt` + matching `cachedAppEndpoint` → paint from DB. Else `Promise.all` (shop, config, embed, password) | Do not skip Shopify on first install / reinstall / tunnel URL change |
-| Parallel loader | `app/routes/app._index.jsx` | Slow path: `Promise.all([shop sync, ensureConfig+endpoint, isAppEmbedEnabled, passwordProtection])` | Do not `await` A then B then C again |
+| Parallel loader | `app/routes/app._index.jsx` | Slow path: `Promise.all([shop sync, ensureConfig+endpoint, isAppEmbedEnabled])`; password check runs in the background | Do not `await` A then B then C again; do not await the password check |
 | 3s fail-fast | `app/lib/shopify-timeout.server.ts` (`SHOPIFY_CALL_TIMEOUT_MS = 3000`) | Each Shopify block is wrapped in `withShopifyTimeout` | On timeout use last `StoreConfig`. Never invent `appEnabled=true` or fake audit arrays |
 | One metaobject read | `app/lib/metaobjects.ts` `fetchConfigMetaobject` | `ensureConfig` is one `GetConfig` query (id + fields) | Do not add a second `getConfig` / `findConfigId` round-trip on the happy path |
 | Skip no-op endpoint write | `ensureAppEndpoint(admin, endpoint, currentConfig)` | If `app_endpoint` already equals `SHOPIFY_APP_URL/audit-submit`, **no** `metaobjectUpdate` | Do not call `getConfig` again inside `ensureAppEndpoint` when `currentConfig` was just loaded |
@@ -519,12 +522,24 @@ timeout. It still does `getConfig` + `syncConfigToDatabase` serially.
 - Master switch → `intent: "toggle-app"`, `appEnabled: "true"|"false"`.
 - If merchant tries ON while embed is off: **does not POST**. Opens
   `/app/extension?...&from=toggle` in a new tab.
-- Password card is **auto-detected**. GraphQL
-  `onlineStore.passwordProtection.enabled` is a boolean only — Shopify
-  never returns the password. Cached on `StoreConfig.isPasswordProtected`.
-  If protected: show required password field and block the master
-  switch until saved (`intent: "save-storefront-password"`, DB only).
-  If not protected: hide the card.
+- Password card is **hidden by default and shown when protection is
+  confirmed**. Shopify never returns the password
+  (`onlineStore.passwordProtection.enabled` is a boolean only), so
+  `app/lib/password-protection.server.ts` combines two signals: a
+  Playwright `goto(..., { waitUntil: "commit" })` redirect probe of the
+  store's live URL (final path `/password` = protected; ~0.5-0.9 s
+  measured, 10 s cap, fetch fallback if Chromium can't launch) and the
+  Admin API setting (GraphQL `errors`/timeout = unknown, never false).
+  Result is tri-state on `StoreConfig.isPasswordProtected`
+  (`true` / `false` / `NULL` = not determined). The client polls
+  `/api/password-status` (`usePasswordStatus`, ~12 s) while NULL and shows
+  the card on `protected`: required field, master switch blocked until
+  saved (`intent: "save-storefront-password"`, DB only).
+  Safety nets while the card is hidden: `toggle-validate` / `toggle-app`
+  use the stored answer or a live check; the audit stops with
+  `auditError = PASSWORD_REQUIRED | PASSWORD_INCORRECT` (`AuditBlockedError`)
+  and Step 1 shows the card + message. Saving a password after such a
+  failure restarts the audit (`auditRestarted`).
 - Custom PLP/PDP: `intent: "save-custom-page-urls"`. DB only. Empty
   string → `null` (audit then auto-discovers).
 - Progress UI: assumes 30s/page, default 3 pages. Bar caps at 99% until
@@ -1518,8 +1533,8 @@ array is empty.
 | `UpdateConfig` / `CreateConfig` / `DeleteConfig` | `metaobjects.ts` | writes / uninstall |
 | `MainThemeSettings` | `theme-embed.server.js` | embed check (1 query) |
 | `ActiveTheme` | `audit.server.ts` | password audit only (sortKey UPDATED_AT) |
-| `PageDiscovery` | `audit.server.ts` | collections(first:1) + products(first:1) unless custom URLs |
-| `OnlineStorePasswordStatus` | `app._index.jsx` loader | Slow path only; caches `isPasswordProtected` |
+| `PageDiscovery` | `audit.server.ts` | published collections + their best-selling products (+1 product fallback) unless custom URLs |
+| `OnlineStorePasswordStatus` | `password-protection.server.ts` | Background check; secondary signal to the Chromium redirect probe |
 
 No Storefront API. No `ordersCount` query exists despite the mapper.
 

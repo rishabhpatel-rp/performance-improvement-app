@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { useLoaderData, useFetchers, useRouteError, useRevalidator } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../shopify.server";
@@ -25,6 +25,10 @@ import { startAuditForStore } from "../lib/audit-runner.server";
 import { normalizeCustomUrl } from "../lib/page-urls.server";
 import { rebuildPerformanceScript } from "../lib/performance-script.server";
 import {
+  getPasswordProtection,
+  refreshPasswordProtection,
+} from "../lib/password-protection.server";
+import {
   isAppEmbedEnabled,
   getAppEmbedDeepLink,
   getSelectedThemeId,
@@ -32,6 +36,7 @@ import {
 } from "../lib/theme-embed.server";
 import { withShopifyTimeout, rethrowAuthRedirect } from "../lib/shopify-timeout.server";
 import prisma from "../db.server";
+import { usePasswordStatus } from "../lib/use-password-status";
 import WizardProgress from "../components/WizardProgress";
 import Step1Activate from "../components/Step1Activate";
 import Step2Configure from "../components/Step2Configure";
@@ -283,12 +288,13 @@ export const loader = async ({ request }) => {
 let shopResult = { shopData: null, isNewStore: false };
   let shopifyConfig = null;
   let embedCheck = null;
-  let passwordProtected = false;
+  // true / false once confirmed, null = not determined yet (see below).
+  let passwordProtected = null;
   let isNewStore = false;
 
   if (needsShopifyRefresh) {
     // Slow path: run Shopify calls in parallel (only when needed)
-    const [shopRes, shopifyCfg, embedChk, pwProtected] = await Promise.all([
+    const [shopRes, shopifyCfg, embedChk] = await Promise.all([
       (async () => {
         try {
           const shopData = await withShopifyTimeout(
@@ -335,37 +341,15 @@ let shopResult = { shopData: null, isNewStore: false };
         }
       })(),
       embedPromise,
-      (async () => {
-        try {
-          const response = await withShopifyTimeout(
-            admin.graphql(`
-              query OnlineStorePasswordStatus {
-                onlineStore {
-                  passwordProtection {
-                    enabled
-                  }
-                }
-              }
-            `),
-            "passwordProtection",
-          );
-          const data = await response.json();
-          return data.data?.onlineStore?.passwordProtection?.enabled ?? false;
-        } catch (err) {
-          rethrowAuthRedirect(err);
-          return false;
-        }
-      })(),
     ]);
 
     shopResult = shopRes;
     shopifyConfig = shopifyCfg;
     embedCheck = embedChk;
-    passwordProtected = pwProtected;
     isNewStore = shopResult.isNewStore;
 
-    // NEW: Cache passwordProtected and appEndpoint in StoreConfig for fast path
-    if (store?.id && (passwordProtected !== undefined || shopifyConfig?.appEndpoint)) {
+    // Cache the app endpoint in StoreConfig for the fast path (Gate C).
+    if (store?.id) {
       try {
         await prisma.storeConfig.upsert({
           where: { storeId: store.id },
@@ -377,16 +361,14 @@ let shopResult = { shopData: null, isNewStore: false };
             script3Enabled: false,
             debugMode: false,
             scriptTitles: [],
-            isPasswordProtected: passwordProtected ?? false,
             cachedAppEndpoint: shopifyConfig?.appEndpoint || endpoint || null,
           },
           update: {
-            isPasswordProtected: passwordProtected ?? false,
             cachedAppEndpoint: shopifyConfig?.appEndpoint || endpoint || null,
           },
         });
       } catch (err) {
-        console.error("[Dashboard] Failed to cache password/endpoint status:", err instanceof Error ? err.message : err);
+        console.error("[Dashboard] Failed to cache app endpoint:", err instanceof Error ? err.message : err);
       }
     }
 
@@ -407,9 +389,16 @@ let shopResult = { shopData: null, isNewStore: false };
   } else {
     // Fast path: use cached values from DB, but the embed is always re-checked.
     embedCheck = await embedPromise;
+  }
 
-    // NEW: Read cached passwordProtected from DB instead of assuming false
-    passwordProtected = sc?.isPasswordProtected ?? false;
+  // Password protection is confirmed in the BACKGROUND (never awaited here, so
+  // the dashboard is not slowed down): a redirect probe of the store's live URL
+  // in Chromium plus Shopify's own setting. Until a definite answer is stored
+  // this stays null and the Step 1 password box stays hidden; the client polls
+  // /api/password-status and shows the box when protection is confirmed.
+  passwordProtected = sc?.isPasswordProtected ?? null;
+  if (passwordProtected === null || needsShopifyRefresh) {
+    void refreshPasswordProtection(admin, session.shop);
   }
 
   const dbConfig = configFromDbRow(sc);
@@ -579,23 +568,15 @@ export const action = async ({ request }) => {
       // client state — the server is the last line of defense before the
       // app actually turns on.
       try {
-        const response = await withShopifyTimeout(
-          admin.graphql(`#graphql
-            query OnlineStorePasswordStatus {
-              onlineStore {
-                passwordProtection {
-                  enabled
-                }
-              }
-            }
-          `),
+        // Stored answer if there is one, otherwise a live check (up to 10 s;
+        // the client shows its "validating" spinner meanwhile).
+        const isPasswordProtected = await withShopifyTimeout(
+          getPasswordProtection(admin, session.shop),
           "passwordProtection",
+          10000,
         );
-        const data = await response.json();
-        const isPasswordProtected =
-          data.data?.onlineStore?.passwordProtection?.enabled ?? false;
 
-        if (isPasswordProtected) {
+        if (isPasswordProtected === true) {
           const store = await prisma.store.findUnique({
             where: { shopDomain: session.shop },
             select: { configs: { select: { storefrontPassword: true } } },
@@ -611,16 +592,12 @@ export const action = async ({ request }) => {
         }
       } catch (err) {
         rethrowAuthRedirect(err);
-        // Fail-closed: if we can't confirm password status, don't enable.
+        // Could not tell: do not block. If the store is protected after all,
+        // the audit stops with PASSWORD_REQUIRED and asks for the password.
         console.warn(
-          "[Dashboard] toggle-app password check failed:",
+          "[Dashboard] toggle-app password check inconclusive:",
           err instanceof Error ? err.message : err,
         );
-        return {
-          ok: false,
-          error: "password_required",
-          config: { appEnabled: false },
-        };
       }
     }
 
@@ -974,7 +951,7 @@ export const action = async ({ request }) => {
       select: { id: true },
     });
     if (!store) return { ok: false, error: "Store record not found." };
-    await prisma.storeConfig.upsert({
+    const saved = await prisma.storeConfig.upsert({
       where: { storeId: store.id },
       create: {
         storeId: store.id,
@@ -988,6 +965,26 @@ export const action = async ({ request }) => {
       },
       update: { storefrontPassword: storefrontPassword || null },
     });
+
+    const passwordAuditError =
+      saved.auditError === "PASSWORD_REQUIRED" ||
+      saved.auditError === "PASSWORD_INCORRECT" ||
+      (saved.auditFailed && /password/i.test(String(saved.auditError || "")));
+    if (
+      storefrontPassword &&
+      saved.appEnabled &&
+      (saved.auditRunning || passwordAuditError)
+    ) {
+      try {
+        const { started } = await startAuditForStore(admin, session.shop);
+        return { ok: true, storefrontPassword, auditRestarted: started };
+      } catch (err) {
+        console.warn(
+          "[Dashboard] Failed to restart audit after password save:",
+          err instanceof Error ? err.message : err,
+        );
+      }
+    }
     return { ok: true, storefrontPassword };
   }
 
@@ -1049,7 +1046,7 @@ export default function Dashboard() {
     embedStatus = "unknown",
     embedActivateUrl = "",
     selectedThemeId = null,
-    passwordProtected = false,
+    passwordProtected: loaderPasswordProtected = null,
   } = useLoaderData();
   const revalidator = useRevalidator();
   const [currentStep, setCurrentStep] = useState(1);
@@ -1058,6 +1055,29 @@ export default function Dashboard() {
   const [expectingAudit, setExpectingAudit] = useState(
     () => initialAuditStatus?.running === true,
   );
+
+  // Password protection: null until the background check has a definite answer
+  // (the Step 1 password box stays hidden until then); polls for it.
+  const passwordProtected = usePasswordStatus(loaderPasswordProtected);
+
+  const handleAuditRestarted = useCallback(() => {
+    completingRef.current = false;
+    setExpectingAudit(true);
+    setCurrentStep(1);
+    setAuditStatus((s) => ({
+      ...s,
+      running: true,
+      failed: false,
+      complete: false,
+      error: null,
+      pageIndex: 0,
+      totalPages: 0,
+      progress: 0,
+      pages: [],
+      pageStartedAt: null,
+      phase: "discovering",
+    }));
+  }, []);
 
   // Merge the live "toggle-app" fetcher result in so the app gate unlocks
   // immediately when the Step 1 toggle is turned on (the loader data alone
@@ -1103,9 +1123,13 @@ export default function Dashboard() {
   const enablingAudit =
     !extensionBlocked && toggleFetcher?.data?.auditRunning === true;
 
-  // Re-check embed status when the merchant returns from the theme editor.
+  // Re-check embed status when the tab regains focus, in both directions:
+  // merchant returns from the theme editor after enabling it (embedEnabled
+  // false -> true), or disables/removes it in another tab while this
+  // dashboard sits open with the app ON (Plan 1, item 6 — previously left
+  // undone; the extra Admin call per focus is the same cost already paid
+  // below for the embedEnabled=false case).
   useEffect(() => {
-    if (embedEnabled) return;
     const onVisible = () => {
       if (document.visibilityState === "visible") {
         void revalidator.revalidate();
@@ -1117,7 +1141,7 @@ export default function Dashboard() {
       window.removeEventListener("focus", onVisible);
       document.removeEventListener("visibilitychange", onVisible);
     };
-  }, [embedEnabled, revalidator]);
+  }, [revalidator]);
 
   useEffect(() => {
     if (appEnabled && initialAuditStatus?.running) setExpectingAudit(true);
@@ -1226,6 +1250,7 @@ export default function Dashboard() {
           embedActivateUrl={embedActivateUrl}
           selectedThemeId={selectedThemeId}
           passwordProtected={passwordProtected}
+          onAuditRestarted={handleAuditRestarted}
         />
       )}
       {currentStep === 2 && <Step2Configure config={liveConfig} />}

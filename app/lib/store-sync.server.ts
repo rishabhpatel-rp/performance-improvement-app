@@ -19,9 +19,13 @@ export function readAuditPages(value: unknown): AuditPageInfo[] {
   const pages: AuditPageInfo[] = [];
   for (const item of value) {
     if (item && typeof item === "object") {
-      const { label, path } = item as { label?: unknown; path?: unknown };
+      const { label, path, done } = item as {
+        label?: unknown;
+        path?: unknown;
+        done?: unknown;
+      };
       if (typeof label === "string" && typeof path === "string") {
-        pages.push({ label, path });
+        pages.push({ label, path, ...(done === true ? { done: true } : {}) });
       }
     }
   }
@@ -129,6 +133,15 @@ export async function fetchShopDetailsFromShopify(
   const data = await response.json();
   const shop = data.data?.shop;
   const productsCount = data.data?.productsCount?.count;
+  // `ordersCount` is read here but the query above never requests it (there
+  // is no top-level `ordersCount` field selected), so `totalOrders` is
+  // always undefined. Fixing this for real needs the `read_orders` scope,
+  // which is not currently granted (see shopify.app.toml) and would force a
+  // re-consent screen on every existing install, so it is left as `undefined`
+  // here rather than silently added. Same story for `locale`: Admin's `Shop`
+  // type has no `locale` field — it lives on `ShopLocale` behind the
+  // `read_locales` (or `read_markets_home`) scope via the separate
+  // `shopLocales` query. Both are REQUIREMENTS_AND_PLANS.md R1 issue #2.
   const ordersCount = data.data?.ordersCount?.count;
 
   if (!shop) {

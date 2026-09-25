@@ -6,6 +6,15 @@ import { useFetcher } from "react-router";
 
 const ROLE_LABEL = { MAIN: "Live", UNPUBLISHED: "Unpublished", DEMO: "Demo" };
 
+// Audit error codes (StoreConfig.auditError) that mean "the storefront password
+// page blocked the scan". They reveal the password box even if detection missed it.
+const PASSWORD_BLOCK_MESSAGE = {
+  PASSWORD_REQUIRED:
+    "Your store is password protected. Enter the storefront password below and we'll scan again.",
+  PASSWORD_INCORRECT:
+    "The saved password didn't work. Update it below and we'll scan again.",
+};
+
 // "/collections/a-very-long-handle-name-here" -> "/collections/a-v…ere"
 function shortPath(path, max = 40) {
   if (!path || path.length <= max) return path || "";
@@ -29,7 +38,8 @@ export default function Step1Activate({
   embedStatus = "unknown",
   embedActivateUrl = "",
   selectedThemeId = null,
-  passwordProtected = false,
+  passwordProtected = null, // true / false once confirmed, null = still checking
+  onAuditRestarted = null,
 }) {
   const fetcher = useFetcher();
   const pwFetcher = useFetcher();
@@ -104,8 +114,28 @@ export default function Step1Activate({
     pwFetcher.data?.storefrontPassword ?? (config.storefrontPassword || "");
   const pwDirty = pwDraft !== savedPassword;
 
+  // The password box is hidden until protection is confirmed (background
+  // check) or an audit was stopped by the password page.
+  const passwordBlockCode =
+    auditStatus?.failed === true &&
+    PASSWORD_BLOCK_MESSAGE[auditStatus?.error]
+      ? auditStatus.error
+      : null;
+  // Turning the app on was refused because the store turned out to be protected
+  // (live check at click time) — reveal the box even if the background check
+  // had not answered yet.
+  const blockedAtToggle =
+    validationFetcher.data?.blockReason === "password_required" ||
+    fetcher.data?.error === "password_required";
+  const showPasswordBox =
+    passwordProtected === true || passwordBlockCode !== null || blockedAtToggle;
+
   // Password is required if store is protected AND no password saved yet
-  const passwordRequired = passwordProtected && !savedPassword;
+  const passwordRequired =
+    (passwordProtected === true ||
+      passwordBlockCode === "PASSWORD_REQUIRED" ||
+      blockedAtToggle) &&
+    !savedPassword;
 
   // Main toggle is blocked if password is required but not saved, or if there
   // is no usable theme to install the extension in.
@@ -133,6 +163,12 @@ export default function Step1Activate({
       { method: "POST" },
     );
   };
+
+  useEffect(() => {
+    if (!pwFetcher.data?.ok) return;
+    setPwDraft(pwFetcher.data.storefrontPassword || "");
+    if (pwFetcher.data.auditRestarted === true) onAuditRestarted?.();
+  }, [pwFetcher.data, onAuditRestarted]);
 
   const handleSaveUrls = () => {
     urlFetcher.submit(
@@ -353,7 +389,9 @@ export default function Step1Activate({
         <div
           style={{
             margin: "0 auto",
-            width: "100%",
+            // content-box: 16px padding is added to the width, so subtract it
+            // here or the box overflows its container on narrow screens.
+            width: "calc(100% - 32px)",
             maxWidth: 470,
             backgroundColor: "#f5f5f5",
             borderRadius: 8,
@@ -526,8 +564,8 @@ export default function Step1Activate({
             margin: "0 0 16px 0",
           }}
         >
-          {/* Only show if password protection is detected */}
-          {passwordProtected && (
+          {/* Hidden until password protection is confirmed (or an audit hit the password page) */}
+          {showPasswordBox && (
             <div
               style={{
                 flex: "1 1 280px",
@@ -535,6 +573,7 @@ export default function Step1Activate({
                 borderRadius: 8,
                 padding: 16,
                 minWidth: 260,
+                boxShadow: passwordBlockCode ? "inset 0 0 0 1px #C62828" : "none",
               }}
             >
               <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
@@ -545,9 +584,13 @@ export default function Step1Activate({
                 <s-switch label="" checked={true} disabled />
               </div>
 
-              <s-text tone="caution" style={{ marginBottom: 8 }}>
-                
-              </s-text>
+              {passwordBlockCode && (
+                <div style={{ marginBottom: 8 }}>
+                  <s-banner tone="critical">
+                    {PASSWORD_BLOCK_MESSAGE[passwordBlockCode]}
+                  </s-banner>
+                </div>
+              )}
 
               <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
                 <div style={{ flex: 1, minWidth: 0 }}>
@@ -731,21 +774,31 @@ export default function Step1Activate({
                   justifyContent: "center",
                 }}
               >
-                {auditPages.map((p, i) => (
-                  <span
-                    key={`${p.label}-${i}`}
-                    title={p.path}
-                    style={{
-                      padding: "2px 10px",
-                      borderRadius: 12,
-                      fontSize: 12,
-                      backgroundColor: "#F1F3F5",
-                      color: "#1E3A2B",
-                    }}
-                  >
-                    {p.label} · {shortPath(p.path)}
-                  </span>
-                ))}
+                {auditPages.map((p, i) => {
+                  // Pages audit in parallel and can finish in any order, so
+                  // each chip shows its own done/pending state rather than a
+                  // single "current page" indicator.
+                  const isDone = phase === "building" || p.done === true;
+                  return (
+                    <span
+                      key={`${p.label}-${i}`}
+                      title={p.path}
+                      style={{
+                        display: "inline-flex",
+                        alignItems: "center",
+                        gap: 4,
+                        padding: "2px 10px",
+                        borderRadius: 12,
+                        fontSize: 12,
+                        backgroundColor: isDone ? "#E6F4EA" : "#F1F3F5",
+                        color: "#1E3A2B",
+                      }}
+                    >
+                      <span aria-hidden="true">{isDone ? "✓" : "○"}</span>
+                      {p.label} · {shortPath(p.path)}
+                    </span>
+                  );
+                })}
               </div>
             )}
 
@@ -765,7 +818,7 @@ export default function Step1Activate({
             )}
           </div>
         )}
-        {failed && (
+        {failed && !passwordBlockCode && (
           <div
             style={{
               textAlign: "center",
