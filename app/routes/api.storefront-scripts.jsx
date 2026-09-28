@@ -1,6 +1,7 @@
 import { authenticate } from "../shopify.server";
 import prisma from "../db.server";
 import { rebuildPerformanceScript } from "../lib/performance-script.server";
+import { resolveVerifiedProxyShop } from "../lib/proxy-shop";
 
 // Storefront script endpoint, reached through the app proxy
 // (/apps/performance-scripts) by the blocking <script src> in the theme app
@@ -79,8 +80,19 @@ async function loadStorefrontScript(request, shopDomain) {
 export const loader = async ({ request }) => {
   try {
     const auth = await authenticate.public.appProxy(request);
-    const shopDomain =
-      auth?.session?.shop || new URL(request.url).searchParams.get("shop");
+
+    // SECURITY: never fall back to an unsigned `shop` query param.
+    // authenticate.public.appProxy verifies the App Proxy HMAC signature; a
+    // falsy/partial result means that check failed (or there's no session),
+    // not that it's safe to trust whatever `shop` the caller put in the URL.
+    // Trusting that param let anyone fetch any shop's compiled storefront
+    // script by guessing/knowing its domain. An unverified request gets the generic
+    // no-op script, never shop-specific data.
+    const shopDomain = resolveVerifiedProxyShop(auth);
+    if (!shopDomain) {
+      return scriptResponse(request, OFF_SCRIPT, null);
+    }
+
     return await loadStorefrontScript(request, shopDomain);
   } catch (error) {
     console.error("[api.storefront-scripts] loader failed:", error);

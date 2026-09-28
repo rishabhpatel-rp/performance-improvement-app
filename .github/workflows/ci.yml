@@ -1,0 +1,49 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  shopify-app:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npx prisma validate
+        env:
+          DATABASE_URL: postgresql://user:pass@localhost:5432/db
+      - run: npm test
+      # Lint/typecheck are reported but non-blocking until the pre-existing
+      # errors noted in REQUIREMENTS_AND_PLANS.md are cleared; then remove
+      # `continue-on-error`.
+      - run: npm run lint
+        continue-on-error: true
+      - run: npm run typecheck
+        continue-on-error: true
+
+  admin-panel:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: admin-panel
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: admin-panel/package-lock.json
+      - run: npm ci
+      - run: npx prisma validate
+        env:
+          DATABASE_URL: postgresql://user:pass@localhost:5432/db
+      - run: npm test
+      - run: npm run lint
+        continue-on-error: true
+      - run: npm run typecheck
+        continue-on-error: true

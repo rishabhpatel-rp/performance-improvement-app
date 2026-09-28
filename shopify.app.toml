@@ -9,7 +9,9 @@ embedded = true
 automatically_update_urls_on_dev = true
 
 [webhooks]
-api_version = "2026-10"
+# Aligned with ApiVersion.July26 in app/shopify.server.js (REMEDIATION Task 5).
+# Bump both together, and re-check webhook payload shapes, when upgrading.
+api_version = "2026-07"
 
   [[webhooks.subscriptions]]
   uri = "/webhooks/app/scopes_update"
@@ -18,6 +20,19 @@ api_version = "2026-10"
   [[webhooks.subscriptions]]
   uri = "/webhooks/app/uninstalled"
   topics = [ "app/uninstalled" ]
+
+  # DECISION NEEDED (REMEDIATION_PROMPT.md Task 6): this app config file has
+  # never, at any point in its history, declared compliance_topics, even
+  # though app/routes/webhooks.compliance.jsx exists specifically to handle
+  # these three topics. Added here as the safe default since it's a
+  # mandatory Shopify App Store requirement and the handler is already
+  # correct — but verify in the Partner Dashboard for
+  # client_id = f3c38e708010aaa3be8bcdc18e3e03a6 whether these are already
+  # registered out-of-band before deploying, and run `shopify app deploy`
+  # (or equivalent) once confirmed — a toml edit alone does not register it.
+  [[webhooks.subscriptions]]
+  compliance_topics = [ "customers/data_request", "customers/redact", "shop/redact" ]
+  uri = "/webhooks/compliance"
 
 [app_proxy]
 url = "/api/storefront-scripts"
@@ -30,30 +45,6 @@ scopes = "read_themes,write_app_proxy,write_metaobject_definitions,write_metaobj
 
 [auth]
 redirect_urls = [ "https://pagepulsespeed.node.brainvire.dev/auth/callback" ]
-
-[product.metafields.app.demo_info]
-type = "single_line_text_field"
-name = "Demo Source Info"
-description = "Tracks products created by the Shopify app template for development"
-
-  [product.metafields.app.demo_info.access]
-  admin = "merchant_read_write"
-
-[metaobjects.app.example]
-name = "Example"
-description = "An example metaobject definition created by this template"
-
-  [metaobjects.app.example.access]
-  admin = "merchant_read_write"
-
-[metaobjects.app.example.fields.title]
-name = "Title"
-type = "single_line_text_field"
-required = true
-
-[metaobjects.app.example.fields.description]
-name = "Description"
-type = "multi_line_text_field"
 
 [metaobjects.app.script_injector_config]
 name = "Config"
