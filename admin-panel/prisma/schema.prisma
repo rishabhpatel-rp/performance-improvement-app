@@ -1,5 +1,26 @@
 // This is your Prisma schema file,
 // learn more about it in the docs: https://pris.ly/d/prisma-schema
+//
+// DECISION NEEDED (REMEDIATION_PROMPT.md / Task 4): this schema was
+// one-time caught up to match `../../prisma/schema.prisma` for the models
+// both apps share (Session, Store, StoreConfig, StoreActivity, AdminUser,
+// PerformanceScript) — it had drifted to 1 commit vs. the root schema's 10,
+// missing 30 of 42 StoreConfig fields and the entire PerformanceScript
+// model, which is very likely why `dummy-data.ts`/SHOW_DUMMY_DATA exists.
+// This file does NOT create new tables/columns — the shared Postgres
+// database already has them via the root app's migrations, so only
+// `prisma generate` (not `migrate`/`db push`) should ever be run from this
+// side. Still open, needs your answer:
+//   (a) single source of truth — admin-panel imports/copies the root
+//       schema (shared package, or a build step) so they can't drift again; or
+//   (b) deliberate partial read-model — keep this intentionally smaller
+//       than root, but make that explicit with a comment per field group
+//       and a migration-checklist step on the root app ("does this need to
+//       reach admin-panel/prisma/schema.prisma?").
+// `AppTracking` and `AuditLog` (root schema) were intentionally NOT added
+// here — they aren't wired to Store via a foreign key and weren't in the
+// shared-model list this task named; flagging separately rather than
+// silently including them (see repo audit note on scope).
 
 generator client {
   provider = "prisma-client-js"
@@ -83,8 +104,9 @@ model Store {
   updatedAt        DateTime  @updatedAt
 
   // Relations
-  configs          StoreConfig[]
-  activities       StoreActivity[]
+  configs           StoreConfig[]
+  activities        StoreActivity[]
+  performanceScript PerformanceScript?
 
   @@index([isActive])
   @@index([installedAt])
@@ -102,16 +124,70 @@ model StoreConfig {
 
   // Script toggles
   appEnabled         Boolean  @default(false)
-  script1Enabled     Boolean  @default(false) // Dummy script
-  script2Enabled     Boolean  @default(false) // Dummy script
-  script3Enabled     Boolean  @default(false) // Dummy style
+  script1Enabled     Boolean  @default(false) // Audit script
+  script2Enabled     Boolean  @default(false) // Defer script
+  script3Enabled     Boolean  @default(false) // Hide CSS script
   debugMode          Boolean  @default(false)
+  auditComplete      Boolean  @default(false)
 
   // Script data (stored as JSON arrays)
   scriptTitles       Json     @default("[]") // ["Title1","Title2","Title3"]
+  auditDeferArray    Json     @default("[]") // Defer/blocklist entries
+  auditHideSelectors Json     @default("[]") // CSS selectors to hide
+  staticDeferDefaults Json    @default("[\"wpm\",\"gtm\"]") // Static always-defer defaults e.g. ["wpm","gtm"]
+
+  // Audit field toggle states (on/off) — Step 3 "Audit Results" textareas
+  auditDeferArrayEnabled      Boolean @default(true)
+  auditHideSelectorsEnabled   Boolean @default(true)
+  staticDeferDefaultsEnabled  Boolean @default(true)
+
+  // Preserved snapshot (taken when a field is toggled OFF so it can be
+  // restored on toggle ON; the "active" column holds [] while OFF).
+  auditDeferArrayPreserved      Json @default("[]")
+  auditHideSelectorsPreserved   Json @default("[]")
+  staticDeferDefaultsPreserved  Json @default("[]")
+
+  storefrontPassword String?   // Owner's storefront password — used to bypass the password page during audit
+
+  // Cached values for fast path
+  isPasswordProtected Boolean? // true/false once confirmed (storefront redirect probe + Shopify setting); NULL = not determined yet
+  cachedAppEndpoint   String?  // Last known SHOPIFY_APP_URL + /audit-submit for Gate C check
+
+  // Custom page URLs for audit (merchant-specified, optional)
+  customPlpUrl String?  // Merchant-specified PLP URL
+  customPdpUrl String?  // Merchant-specified PDP URL
 
   // Reference to the Shopify metaobject
   metaobjectId       String?
+
+  // ============================================================
+  // First User Delay Scripts (maps to FIRST_USER_DELAY_SCRIPTS in script)
+  // Only runs for first-time visitors (localStorage check)
+  // ============================================================
+  firstUserDelayScripts          Json    @default("[\"wpm\",\"gtm\"]")
+  firstUserDelayScriptsEnabled   Boolean @default(true)
+  firstUserDelayScriptsPreserved Json    @default("[]")
+  firstUserDelayMs               Int     @default(12000) // 12 seconds in milliseconds
+
+  // ============================================================
+  // Delay time for "Delay Scripts" box (EVERY_TIME_DELAY_SCRIPTS)
+  // This is the timeout at line 400 in script-generator.js
+  // ============================================================
+  everyTimeDelayMs               Int     @default(6000) // 6 seconds in milliseconds
+
+  // Audit status (hidden backend audit lifecycle)
+  auditRunning Boolean @default(false)
+  auditFailed  Boolean @default(false)
+  auditError   String?
+  lastAuditAt  DateTime?
+  auditPageIndex  Int? // 0-based page currently being audited (for progress UI)
+  auditTotalPages Int? // total pages in the audit run
+  auditPages         Json?      // [{ label, path, done }] pages discovered for the current/last audit
+  auditPageStartedAt DateTime?  // when the page currently being audited started (countdown survives refresh)
+  auditPhase         String?    // "discovering" | "auditing" | "building" while auditRunning; null otherwise.
+
+  // Theme the app extension (theme app embed) is installed in. null = live (MAIN) theme.
+  selectedThemeId String? // e.g. "gid://shopify/OnlineStoreTheme/123"
 
   // Timestamps
   createdAt          DateTime @default(now())
@@ -154,4 +230,27 @@ model AdminUser {
   lastLoginAt  DateTime?
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
+}
+
+// ============================================================
+// MODEL 6: PerformanceScript
+// Added to catch up with the root schema — its absence meant the admin
+// panel had no way to read real script/audit output at all (see the
+// DECISION NEEDED note at the top of this file).
+// ============================================================
+model PerformanceScript {
+  id      String @id @default(cuid())
+  storeId String @unique // Makes relation 1:1 per store
+  store   Store  @relation(fields: [storeId], references: [id])
+
+  auditScript String?  @map("audit_script") // legacy (raw audit report JSON); no longer written or read
+  deferScript String?  @map("defer_script")
+  hiddenCss   String?  @map("hidden_css")
+  scriptHash    String?   @map("script_hash")
+  scriptBuiltAt DateTime? @map("script_built_at")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  @@index([storeId])
+  @@map("performance_scripts")
 }
