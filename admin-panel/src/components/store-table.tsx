@@ -26,7 +26,21 @@ interface StoreTableProps {
   totalPages: number;
   search: string;
   status: string;
+  appEnabledFilter: string;
+  sortBy: string;
+  sortDir: "asc" | "desc";
 }
+
+const SORTABLE_COLUMNS: { key: string; label: string }[] = [
+  { key: "shopName", label: "Shop Name" },
+  { key: "shopDomain", label: "Domain" },
+  { key: "email", label: "Email" },
+  { key: "country", label: "Country" },
+  { key: "isActive", label: "Status" },
+  { key: "installedAt", label: "Installed" },
+  { key: "lastSyncedAt", label: "Last Synced" },
+  { key: "appEnabled", label: "App Enabled" },
+];
 
 export default function StoreTable({
   stores,
@@ -35,19 +49,35 @@ export default function StoreTable({
   totalPages,
   search,
   status,
+  appEnabledFilter,
+  sortBy,
+  sortDir,
 }: StoreTableProps) {
   const router = useRouter();
   const [searchInput, setSearchInput] = useState(search);
 
-  const navigate = (params: { search?: string; status?: string; page?: number }) => {
+  const navigate = (params: {
+    search?: string;
+    status?: string;
+    appEnabledFilter?: string;
+    page?: number;
+    sortBy?: string;
+    sortDir?: string;
+  }) => {
     const next = new URLSearchParams();
     const nextSearch = params.search ?? search;
     const nextStatus = params.status ?? status;
+    const nextAppEnabled = params.appEnabledFilter ?? appEnabledFilter;
     const nextPage = params.page ?? 1;
+    const nextSortBy = params.sortBy ?? sortBy;
+    const nextSortDir = params.sortDir ?? sortDir;
 
     if (nextSearch) next.set("search", nextSearch);
     if (nextStatus && nextStatus !== "all") next.set("status", nextStatus);
+    if (nextAppEnabled && nextAppEnabled !== "all") next.set("appEnabled", nextAppEnabled);
     if (nextPage > 1) next.set("page", String(nextPage));
+    if (nextSortBy && nextSortBy !== "installedAt") next.set("sortBy", nextSortBy);
+    if (nextSortDir && nextSortDir !== "desc") next.set("sortDir", nextSortDir);
 
     router.push(`/dashboard/stores${next.toString() ? `?${next.toString()}` : ""}`);
   };
@@ -55,6 +85,11 @@ export default function StoreTable({
   const handleSearchSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     navigate({ search: searchInput, page: 1 });
+  };
+
+  const handleSort = (key: string) => {
+    const nextDir = sortBy === key && sortDir === "asc" ? "desc" : "asc";
+    navigate({ sortBy: key, sortDir: nextDir, page: 1 });
   };
 
   return (
@@ -77,8 +112,8 @@ export default function StoreTable({
           className="h-10 rounded-md border border-input bg-background px-3 text-sm"
         >
           <option value="all">All stores</option>
-          <option value="active">Active</option>
-          <option value="inactive">Inactive</option>
+          <option value="active">Installed</option>
+          <option value="inactive">Uninstalled</option>
         </select>
       </div>
 
@@ -86,49 +121,64 @@ export default function StoreTable({
         <Table>
           <TableHeader>
             <TableRow>
-              <TableHead>Shop Name</TableHead>
-              <TableHead>Domain</TableHead>
-              <TableHead>Email</TableHead>
-              <TableHead>Country</TableHead>
-              <TableHead>Status</TableHead>
-              <TableHead>Installed</TableHead>
-              <TableHead>Last Synced</TableHead>
+              {SORTABLE_COLUMNS.map((col) => (
+                <TableHead key={col.key}>
+                  <button
+                    type="button"
+                    onClick={() => handleSort(col.key)}
+                    className="flex items-center gap-1 hover:text-foreground"
+                  >
+                    {col.label}
+                    <span className="text-xs text-muted-foreground/70">
+                      {sortBy === col.key ? (sortDir === "asc" ? "▲" : "▼") : "↕"}
+                    </span>
+                  </button>
+                </TableHead>
+              ))}
             </TableRow>
           </TableHeader>
           <TableBody>
             {stores.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={7} className="text-center text-muted-foreground py-8">
+                <TableCell colSpan={8} className="text-center text-muted-foreground py-8">
                   No stores found.
                 </TableCell>
               </TableRow>
             ) : (
-              stores.map((store) => (
-                <TableRow key={store.id}>
-                  <TableCell className="font-medium">
-                    <Link
-                      href={`/dashboard/stores/${store.shopDomain}`}
-                      className="hover:underline"
-                    >
-                      {store.shopName}
-                    </Link>
-                  </TableCell>
-                  <TableCell className="text-muted-foreground">{store.shopDomain}</TableCell>
-                  <TableCell className="text-muted-foreground">{store.email}</TableCell>
-                  <TableCell className="text-muted-foreground">{store.country || "—"}</TableCell>
-                  <TableCell>
-                    <Badge variant={store.isActive ? "success" : "destructive"}>
-                      {store.isActive ? "Active" : "Inactive"}
-                    </Badge>
-                  </TableCell>
-                  <TableCell className="text-muted-foreground whitespace-nowrap">
-                    {formatDate(store.installedAt)}
-                  </TableCell>
-                  <TableCell className="text-muted-foreground whitespace-nowrap">
-                    {formatDate(store.lastSyncedAt)}
-                  </TableCell>
-                </TableRow>
-              ))
+              stores.map((store) => {
+                const appEnabled = store.configs[0]?.appEnabled ?? false;
+                return (
+                  <TableRow key={store.id}>
+                    <TableCell className="font-medium">
+                      <Link
+                        href={`/dashboard/stores/${store.shopDomain}`}
+                        className="hover:underline"
+                      >
+                        {store.shopName}
+                      </Link>
+                    </TableCell>
+                    <TableCell className="text-muted-foreground">{store.shopDomain}</TableCell>
+                    <TableCell className="text-muted-foreground">{store.email}</TableCell>
+                    <TableCell className="text-muted-foreground">{store.country || "—"}</TableCell>
+                    <TableCell>
+                      <Badge variant={store.isActive ? "success" : "destructive"}>
+                        {store.isActive ? "Installed" : "Uninstalled"}
+                      </Badge>
+                    </TableCell>
+                    <TableCell className="text-muted-foreground whitespace-nowrap">
+                      {formatDate(store.installedAt)}
+                    </TableCell>
+                    <TableCell className="text-muted-foreground whitespace-nowrap">
+                      {formatDate(store.lastSyncedAt)}
+                    </TableCell>
+                    <TableCell>
+                      <Badge variant={appEnabled ? "success" : "destructive"}>
+                        {appEnabled ? "On" : "Off"}
+                      </Badge>
+                    </TableCell>
+                  </TableRow>
+                );
+              })
             )}
           </TableBody>
         </Table>

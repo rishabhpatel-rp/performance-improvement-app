@@ -42,6 +42,7 @@ export default function Step1Activate({
   onAuditRestarted = null,
 }) {
   const fetcher = useFetcher();
+  const auditFetcher = useFetcher();
   const pwFetcher = useFetcher();
   const urlFetcher = useFetcher();
   const validationFetcher = useFetcher();
@@ -208,6 +209,31 @@ export default function Step1Activate({
   const totalPages = auditStatus?.totalPages > 0 ? auditStatus.totalPages : 0;
   const donePages = Math.min(Math.max(0, auditStatus?.pageIndex ?? 0), totalPages);
   const phase = auditStatus?.phase || "discovering";
+
+  // --- Manual audit control -----------------------------------------------
+  // The audit is expensive (three pages through a headless browser), so the
+  // merchant starts it explicitly and re-runs it only when they choose. Its
+  // results survive every ON/OFF toggle, so this is "Run" on a fresh store and
+  // "Re-run" afterwards.
+  const auditStarting = auditFetcher.state !== "idle";
+  const auditComplete = appEnabled && auditStatus?.complete === true;
+  // Deliberately does NOT exclude `auditComplete`: once a run has finished this
+  // control is the "Re-run audit" affordance and must stay available. Only an
+  // in-flight run (or the app being off) disables it.
+  const canRunAudit = appEnabled && !running && !auditStarting;
+  const auditStartError = auditFetcher.data?.ok === false ? auditFetcher.data.error : null;
+  const auditStartErrorText =
+    auditStartError === "extension_required"
+      ? "The theme app embed must be on before the audit can run."
+      : auditStartError === "already_running"
+        ? "An audit is already running for this store."
+        : auditStartError === "app_disabled"
+          ? "Turn the app on before running the audit."
+          : auditStartError || "";
+
+  const startAudit = () => {
+    auditFetcher.submit({ intent: "start-audit" }, { method: "POST" });
+  };
   const progressPct =
     phase === "building"
       ? 92
@@ -694,6 +720,43 @@ export default function Step1Activate({
             </div>
           </div>
         </div>
+
+        {/* Manual audit control. Shown whenever the app is ON and no run is in
+            flight, so it doubles as the "Re-run" affordance once a first audit
+            has completed. */}
+        {appEnabled && !running && (
+          <div
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "center",
+              gap: 8,
+              padding: "4px 0 12px",
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+              <s-button
+                variant={auditComplete ? "secondary" : "primary"}
+                onClick={startAudit}
+                disabled={!canRunAudit}
+              >
+                {auditStarting
+                  ? "Starting…"
+                  : auditComplete
+                    ? "Re-run audit"
+                    : "Run audit"}
+              </s-button>
+            </div>
+            <s-text tone="subdued">
+              {auditComplete
+                ? "The audit scans your home, collection and product pages and builds the defer/hide lists. Re-run it after major theme or app changes."
+                : "The audit scans your home, collection and product pages and builds the defer/hide lists. It usually takes a minute or two."}
+            </s-text>
+            {auditStartErrorText && (
+              <s-text tone="critical">{auditStartErrorText}</s-text>
+            )}
+          </div>
+        )}
 
         {/* Hidden backend audit feedback (below the toggle) */}
         {running && (

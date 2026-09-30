@@ -35,3 +35,15 @@ database.sqlite
 admin-panel/.next/
 admin-panel/out/
 admin-panel/tsconfig.tsbuildinfo
+
+# Playwright MCP snapshot/screenshot dumps from ad-hoc page inspection
+.playwright-mcp/
+
+# Test-only artefacts: verification suites and the generated catalogue.
+# Nothing here is imported by the app at runtime, so it is never deployed.
+# `npm test` still picks these up (see the "test" script in package.json).
+/Test Data/
+
+# gocryptfs key material must NEVER be committed: gocryptfs.conf holds the
+# scrypt-wrapped master key and gocryptfs.diriv is the directory IV.
+admin-panel/admindata/

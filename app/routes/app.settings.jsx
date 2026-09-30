@@ -68,6 +68,50 @@ export const action = async ({ request }) => {
       scriptTitles: [],
     };
     await safeSyncConfig(session.shop, resetConfig);
+
+      // The button is labelled "Reset all data" and its copy promises to
+      // "permanently delete all scripts and settings for this shop", so it has
+      // to actually delete them. Previously it only zeroed 6 columns and left
+      // the compiled bundle and the whole audit history on disk.
+      const prisma = (await import("../db.server")).default;
+      await prisma.$transaction([
+        // Drop the compiled storefront script so nothing stale is served.
+        prisma.performanceScript.deleteMany({
+          where: { store: { shopDomain: session.shop } },
+        }),
+        // Drop the audit history and the per-step audit state.
+        prisma.auditLog.deleteMany({ where: { domain: session.shop } }),
+        prisma.storeConfig.updateMany({
+          where: { store: { shopDomain: session.shop } },
+          data: {
+            auditComplete: false,
+            auditRunning: false,
+            auditFailed: false,
+            auditError: null,
+            lastAuditAt: null,
+            auditPageIndex: null,
+            auditTotalPages: null,
+            auditPages: null,
+            auditPageStartedAt: null,
+            auditPhase: null,
+            auditDeferArray: [],
+            auditHideSelectors: [],
+            staticDeferDefaults: [],
+            auditDeferArrayPreserved: [],
+            auditHideSelectorsPreserved: [],
+            staticDeferDefaultsPreserved: [],
+            firstUserDelayScripts: [],
+            firstUserDelayScriptsPreserved: [],
+            firstUserDelayMs: 12000,
+            everyTimeDelayMs: 6000,
+            storefrontPassword: null,
+            isPasswordProtected: null,
+            customPlpUrl: null,
+            customPdpUrl: null,
+            selectedThemeId: null,
+          },
+        }),
+      ]);
     await safeLogActivity(session.shop, "config_changed", "All data reset", {
       changedFields: ["all"],
     });

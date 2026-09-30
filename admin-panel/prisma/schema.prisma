@@ -227,6 +227,10 @@ model AdminUser {
   passwordHash String
   name         String?
   role         String    @default("admin") // "admin" or "viewer"
+  // Bumped on password change. It is copied into the session cookie and
+  // compared in requireAdmin(), so changing a password revokes every session
+  // that was issued before the change.
+  sessionVersion Int     @default(0)
   lastLoginAt  DateTime?
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt

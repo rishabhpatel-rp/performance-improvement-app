@@ -29,7 +29,9 @@ export default function SettingsClient({
       <TopBar title="Settings" demoMode={demoMode} />
       <DemoDataCard demoMode={demoMode} />
       <ProfileForm user={user} />
-      <PasswordForm />
+      <div hidden>
+        <PasswordForm />
+      </div>
     </div>
   );
 }

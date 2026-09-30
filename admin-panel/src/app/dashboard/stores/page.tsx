@@ -6,7 +6,14 @@ import TopBar from "@/components/top-bar";
 export default async function StoresPage({
   searchParams,
 }: {
-  searchParams: Promise<{ search?: string; status?: string; page?: string }>;
+  searchParams: Promise<{
+    search?: string;
+    status?: string;
+    appEnabled?: string;
+    page?: string;
+    sortBy?: string;
+    sortDir?: string;
+  }>;
 }) {
   const params = await searchParams;
 
@@ -19,8 +26,12 @@ export default async function StoresPage({
           : params.status === "inactive"
             ? false
             : undefined,
+      appEnabled:
+        params.appEnabled === "on" ? true : params.appEnabled === "off" ? false : undefined,
       page: params.page ? parseInt(params.page, 10) : 1,
       pageSize: 20,
+      sortBy: params.sortBy,
+      sortDir: params.sortDir,
     }),
     getDemoMode(),
   ]);
@@ -35,6 +46,9 @@ export default async function StoresPage({
         totalPages={result.totalPages}
         search={params.search || ""}
         status={params.status || "all"}
+        appEnabledFilter={params.appEnabled || "all"}
+        sortBy={params.sortBy || "installedAt"}
+        sortDir={params.sortDir === "asc" ? "asc" : "desc"}
       />
     </div>
   );

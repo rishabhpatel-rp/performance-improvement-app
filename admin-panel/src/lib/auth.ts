@@ -1,6 +1,7 @@
 import { getIronSession, type IronSession } from "iron-session";
 import { cookies } from "next/headers";
 import bcrypt from "bcryptjs";
+import type { Prisma } from "@prisma/client";
 import { prisma } from "./prisma";
 
 export interface AdminSession {
@@ -9,53 +10,76 @@ export interface AdminSession {
   name: string | null;
   role: string;
   isLoggedIn: boolean;
+  /** Bumped on password change so existing cookies stop validating. */
+  sessionVersion: number;
 }
 
 const SESSION_PASSWORD = process.env.ADMIN_SESSION_PASSWORD;
 
+// Fail loudly in EVERY environment. There is deliberately NO fallback key: a
+// committed or guessable session-encryption key is a complete authentication
+// bypass, because anyone holding it can mint a valid admin-session cookie
+// offline. This check runs at import time so a missing/weak secret is caught
+// on boot rather than surfacing later as a confusing auth bug.
 if (!SESSION_PASSWORD || SESSION_PASSWORD.length < 32) {
-  // Fail loudly in any environment rather than silently running with a
-  // predictable session-encryption key. This check runs at import time so
-  // a missing/weak secret is caught immediately rather than surfacing as a
-  // confusing auth bug later.
-  if (process.env.NODE_ENV === "production") {
-    throw new Error(
-      "ADMIN_SESSION_PASSWORD must be set to a random string of at least 32 characters.",
-    );
-  } else {
-    console.warn(
-      "[auth] ADMIN_SESSION_PASSWORD is missing or too short. Using an " +
-        "insecure development fallback — set a real value in .env before " +
-        "deploying.",
-    );
-  }
+  throw new Error(
+    "ADMIN_SESSION_PASSWORD must be set to a random string of at least 32 " +
+      "characters. Generate one with: openssl rand -base64 48",
+  );
 }
 
-const RESOLVED_SESSION_PASSWORD =
-  SESSION_PASSWORD && SESSION_PASSWORD.length >= 32
-    ? SESSION_PASSWORD
-    : "dev-only-insecure-session-password-change-me-32c";
+/** 7 days. Must match the cookie Max-Age below — iron-session otherwise
+ *  defaults its seal `ttl` to 14 days, so a captured cookie would stay
+ *  replayable for a week after the browser discards it. */
+const SESSION_TTL_SECONDS = 60 * 60 * 24 * 7;
+
+/** Secure by DEFAULT. Plain-HTTP local development is the only exception and
+ *  must be opted into explicitly, so a missing NODE_ENV can never silently
+ *  disable transport security on a real deployment. */
+const COOKIE_SECURE = process.env.ADMIN_SESSION_INSECURE_COOKIE !== "1";
+
+/** Compared against when no admin matches, so an unknown email costs the same
+ *  as a known one and cannot be distinguished by response timing. */
+const DUMMY_PASSWORD_HASH =
+  "$2a$12$LEuOmXC2Mbyhr3Ve6mPsXeB3Z3Tm9UqdW7ihXPXKYp/Sx/N8x0136";
+
+/** `AdminUser.email` is a case-sensitive TEXT @unique, so "Admin@x.com" and
+ *  "admin@x.com" would otherwise be two separate accounts. */
+export function normalizeEmail(email: string): string {
+  return email.trim().toLowerCase();
+}
+
+export function isValidEmail(email: string): boolean {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email);
+}
 
 export async function getAdminSession(): Promise<IronSession<AdminSession>> {
   const cookieStore = await cookies();
   return getIronSession<AdminSession>(cookieStore, {
-    password: RESOLVED_SESSION_PASSWORD,
+    password: SESSION_PASSWORD as string,
     cookieName: "admin-session",
+    ttl: SESSION_TTL_SECONDS,
     cookieOptions: {
-      secure: process.env.NODE_ENV === "production",
+      secure: COOKIE_SECURE,
       httpOnly: true,
       sameSite: "lax",
-      maxAge: 60 * 60 * 24 * 7, // 7 days
+      maxAge: SESSION_TTL_SECONDS,
     },
   });
 }
 
 export async function loginAdmin(email: string, password: string) {
-  const user = await prisma.adminUser.findUnique({ where: { email } });
-  if (!user) return null;
+  const user = await prisma.adminUser.findUnique({
+    where: { email: normalizeEmail(email) },
+  });
 
-  const isValid = await bcrypt.compare(password, user.passwordHash);
-  if (!isValid) return null;
+  // Always pay the bcrypt cost, even for an unknown account, so response time
+  // does not reveal whether the email exists.
+  const isValid = await bcrypt.compare(
+    password,
+    user ? user.passwordHash : DUMMY_PASSWORD_HASH,
+  );
+  if (!user || !isValid) return null;
 
   await prisma.adminUser.update({
     where: { id: user.id },
@@ -68,6 +92,7 @@ export async function loginAdmin(email: string, password: string) {
   session.name = user.name;
   session.role = user.role;
   session.isLoggedIn = true;
+  session.sessionVersion = user.sessionVersion;
   await session.save();
 
   return { id: user.id, email: user.email, name: user.name, role: user.role };
@@ -86,9 +111,31 @@ export async function logoutAdmin() {
  */
 export async function requireAdmin() {
   const session = await getAdminSession();
-  if (!session.isLoggedIn) {
+  if (!session.isLoggedIn || !session.userId) {
     return null;
   }
+
+  // The cookie only proves the session was sealed with our key. Re-read the
+  // user so a deleted account, a role change, or a password change (which bumps
+  // sessionVersion) actually revokes access instead of leaving a stale cookie
+  // valid.
+  const user = await prisma.adminUser.findUnique({
+    where: { id: session.userId },
+  });
+  if (!user) return null;
+  if (user.sessionVersion !== (session.sessionVersion ?? 0)) return null;
+
+  return { ...session, email: user.email, name: user.name, role: user.role };
+}
+
+/**
+ * Enforces the `role` column, which is otherwise decorative. A `viewer`
+ * account must not reach admin-only surfaces.
+ */
+export async function requireRole(required: "admin" | "viewer" = "admin") {
+  const session = await requireAdmin();
+  if (!session) return null;
+  if (session.role !== required) return null;
   return session;
 }
 
@@ -97,20 +144,25 @@ export async function hasAnyAdminUser(): Promise<boolean> {
   return count > 0;
 }
 
-export async function createAdminUser(input: {
-  email: string;
-  password: string;
-  name?: string;
-}) {
+/**
+ * `client` lets the caller supply a transaction handle so the first-run setup
+ * guard and this insert can be atomic (see api/auth/setup/route.ts).
+ */
+type AdminUserWriter = Pick<Prisma.TransactionClient, "adminUser">;
+
+export async function createAdminUser(
+  input: { email: string; password: string; name?: string },
+  client: AdminUserWriter = prisma,
+) {
   const passwordHash = await bcrypt.hash(input.password, 12);
-  return prisma.adminUser.create({
+  return client.adminUser.create({
     data: {
-      email: input.email,
+      email: normalizeEmail(input.email),
       passwordHash,
       name: input.name,
       role: "admin",
     },
-  });
+  }) as ReturnType<typeof prisma.adminUser.create>;
 }
 
 /**
@@ -123,7 +175,7 @@ export async function updateAdminProfile(
   input: { name?: string; email: string },
 ) {
   const existing = await prisma.adminUser.findUnique({
-    where: { email: input.email },
+    where: { email: normalizeEmail(input.email) },
   });
   if (existing && existing.id !== userId) {
     throw new Error("Email is already in use by another account");
@@ -131,7 +183,7 @@ export async function updateAdminProfile(
 
   const user = await prisma.adminUser.update({
     where: { id: userId },
-    data: { name: input.name, email: input.email },
+    data: { name: input.name, email: normalizeEmail(input.email) },
   });
 
   const session = await getAdminSession();
@@ -162,6 +214,6 @@ export async function changeAdminPassword(
   const passwordHash = await bcrypt.hash(input.newPassword, 12);
   await prisma.adminUser.update({
     where: { id: userId },
-    data: { passwordHash },
+    data: { passwordHash, sessionVersion: { increment: 1 } },
   });
 }

@@ -9,7 +9,7 @@ const FIELDS = [
     preservedKey: "auditDeferArrayPreserved",
     delayKey: null,
     label: "Defer Heavy Scripts",
-    hint: "Scripts/patterns found by the audit to defer loading.",
+    hint: "Add the script names you want to defer till interaction.",
     placeholder: '["jquery.min.js","cdn.clarity"]',
   },
   {
@@ -18,7 +18,7 @@ const FIELDS = [
     preservedKey: "auditHideSelectorsPreserved",
     delayKey: null,
     label: "Hide Lastfold Classes",
-    hint: "CSS selectors for off-screen sections found by the audit.",
+    hint: "Add the class names you want to hide till interaction.",
     placeholder: '["#footer-links",".product-grid > :nth-child(n+5)"]',
   },
   {
@@ -82,7 +82,6 @@ export default function Step3Titles({ config }) {
   // drafts[key] = current editable text; originals[key] = last-saved text.
   const [drafts, setDrafts] = useState({});
   const [originals, setOriginals] = useState({});
-  const [errors, setErrors] = useState({});
 
   // Delay drafts: stores user input in SECONDS (display unit)
   const [delayDrafts, setDelayDrafts] = useState({});
@@ -186,13 +185,10 @@ export default function Step3Titles({ config }) {
     });
     setDrafts(nextDrafts);
     setOriginals(nextOriginals);
-    setErrors({});
   }, [config]);
 
   const handleChange = (key, text) => {
     setDrafts((prev) => ({ ...prev, [key]: text }));
-    const { valid, error } = validateArray(text);
-    setErrors((prev) => ({ ...prev, [key]: valid ? "" : error }));
   };
 
   const handleSave = (field) => {
@@ -216,7 +212,6 @@ export default function Step3Titles({ config }) {
 
     setSavingKey(field.key);
     fetcher.submit(payload, { method: "POST" });
-    setErrors((prev) => ({ ...prev, [field.key]: "" }));
   };
 
   // Reflect a successful save into the local originals so the box stops being

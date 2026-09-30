@@ -9,7 +9,6 @@ import type { AdminSession } from "@/lib/auth";
 const NAV_ITEMS = [
   { href: "/dashboard", label: "Dashboard" },
   { href: "/dashboard/stores", label: "Stores" },
-  { href: "/dashboard/settings", label: "Settings" },
 ];
 
 export default function Sidebar({ user }: { user: AdminSession }) {
