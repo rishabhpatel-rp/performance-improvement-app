@@ -1,23 +1,37 @@
 import { NextResponse } from "next/server";
 import { loginAdmin } from "@/lib/auth";
 import {
-  checkRateLimit,
+  checkBoth,
+  recordFailureBoth,
   loginKey,
-  recordFailure,
   resetAttempts,
 } from "@/lib/rate-limit";
 
+/**
+ * The rate-limit IP must NOT be taken from the client-controlled leftmost
+ * `X-Forwarded-For` entry — `curl -H 'x-forwarded-for: 1.2.3.4'` would hand
+ * every request a fresh bucket. Prefer the platform-provided header that the
+ * trusted proxy sets; fall back to the LAST hop in the chain, which is the one
+ * closest to us and is what an appending proxy actually controls.
+ */
 function clientIp(request: Request): string {
-  return (
-    request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ||
-    request.headers.get("x-real-ip") ||
-    "unknown"
-  );
+  const platform = request.headers.get("cf-connecting-ip");
+  if (platform) return platform.trim();
+  const realIp = request.headers.get("x-real-ip");
+  if (realIp) return realIp.trim();
+  const forwarded = request.headers.get("x-forwarded-for");
+  if (forwarded) {
+    const hops = forwarded.split(",").map((h) => h.trim()).filter(Boolean);
+    if (hops.length) return hops[hops.length - 1];
+  }
+  return "unknown";
 }
 
 export async function POST(request: Request) {
   try {
-    const { email, password } = await request.json();
+    const body = await request.json();
+    const email = typeof body?.email === "string" ? body.email : "";
+    const password = typeof body?.password === "string" ? body.password : "";
 
     if (!email || !password) {
       return NextResponse.json(
@@ -28,7 +42,7 @@ export async function POST(request: Request) {
 
     // Brute-force protection (audit Task 9). See lib/rate-limit.ts.
     const key = loginKey(email, clientIp(request));
-    const limit = checkRateLimit(key);
+    const limit = checkBoth(key, clientIp(request));
     if (!limit.allowed) {
       return NextResponse.json(
         { success: false, error: "Too many attempts. Try again later." },
@@ -39,7 +53,7 @@ export async function POST(request: Request) {
     const user = await loginAdmin(email, password);
 
     if (!user) {
-      recordFailure(key);
+      recordFailureBoth(key, clientIp(request));
       return NextResponse.json(
         { success: false, error: "Invalid email or password" },
         { status: 401 },

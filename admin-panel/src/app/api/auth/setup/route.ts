@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { hasAnyAdminUser, createAdminUser, loginAdmin } from "@/lib/auth";
+import { prisma } from "@/lib/prisma";
 
 export async function POST(request: Request) {
   try {
@@ -13,7 +14,10 @@ export async function POST(request: Request) {
       );
     }
 
-    const { email, password, name } = await request.json();
+    const body = await request.json();
+    const email = typeof body?.email === "string" ? body.email : "";
+    const password = typeof body?.password === "string" ? body.password : "";
+    const name = typeof body?.name === "string" ? body.name : undefined;
 
     if (!email || !password) {
       return NextResponse.json(
@@ -28,8 +32,32 @@ export async function POST(request: Request) {
       );
     }
 
-    await createAdminUser({ email, password, name });
+    // Re-check and create inside ONE serializable transaction. The pre-check
+    // above is only a fast path: without this, two concurrent requests with
+    // different emails both observe count()==0 and both insert, creating two
+    // privileged admins from an unauthenticated call pair.
+    const created = await prisma.$transaction(
+      async (tx) => {
+        const count = await tx.adminUser.count();
+        if (count > 0) return null;
+        return createAdminUser({ email, password, name }, tx);
+      },
+      { isolationLevel: "Serializable" },
+    );
+    if (!created) {
+      return NextResponse.json(
+        { success: false, error: "Setup has already been completed" },
+        { status: 409 },
+      );
+    }
+
     const user = await loginAdmin(email, password);
+    if (!user) {
+      return NextResponse.json(
+        { success: false, error: "Could not sign in after creating the account" },
+        { status: 500 },
+      );
+    }
 
     return NextResponse.json({ success: true, user });
   } catch (error) {

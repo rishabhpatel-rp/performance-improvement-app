@@ -9,7 +9,6 @@ import {
   ensureConfig,
   ensureAppEndpoint,
   updateConfig,
-  resetAudit,
 } from "../lib/metaobjects";
 import {
   fetchShopDetailsFromShopify,
@@ -190,6 +189,13 @@ const STORE_CONFIG_SELECT = {
   // NEW: Cached values for fast path
   isPasswordProtected: true,
   cachedAppEndpoint: true,
+    // Read by the loader below. Without these in the SELECT, `sc.lastAuditAt`
+    // is always undefined (so `auditHasRun` is permanently false and the
+    // "DB is authoritative" array merge silently degrades to a length guard)
+    // and `sc.auditPhase` is always null (so Step 1 shows "discovering" on
+    // first paint regardless of the real phase).
+    lastAuditAt: true,
+    auditPhase: true,
 };
 
 function emptyAuditStatus() {
@@ -275,7 +281,8 @@ export const loader = async ({ request }) => {
   embedPromise.catch(() => {});
 
   // Fast path: active store exists -> return from DB immediately
-  // Safety gates A-D determine when we must refresh from Shopify
+  // Four conditions force a Shopify refresh (there is no "Gate D"; the four
+  // gates are labelled A, B, C and the unlabelled 10-minute staleness check).
   const currentEndpoint = appUrl ? `${appUrl.replace(/\/+$/, "")}/audit-submit` : "";
   const needsShopifyRefresh =
     !hasActiveStore || // Gate A: no Store row, or Gate B: isActive=false
@@ -283,7 +290,9 @@ export const loader = async ({ request }) => {
       Date.now() - store.lastSyncedAt.getTime() > 10 * 60 * 1000) || // Stale > 10 min
     request.url.includes("?refresh=1") || // Explicit refresh
     // NEW: Gate C - if endpoint URL changed (tunnel restart), must update metaobject
-    (sc?.cachedAppEndpoint && sc.cachedAppEndpoint !== currentEndpoint);
+    // `currentEndpoint` is "" when SHOPIFY_APP_URL is unset; comparing against
+    // it would make Gate C permanently true and the fast path unreachable.
+    (currentEndpoint && sc?.cachedAppEndpoint && sc.cachedAppEndpoint !== currentEndpoint);
 
 let shopResult = { shopData: null, isNewStore: false };
   let shopifyConfig = null;
@@ -348,8 +357,11 @@ let shopResult = { shopData: null, isNewStore: false };
     embedCheck = embedChk;
     isNewStore = shopResult.isNewStore;
 
+    // Deliberately NOT guarded by `store?.id` alone: `store` was read BEFORE
+    // upsertStore() ran, so on a genuine first visit it is null and the cache
+    // was never written, leaving Gate C permanently unsatisfied.
     // Cache the app endpoint in StoreConfig for the fast path (Gate C).
-    if (store?.id) {
+    if (isNewStore || store?.id) {
       try {
         await prisma.storeConfig.upsert({
           where: { storeId: store.id },
@@ -468,8 +480,17 @@ let shopResult = { shopData: null, isNewStore: false };
     const dbDefer = readStringArray(sc.auditDeferArray);
     const dbHide = readStringArray(sc.auditHideSelectors);
     const dbStatic = readStringArray(sc.staticDeferDefaults);
-    if (dbDefer.length) auditDeferArray = dbDefer;
-    if (dbHide.length) auditHideSelectors = dbHide;
+    // The DB is authoritative for these two arrays once an audit has actually
+    // run. Previously this fell back to the metaobject whenever the DB array
+    // was empty, which meant an audit that legitimately produced `[]` (e.g.
+    // everything fold-protected, or a cleared run) was masked by a stale
+    // metaobject value — the dashboard showed data the storefront script did
+    // not have. `auditHasRun` keeps merchant-typed arrays working: a value
+    // entered via `intent: "save-audit-defer"` only exists in the metaobject,
+    // and that path is reachable before any audit has run.
+    const auditHasRun = Boolean(sc.lastAuditAt);
+    if (auditHasRun || dbDefer.length) auditDeferArray = dbDefer;
+    if (auditHasRun || dbHide.length) auditHideSelectors = dbHide;
     staticDeferDefaults = dbStatic.length > 0 ? dbStatic : staticDeferDefaults;
     dbToggle = {
       auditDeferArrayEnabled: sc.auditDeferArrayEnabled ?? true,
@@ -504,9 +525,17 @@ let shopResult = { shopData: null, isNewStore: false };
     customPdpUrl,
 
     // NEW
-    firstUserDelayScripts: readStringArray(sc?.firstUserDelayScripts) || ["wpm","gtm"],
+      // readStringArray always returns an array and [] is truthy, so the old
+      // `|| ["wpm","gtm"]` could never fall back. Check the length
+      // explicitly so a genuinely-absent column gets the schema default.
+      firstUserDelayScripts: (() => {
+        const v = readStringArray(sc?.firstUserDelayScripts);
+        return v.length ? v : ["wpm", "gtm"];
+      })(),
     firstUserDelayScriptsEnabled: sc?.firstUserDelayScriptsEnabled ?? true,
-    firstUserDelayScriptsPreserved: readStringArray(sc?.firstUserDelayScriptsPreserved) || [],
+      firstUserDelayScriptsPreserved: (() => { const v = readStringArray(sc?.firstUserDelayScriptsPreserved); return v.length ? v : []; })(), // readStringArray always returns an
+      // array and [] is truthy, so `|| []` could never fall back.
+      // Check the length explicitly to get the schema default.
     firstUserDelayMs: sc?.firstUserDelayMs ?? 12000,
     everyTimeDelayMs: sc?.everyTimeDelayMs ?? 6000,
   };
@@ -615,74 +644,14 @@ export const action = async ({ request }) => {
         : {}),
     });
 
-    if (appEnabled) {
-      // Fresh OFF->ON cycle clears the previous audit so the hidden backend
-      // audit re-runs, then it is triggered in the background.
-      try {
-        await resetAudit(admin);
-      } catch (err) {
-        console.warn(
-          "[Dashboard] resetAudit failed:",
-          err instanceof Error ? err.message : err,
-        );
-      }
-      try {
-        await startAuditForStore(admin, session.shop, {
-          enableOnCreate: true,
-        });
-      } catch (err) {
-        console.warn(
-          "[Dashboard] Failed to start hidden audit:",
-          err instanceof Error ? err.message : err,
-        );
-      }
-    } else {
-      // Disabling clears audit_complete + audited arrays so the next OFF->ON
-      // cycle triggers a fresh audit, and clears the DB audit status.
-      try {
-        await resetAudit(admin);
-      } catch (err) {
-        console.warn(
-          "[Dashboard] resetAudit failed:",
-          err instanceof Error ? err.message : err,
-        );
-      }
-      try {
-        const prisma = (await import("../db.server")).default;
-        const store = await prisma.store.findUnique({
-          where: { shopDomain: session.shop },
-          select: { id: true },
-        });
-        if (store) {
-          await prisma.storeConfig.upsert({
-            where: { storeId: store.id },
-            create: {
-              storeId: store.id,
-              appEnabled: false,
-              script1Enabled: false,
-              script2Enabled: false,
-              script3Enabled: false,
-              debugMode: false,
-              scriptTitles: [],
-            },
-            update: {
-              auditRunning: false,
-              auditComplete: false,
-              auditFailed: false,
-              auditError: null,
-              lastAuditAt: null,
-              auditDeferArray: [],
-              auditHideSelectors: [],
-            },
-          });
-        }
-      } catch (err) {
-        console.warn(
-          "[Dashboard] Failed to clear audit status:",
-          err instanceof Error ? err.message : err,
-        );
-      }
-    }
+    // NOTE: turning the app ON/OFF deliberately does NOT start or clear an
+    // audit. The audit is expensive (three pages through a headless browser,
+    // ~1-2 minutes) and its results are independent of the master switch, so
+    // the merchant starts it explicitly from Step 1 and the results survive
+    // every toggle. Turning the app OFF still serves an empty storefront
+    // script immediately — `rebuildPerformanceScript` below gates on
+    // `appEnabled`, and `api.storefront-scripts` re-checks it on every
+    // request — so no audit state needs to be wiped for safety.
 
     await safeSyncConfig(session.shop, config);
     // appEnabled just changed in the DB: rebuild the stored storefront script
@@ -695,10 +664,86 @@ export const action = async ({ request }) => {
       { changedFields: ["appEnabled"] },
     );
 
-    // Propagate the audit running state to the client so the Step-1 spinner
-    // can show and the dashboard can start polling immediately after the
-    // toggle (see the useEffect below).
-    return { ok: true, config, auditRunning: appEnabled };
+    // No `auditRunning` here: enabling no longer implies an audit. The Step 1
+    // "Run audit" button drives it, so the client must not enter the polling
+    // state on its own.
+    return { ok: true, config };
+  }
+
+  // Explicit, merchant-triggered audit. This is the ONLY way a run starts, so
+  // it carries every guard the old automatic path relied on the toggle for:
+  // the app must be ON, and the theme app embed must be confirmed installed
+  // (the audit scans the storefront, which only carries the gate when the
+  // embed is on).
+  if (intent === "start-audit") {
+    const store = await prisma.store.findUnique({
+      where: { shopDomain: session.shop },
+      select: {
+        id: true,
+        configs: {
+          select: { appEnabled: true, auditRunning: true },
+          orderBy: { updatedAt: "desc" },
+          take: 1,
+        },
+      },
+    });
+    if (!store) return { ok: false, error: "Store record not found." };
+
+    const sc = store.configs[0];
+    if (!sc?.appEnabled) {
+      return { ok: false, error: "app_disabled" };
+    }
+
+    // One run at a time: `startAuditForStore` would spawn a second concurrent
+    // Chromium run, and only the newer generation would be allowed to write.
+    if (sc?.auditRunning) {
+      return { ok: false, error: "already_running" };
+    }
+
+    const selectedThemeId = await getSelectedThemeId(session.shop).catch(
+      () => null,
+    );
+    const embedCheck = await isAppEmbedEnabled(
+      admin,
+      undefined,
+      selectedThemeId,
+    );
+    if (embedCheck !== true) {
+      return {
+        ok: false,
+        error: "extension_required",
+        embedActivateUrl: getAppEmbedDeepLink(
+          session.shop,
+          undefined,
+          undefined,
+          selectedThemeId,
+        ),
+      };
+    }
+
+    // `startAuditForStore` resets the run state itself (auditRunning,
+    // auditComplete, auditPages, auditPageIndex) before Chromium launches, so
+    // this one call covers both the first run and a re-run.
+    try {
+      const { started } = await startAuditForStore(admin, session.shop);
+      if (!started) return { ok: false, error: "Store record not found." };
+      await safeLogActivity(
+        session.shop,
+        "config_changed",
+        "Audit started manually",
+        { changedFields: ["auditRunning"] },
+      );
+      return { ok: true, auditStarted: true };
+    } catch (err) {
+      console.error(
+        "[Dashboard] Failed to start audit:",
+        err instanceof Error ? err.message : err,
+      );
+      return {
+        ok: false,
+        error: "Failed to start the audit. " + (err instanceof Error ? err.message : ""),
+      };
+    }
   }
 
   if (intent === "select-theme") {
@@ -813,35 +858,9 @@ export const action = async ({ request }) => {
     return { ok: true, field, enabled };
   }
 
-  if (intent === "save-titles") {
-    const scriptTitles = JSON.parse(formData.get("scriptTitles") || "[]");
-    const config = await safeUpdateConfig(admin, { scriptTitles });
-
-    await safeSyncConfig(session.shop, config);
-
-    return { ok: true, config };
-  }
-
-  if (intent === "save-audit-defer") {
-    const auditDeferArray = JSON.parse(formData.get("auditDeferArray") || "[]");
-    const config = await safeUpdateConfig(admin, { auditDeferArray });
-
-    await safeSyncConfig(session.shop, config);
-
-    return { ok: true, config };
-  }
-
-  if (intent === "save-audit-hide") {
-    const auditHideSelectors = JSON.parse(
-      formData.get("auditHideSelectors") || "[]",
-    );
-    const config = await safeUpdateConfig(admin, { auditHideSelectors });
-
-    await safeSyncConfig(session.shop, config);
-
-    return { ok: true, config };
-  }
-
+  
+  
+  
   // DB-only step-3 writer for the audit/static arrays. Each provided field
   // must parse as a JSON array of strings; otherwise nothing is written.
   if (intent === "save-audit-arrays") {
@@ -869,6 +888,10 @@ export const action = async ({ request }) => {
             auditDeferArrayEnabled: true,
             auditHideSelectorsEnabled: true,
             staticDeferDefaultsEnabled: true,
+              // Without this, `sc.firstUserDelayScriptsEnabled` is always
+              // undefined and the toggle-OFF -> [] coercion below can never
+              // apply to firstUserDelayScripts (the ?? true fallback wins).
+              firstUserDelayScriptsEnabled: true,
           },
         },
       },
@@ -1082,10 +1105,15 @@ export default function Dashboard() {
   // Merge the live "toggle-app" fetcher result in so the app gate unlocks
   // immediately when the Step 1 toggle is turned on (the loader data alone
   // doesn't refresh after a useFetcher submit).
+  // Matched ONLY by intent, never by response shape: `useFetchers()` also
+  // returns fetchers owned by the Step components, so keying on a response
+  // field would let a `start-audit` response be mistaken for a toggle result
+  // and drive `appEnabled`.
   const toggleFetcher = useFetchers().find(
-    (f) =>
-      f.formData?.get("intent") === "toggle-app" ||
-      typeof f.data?.auditRunning === "boolean",
+    (f) => f.formData?.get("intent") === "toggle-app",
+  );
+  const auditFetcher = useFetchers().find(
+    (f) => f.formData?.get("intent") === "start-audit",
   );
   const extensionBlocked =
     toggleFetcher?.data?.error === "extension_required";
@@ -1116,12 +1144,12 @@ export default function Dashboard() {
   const auditInProgress =
     appEnabled && (expectingAudit || auditStatus?.running === true);
 
-  // A toggle-ON is either confirmed by the action response or optimistic via
-  // the fetcher's submitted formData (before the action resolves).
-  // Only a successful toggle-ON starts the audit. Do not treat in-flight
-  // formData as a start — that skipped the extension check and jumped to Step 2.
+  // The audit is started explicitly from Step 1, never as a side effect of the
+  // toggle. A successful `start-audit` response is what puts the dashboard into
+  // the polling state. Keyed on the action's confirmed response, never on
+  // in-flight formData: an optimistic start would skip the extension check.
   const enablingAudit =
-    !extensionBlocked && toggleFetcher?.data?.auditRunning === true;
+    !extensionBlocked && auditFetcher?.data?.auditStarted === true;
 
   // Re-check embed status when the tab regains focus, in both directions:
   // merchant returns from the theme editor after enabling it (embedEnabled
@@ -1265,8 +1293,6 @@ export default function Dashboard() {
     </s-page>
   );
 }
-
-
 
 export function ErrorBoundary() {
   return boundary.error(useRouteError());

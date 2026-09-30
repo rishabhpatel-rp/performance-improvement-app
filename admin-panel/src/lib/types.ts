@@ -2,9 +2,13 @@
 // (lib/queries.ts) and the dummy-data source (lib/dummy-data.ts) resolve to
 // these structural types, and the UI components are typed against them.
 
+/**
+ * Mirrors STORE_CONFIG_SELECT in queries.ts — the ONLY StoreConfig columns the
+ * admin panel reads. Deliberately not the full 42-column row: selecting (and
+ * therefore serialising) everything once shipped the merchant's
+ * `storefrontPassword` into the RSC payload sent to the browser.
+ */
 export interface StoreConfig {
-  id: string;
-  storeId: string;
   appEnabled: boolean;
   script1Enabled: boolean;
   script2Enabled: boolean;
@@ -12,12 +16,7 @@ export interface StoreConfig {
   debugMode: boolean;
   scriptTitles: unknown;
   metaobjectId: string | null;
-  createdAt: Date;
   updatedAt: Date;
-  // Not yet a column on the real StoreConfig model (see the audit-columns
-  // schema conflict noted in the implementation plan — left untouched for
-  // now). Optional so real rows simply omit it while dummy rows can set it,
-  // and the "Audits Completed" KPI can read it defensively either way.
   auditComplete?: boolean;
 }
 
@@ -95,7 +94,7 @@ export interface PlanCount {
 export interface DashboardStats {
   totalStores: number;
   activeStores: number;
-  inactiveStores: number;
+  appOnStores: number;
   recentlyInstalledCount: number;
   recentInstalls: NewStoreRow[];
   recentActivity: StoreActivity[];

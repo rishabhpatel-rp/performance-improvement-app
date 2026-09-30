@@ -39,9 +39,29 @@ export function buildHiddenCss(selectors) {
  * Every list holds URL fragments; a <script src> whose URL contains one of
  * them is matched (as a regex-escaped alternation).
  *
+ * PER-PAGE GATING
+ * A store serves thousands of PDPs but an audit only ever sees three URLs, so
+ * the bundle carries one variant per audited page plus a match pattern that
+ * generalises it to its siblings (`/products/gift-card` -> `/products/`). The
+ * script resolves `location.pathname` against those patterns **once, at install
+ * time**, and gates only what that page needs. One request, one cache entry, no
+ * per-page round trip.
+ *
+ * The shared part is sent once as `baseScripts` (the intersection of the audited
+ * pages) and each variant carries only its `add` delta. Shipping full per-page
+ * lists instead measured +65% bundle size for a script that blocks rendering on
+ * every page load — for a store where most scripts are shared, the delta is a
+ * handful of entries instead of hundreds.
+ *
  * @param {object}   options
- * @param {string[]} options.interactionGatedScripts  Blocked until the visitor's
- *   first interaction (pointer, scroll, key, touch...). Source: auditDeferArray.
+ * @param {string[]} options.baseScripts  Scripts every audited page loads. Gated
+ *   on every page. Sent once.
+ * @param {Array<{pattern: string, add?: string[], hide?: string[]}>}
+ *   options.pageVariants  Per-page additions, ordered most specific first. The
+ *   first pattern matching `location.pathname` wins.
+ * @param {string[]} options.interactionGatedScripts  Fallback union used when no
+ *   variant matches. Blocked until the visitor's first interaction. Source:
+ *   auditDeferArray.
  * @param {string[]} options.firstVisitDelayedScripts Held for FIRST-TIME visitors
  *   only, until interaction or `firstVisitDelayMs` (localStorage flag makes it a
  *   no-op on later visits). Source: firstUserDelayScripts.
@@ -49,33 +69,113 @@ export function buildHiddenCss(selectors) {
  *   released after `everyLoadDelayMs`. Source: staticDeferDefaults.
  * @param {number}   options.firstVisitDelayMs        Timeout for the first-visit list.
  * @param {number}   options.everyLoadDelayMs         Timeout for the every-load list.
- * @param {string[]} options.hideSelectors            CSS selectors hidden until the
- *   first interaction (lastfold sections). Source: auditHideSelectors.
+ * @param {string[]} options.hideSelectors            Fallback hide list when no
+ *   variant matches. Source: auditHideSelectors.
+   * @param {boolean}  options.debugMode                Settings "Debug mode": keep
+   *   console logging in the bundle and run the timing logger. Source:
+   *   StoreConfig.debugMode.
  * @returns {string} Obfuscated JavaScript.
  */
 export function generateDeferredScript({
+  baseScripts = [],
+  pageVariants = [],
   interactionGatedScripts = [],
   firstVisitDelayedScripts = [],
   everyLoadDelayedScripts = [],
   firstVisitDelayMs = 12000,
   everyLoadDelayMs = 6000,
   hideSelectors = [],
+  // Mirrors the Settings "Debug mode" toggle ("Adds console logging to
+  // injected scripts"). Previously the flag was stored in the metaobject and
+  // StoreConfig but never reached this function, so the toggle did nothing.
+  debugMode = false,
 } = {}) {
-  const interactionGatedJson = JSON.stringify(interactionGatedScripts);
+  // Intern identical selector lists. They are small, but a store whose pages
+  // share the same below-fold sections would otherwise repeat them per variant.
+  const hideSets = [];
+  const internHide = (list) => {
+    const key = JSON.stringify(list);
+    const hit = hideSets.findIndex((e) => e.key === key);
+    if (hit !== -1) return hit;
+    hideSets.push({ key, list });
+    return hideSets.length - 1;
+  };
+  const variants = pageVariants.map((v) => ({
+    pattern: v.pattern,
+    add: v.add || [],
+    hideIndex: internHide(v.hide || []),
+  }));
+  const fallbackHideIndex = internHide(hideSelectors);
+
+  const baseJson = JSON.stringify(baseScripts);
+  const fallbackUnionJson = JSON.stringify(interactionGatedScripts);
+  const hideSetsJson = JSON.stringify(hideSets.map((e) => e.list));
+  const variantsJson = JSON.stringify(variants);
+  const fallbackJson = JSON.stringify({ hide: fallbackHideIndex });
   const firstVisitDelayedJson = JSON.stringify(firstVisitDelayedScripts);
   const everyLoadDelayedJson = JSON.stringify(everyLoadDelayedScripts);
-  const hideCssJson = JSON.stringify(buildHiddenCss(hideSelectors));
 
   // Source script template
   const rawScript = `
   (function () {
     "use strict";
+    // Mirrors buildHiddenCss() on the build side, but per page. Kept here as
+    // source rather than inlined so the selector list is interned once.
+    function buildPageCss(sel) {
+      var list = [];
+      for (var i = 0; i < sel.length; i++) {
+        var s = String(sel[i] || "").trim();
+        if (s) list.push(s);
+      }
+      if (!list.length) return "";
+      return (
+        "html:not(.interacted) :is(" + list.join(",") +
+        "){display:none!important}"
+      );
+    }
     var doc = document;
     var docEl = document.documentElement;
     var classList = docEl.classList;
     var win = window;
     var startTime = performance.now();
-    var hideCss = ${hideCssJson};
+
+    // ---- resolve which page this is, once ----
+    // Everything below gates only what THIS page needs. Without this, a PDP
+    // would be handed the PLP's list (and vice versa), so the visitor would
+    // either get scripts that should have run or wait for ones that were never
+    // going to be needed.
+    var BASE = ${baseJson};
+    var UNION = ${fallbackUnionJson};
+    var HIDE_SETS = ${hideSetsJson};
+    var VARIANTS = ${variantsJson};
+    var FALLBACK = ${fallbackJson};
+    var PATH = location.pathname || "/";
+
+    function resolvePage() {
+      for (var i = 0; i < VARIANTS.length; i++) {
+        var p = VARIANTS[i].pattern;
+        if (!p) continue;
+        // A pattern ending in "/" is a section prefix and generalises to sibling
+        // pages; anything else must match the path exactly. VARIANTS is ordered
+        // most specific first, so the first hit wins.
+        if (p.charAt(p.length - 1) === "/") {
+          if (PATH.indexOf(p) === 0) return VARIANTS[i];
+        } else if (PATH === p || PATH === p + "/") {
+          return VARIANTS[i];
+        }
+      }
+      return null;
+    }
+
+    var PAGE = resolvePage();
+    // BASE is what every audited page loads; the variant adds only this page's
+    // extras. No match at all means an un-audited page (a blog post, a search
+    // result): fall back to the union, which is the safe superset.
+    var gatedTokens = PAGE ? BASE.concat(PAGE.add) : UNION;
+    var activeSelectors = PAGE ? HIDE_SETS[PAGE.hideIndex] : HIDE_SETS[FALLBACK.hide];
+    var hideCss = buildPageCss(activeSelectors || []);
+
+
     if (hideCss && !doc.getElementById("pp-hide-lastfold")) {
       try {
         var hideStyle = doc.createElement("style");
@@ -147,7 +247,7 @@ export function generateDeferredScript({
       }, { once: true, passive: true, capture: true });
     });
 
-    var P = ${interactionGatedJson};
+    var P = gatedTokens;
 
     var R = P.length
       ? new RegExp(
@@ -236,8 +336,20 @@ export function generateDeferredScript({
       window.__dsmo = null;
     }
 
-    doc.querySelectorAll("script").forEach(B);
-
+    // Deliberately NO install-time sweep over the scripts already in the DOM.
+    //
+    // The gate itself has just executed, so every classic script[src] that
+    // appears earlier in document order has ALREADY run, and anything later in
+    // the document has not been parsed yet (so it is not in the DOM to find).
+    // Parking the already-parsed ones and then re-creating them in
+    // releaseGatedScripts() runs them a SECOND time, which throws
+    // "Uncaught SyntaxError: Identifier 'X' has already been declared" for
+    // every theme script that declares a top-level class or const — the Dawn
+    // theme alone produced seven of these (pubsub, global, details-disclosure,
+    // details-modal, search-form, standard-actions-override, animations).
+    //
+    // Scripts that arrive after the gate installed are caught by the observer
+    // below, which is the only place parking can actually help.
     var O = new MutationObserver(function (t) {
       if (H()) {
         O.disconnect();
@@ -263,6 +375,12 @@ export function generateDeferredScript({
     function releaseGatedScripts() {
       O.disconnect();
       doc.querySelectorAll('script[type="text/plain"]').forEach(function (e) {
+        // Only scripts parked by the observer above reach here, and those have
+        // had their src stripped *before* the browser fetched them, so they have
+        // definitely never executed and re-creating them is safe. Re-creating a
+        // script that had already run is what produced the duplicate
+        // "Identifier 'X' has already been declared" errors; that can no longer
+        // happen now that the install-time sweep is gone.
         if (e._ps) {
           var t = doc.createElement("script");
           for (var r = 0; r < e.attributes.length; r++) {
@@ -476,7 +594,7 @@ export function generateDeferredScript({
     controlFlowFlatteningThreshold: 0.3,
     deadCodeInjection: false,
     debugProtection: false,
-    disableConsoleOutput: true,
+    disableConsoleOutput: !debugMode,  // debug mode is the only way to keep console output
     identifierNamesGenerator: "hexadecimal",
     renameGlobals: false,
     selfDefending: false,
@@ -486,18 +604,24 @@ export function generateDeferredScript({
   });
 
   const obfuscated = obfuscatedResult.getObfuscatedCode();
-  return TEMP_TIMING_LOG ? withTimingLog(obfuscated) : obfuscated;
+  return TEMP_TIMING_LOG || debugMode ? withTimingLog(obfuscated) : obfuscated;
 }
 
 // ---------------------------------------------------------------------------
 // TEMPORARY — injection timing log. Set TEMP_TIMING_LOG to false (or delete
-// this block and the `withTimingLog` call above) once you have the numbers,
+// this block and the withTimingLog call above) once you have the numbers,
 // then rebuild the script (toggle the app off/on or save a Step 2 field).
 //
 // Kept OUTSIDE the obfuscated code on purpose: the obfuscator option
-// `disableConsoleOutput` replaces console.log with a no-op for everything that
+// disableConsoleOutput replaces console.log with a no-op for everything that
 // runs after it, so the logger captures a bound console.log first.
 // ---------------------------------------------------------------------------
+// The injection-timing log has served its purpose (it produced the
+  // "gate installs at ~1s, before first paint" numbers that confirmed the gate
+  // lands early enough) and it costs bytes in a script that blocks rendering on
+  // every storefront page load. Off by default; flip to true to re-measure.
+// Re-enabled 2026-09-30 to re-measure gate install time. REMEMBER TO SET BACK
+// TO false once you have the numbers.
 const TEMP_TIMING_LOG = true;
 
 function withTimingLog(obfuscated) {

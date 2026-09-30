@@ -28,7 +28,12 @@ export async function setDemoMode(value: DemoMode): Promise<void> {
   cookieStore.set(COOKIE_NAME, value, {
     path: "/",
     sameSite: "lax",
-    // 1 year — this is a UI preference, not a security-sensitive cookie.
-    maxAge: 60 * 60 * 24 * 365,
+    // Not a security token (auth lives in the sealed `admin-session` cookie),
+    // but httpOnly so page scripts cannot read or forge it, and a day rather
+    // than a year so demo mode cannot silently persist on a shared machine for
+    // the next admin who uses it.
+    httpOnly: true,
+    secure: process.env.ADMIN_SESSION_INSECURE_COOKIE !== "1",
+    maxAge: 60 * 60 * 24,
   });
 }

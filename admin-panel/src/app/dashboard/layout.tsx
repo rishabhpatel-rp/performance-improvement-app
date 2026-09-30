@@ -19,6 +19,7 @@ export default async function DashboardLayout({
     name: session.name,
     role: session.role,
     isLoggedIn: session.isLoggedIn,
+    sessionVersion: session.sessionVersion ?? 0,
   };
 
   return (

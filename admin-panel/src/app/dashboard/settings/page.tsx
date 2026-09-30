@@ -1,21 +1,9 @@
 import { redirect } from "next/navigation";
-import { requireAdmin } from "@/lib/auth";
-import { getDemoMode } from "@/lib/demo-mode";
-import SettingsClient from "@/components/settings-client";
 
+// Settings page is temporarily removed from the admin panel. The route
+// redirects rather than 404ing so any existing links/bookmarks still land
+// somewhere useful. Re-enable by restoring the previous page body (see git
+// history) once ready to bring Settings back.
 export default async function SettingsPage() {
-  const session = await requireAdmin();
-  if (!session) redirect("/login");
-
-  const user = {
-    userId: session.userId,
-    email: session.email,
-    name: session.name,
-    role: session.role,
-    isLoggedIn: session.isLoggedIn,
-  };
-
-  const demoMode = await getDemoMode();
-
-  return <SettingsClient user={user} demoMode={demoMode} />;
+  redirect("/dashboard");
 }

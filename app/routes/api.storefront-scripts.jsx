@@ -1,7 +1,10 @@
 import { authenticate } from "../shopify.server";
 import prisma from "../db.server";
 import { rebuildPerformanceScript } from "../lib/performance-script.server";
-import { resolveVerifiedProxyShop } from "../lib/proxy-shop";
+import {
+  resolveVerifiedProxyShop,
+  verifyAppProxyShop,
+} from "../lib/proxy-shop";
 
 // Storefront script endpoint, reached through the app proxy
 // (/apps/performance-scripts) by the blocking <script src> in the theme app
@@ -79,16 +82,32 @@ async function loadStorefrontScript(request, shopDomain) {
 
 export const loader = async ({ request }) => {
   try {
-    const auth = await authenticate.public.appProxy(request);
+    // Fast path (B3): verify the App Proxy signature in-process.
+    //
+    // This route runs on EVERY page load for EVERY shopper, and the
+    // authenticated path below loads the offline session — which triggers a
+    // Shopify OAuth token refresh roughly hourly on a shopper request path.
+    // The route needs only `shop`; it never touches the session's admin or
+    // storefront clients. `verifyAppProxyShop` therefore proves the same thing
+    // without the session lookup.
+    //
+    // Anything the fast path declines (no signature, a signature Shopify
+    // canonicalised differently, no configured secret) falls through to the
+    // authenticated path, which is slower but authoritative. A canonicalisation
+    // change at Shopify can therefore cost latency, never correctness.
+    const shopDomain =
+      // eslint-disable-next-line no-undef
+      verifyAppProxyShop(request, process.env.SHOPIFY_API_SECRET) ??
+      resolveVerifiedProxyShop(await authenticate.public.appProxy(request));
 
     // SECURITY: never fall back to an unsigned `shop` query param.
-    // authenticate.public.appProxy verifies the App Proxy HMAC signature; a
-    // falsy/partial result means that check failed (or there's no session),
-    // not that it's safe to trust whatever `shop` the caller put in the URL.
-    // Trusting that param let anyone fetch any shop's compiled storefront
-    // script by guessing/knowing its domain. An unverified request gets the generic
-    // no-op script, never shop-specific data.
-    const shopDomain = resolveVerifiedProxyShop(auth);
+    // `shop` is only trusted once the App Proxy signature over it has been
+    // verified — either by `verifyAppProxyShop` above or by
+    // `authenticate.public.appProxy`. A falsy result means that check failed
+    // (or there's no session), not that it's safe to trust whatever `shop` the
+    // caller put in the URL. Trusting that param let anyone fetch any shop's
+    // compiled storefront script by guessing/knowing its domain. An unverified
+    // request gets the generic no-op script, never shop-specific data.
     if (!shopDomain) {
       return scriptResponse(request, OFF_SCRIPT, null);
     }

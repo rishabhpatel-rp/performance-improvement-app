@@ -29,7 +29,18 @@ export async function POST(request: Request) {
     await changeAdminPassword(session.userId, { currentPassword, newPassword });
     return NextResponse.json({ success: true });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "An error occurred";
+    // Only surface errors we raised deliberately. A blanket `error.message`
+    // echo leaks Prisma/DB internals (e.g. "Unique constraint failed on the
+    // fields: (email)") to an unauthenticated-ish client.
+    const SAFE = new Set([
+      "Current password is incorrect",
+      "User not found",
+      "Email is already in use by another account",
+    ]);
+    const message =
+      error instanceof Error && SAFE.has(error.message)
+        ? error.message
+        : "An error occurred";
     console.error("Change password error:", error);
     return NextResponse.json({ success: false, error: message }, { status: 400 });
   }
