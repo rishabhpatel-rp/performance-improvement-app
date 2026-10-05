@@ -21,7 +21,10 @@ import {
   updateAuditFieldToggle,
 } from "../lib/store-sync.server";
 import { startAuditForStore } from "../lib/audit-runner.server";
-import { normalizeCustomUrl } from "../lib/page-urls.server";
+import {
+  normalizeCustomUrl,
+  normalizeCustomUrlList,
+} from "../lib/page-urls.server";
 import { rebuildPerformanceScript } from "../lib/performance-script.server";
 import {
   getPasswordProtection,
@@ -171,6 +174,7 @@ const STORE_CONFIG_SELECT = {
   storefrontPassword: true,
   customPlpUrl: true,
   customPdpUrl: true,
+  customPageUrls: true,
   auditDeferArray: true,
   auditHideSelectors: true,
   staticDeferDefaults: true,
@@ -448,10 +452,13 @@ let shopResult = { shopData: null, isNewStore: false };
   let storefrontPassword = "";
   let customPlpUrl = "";
   let customPdpUrl = "";
+  // Extra pages from the "+" button. Empty until the select above is read.
+  let customPageUrls = [];
   if (sc) {
     storefrontPassword = sc.storefrontPassword || "";
     customPlpUrl = sc.customPlpUrl || "";
     customPdpUrl = sc.customPdpUrl || "";
+    customPageUrls = readStringArray(sc.customPageUrls);
     const pageIndex = sc.auditPageIndex ?? 0;
     const totalPages = sc.auditTotalPages ?? 0;
     auditStatus = {
@@ -523,6 +530,7 @@ let shopResult = { shopData: null, isNewStore: false };
     storefrontPassword,
     customPlpUrl,
     customPdpUrl,
+    customPageUrls,
 
     // NEW
       // readStringArray always returns an array and [] is truthy, so the old
@@ -564,6 +572,14 @@ export const action = async ({ request }) => {
 
   if (intent === "toggle-app") {
     const appEnabled = formData.get("appEnabled") === "true";
+    // Captured BEFORE the write, so the auto re-run below fires on OFF -> ON only.
+    const wasEnabled = await prisma.storeConfig
+      .findFirst({
+        where: { store: { shopDomain: session.shop } },
+        select: { appEnabled: true },
+      })
+      .then((r) => r?.appEnabled === true)
+      .catch(() => false);
 
     if (appEnabled) {
       // The embed must be on in the theme the merchant selected (live theme
@@ -664,10 +680,30 @@ export const action = async ({ request }) => {
       { changedFields: ["appEnabled"] },
     );
 
-    // No `auditRunning` here: enabling no longer implies an audit. The Step 1
-    // "Run audit" button drives it, so the client must not enter the polling
-    // state on its own.
-    return { ok: true, config };
+    // Turning the app ON from OFF re-runs the audit automatically. A storefront
+    // that was serving an empty gate has never been measured, so the stored
+    // script does not reflect the current theme; leaving it stale would serve a
+    // bundle built from an old audit. OFF -> ON only: re-enabling repeatedly must
+    // not spawn a run each time, and turning OFF never starts one.
+    //
+    // startAuditForStore resets the run state itself, so one call covers both a
+    // first-ever enable and a re-enable. It is fire-and-forget, so the toggle is
+    // not delayed by the run.
+    let auditStarted = false;
+    if (appEnabled && !wasEnabled) {
+      try {
+        const { started } = await startAuditForStore(admin, session.shop);
+        auditStarted = started === true;
+      } catch (err) {
+        // Never fail the toggle because the audit could not start: the app is
+        // enabled and the merchant can still press "Run audit" manually.
+        console.error("[toggle-app] auto audit start failed:", err);
+      }
+    }
+
+    // Returned rather than inferred on the client, so the extension and password
+    // checks above are never bypassed by an optimistic start.
+    return { ok: true, config, auditStarted };
   }
 
   // Explicit, merchant-triggered audit. This is the ONLY way a run starts, so
@@ -1025,6 +1061,20 @@ export const action = async ({ request }) => {
     }
     const customPlpUrl = plp.url || "";
     const customPdpUrl = pdp.url || "";
+    // Extra rows from the "+" button. getAll picks up every customPageUrls field
+    // the UI rendered, in order.
+    const extras = normalizeCustomUrlList(
+      formData.getAll("customPageUrls"),
+      session.shop,
+    );
+    if (!extras.ok) {
+      return {
+        ok: false,
+        plpError: plp.ok ? "" : plp.error,
+        pdpError: pdp.ok ? "" : pdp.error,
+        pageErrors: extras.errors,
+      };
+    }
     const prisma = (await import("../db.server")).default;
     const store = await prisma.store.findUnique({
       where: { shopDomain: session.shop },
@@ -1043,10 +1093,12 @@ export const action = async ({ request }) => {
         scriptTitles: [],
         customPlpUrl: customPlpUrl || null,
         customPdpUrl: customPdpUrl || null,
+          customPageUrls: extras.urls,
       },
       update: {
         customPlpUrl: customPlpUrl || null,
         customPdpUrl: customPdpUrl || null,
+          customPageUrls: extras.urls,
       },
     });
     return {
@@ -1149,7 +1201,13 @@ export default function Dashboard() {
   // the polling state. Keyed on the action's confirmed response, never on
   // in-flight formData: an optimistic start would skip the extension check.
   const enablingAudit =
-    !extensionBlocked && auditFetcher?.data?.auditStarted === true;
+    !extensionBlocked &&
+    (auditFetcher?.data?.auditStarted === true ||
+      // The toggle action auto-starts a re-run when it flips OFF -> ON, and
+      // reports it here. Keyed on the action's confirmed response for the same
+      // reason as start-audit: an optimistic start would skip the embed and
+      // password checks the action already ran.
+      toggleFetcher?.data?.auditStarted === true);
 
   // Re-check embed status when the tab regains focus, in both directions:
   // merchant returns from the theme editor after enabling it (embedEnabled

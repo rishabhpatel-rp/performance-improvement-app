@@ -39,6 +39,10 @@ export interface DiscoveredPages {
   home: string;
   plp?: string;
   pdp?: string;
+  /** Extra merchant-specified pages, already rewritten with the password and
+   *  preview-theme params. Audited like any other page but with no PLP/PDP
+   *  semantics, so they only ever contribute to the union. */
+  extras?: string[];
 }
 
 export interface HiddenAuditResult {
@@ -130,6 +134,9 @@ export class AuditBlockedError extends Error {
 }
 
 interface CustomUrls {
+  /** Extra pages from the "+" button. Validated at save time, but re-checked
+   *  here because the stored value could predate a hostname change. */
+  extras?: string[];
   plp?: string;
   pdp?: string;
 }
@@ -225,7 +232,9 @@ export function appendPreviewParams(
   return u.toString();
 }
 
-const PAGE_LABELS: Array<[keyof DiscoveredPages, string]> = [
+// Scalar page keys only. `extras` is an ARRAY, so it is handled separately
+// below rather than being folded into this scalar loop.
+const PAGE_LABELS: Array<[Exclude<keyof DiscoveredPages, "extras">, string]> = [
   ["home", "Home page"],
   ["plp", "Collection page"],
   ["pdp", "Product page"],
@@ -242,9 +251,13 @@ export interface AuditPageInfo {
  * `?password=` / `preview_theme_id=` never reach the DB, API or UI. */
 export function describePages(pages: DiscoveredPages): AuditPageInfo[] {
   const out: AuditPageInfo[] = [];
+  // Canonical pages first, in a stable order, so the report always leads with
+  // home -> collection -> product.
   for (const [key, label] of PAGE_LABELS) {
     const url = pages[key];
-    if (!url) continue;
+    // `extras` is an array, not a string. It is handled below, but the guard
+    // keeps this loop safe if PAGE_LABELS is ever widened again.
+    if (!url || typeof url !== "string") continue;
     let path = url;
     try {
       path = new URL(url).pathname || "/";
@@ -252,6 +265,18 @@ export function describePages(pages: DiscoveredPages): AuditPageInfo[] {
       // keep the raw value if it is not an absolute URL
     }
     out.push({ label, path });
+  }
+  // Then the merchant-added pages, one chip each. They are labelled by path
+  // because their page type is unknown, and they come last so they never
+  // displace the canonical pages from the top of the report.
+  for (const extra of pages.extras ?? []) {
+    let path = extra;
+    try {
+      path = new URL(extra).pathname || "/";
+    } catch {
+      // keep the raw value
+    }
+    out.push({ label: "Extra page", path });
   }
   return out;
 }
@@ -554,6 +579,30 @@ export async function discoverPages(
 
   let plp = customFor("plp", customUrls?.plp);
   let pdp = customFor("pdp", customUrls?.pdp);
+
+    // Extra pages go through the same validation, de-duplicated and capped: a
+    // merchant can add many rows, and each one is a full headless page load, so
+    // an unbounded list would turn a 2-minute audit into an hour.
+    const extras: string[] = [];
+    for (const raw of customUrls?.extras ?? []) {
+      const r = normalizeCustomUrl(raw, shopDomain, "page");
+      if (!r.ok) {
+        console.warn(`[audit] Ignoring invalid extra page URL: ${r.error}`);
+        continue;
+      }
+      if (!r.url) continue;
+      // The homepage and the PLP/PDP are already measured; measuring them twice
+      // would double-count and waste a page load.
+      if (r.url === `https://${shopHost}/` || r.url === plp || r.url === pdp) continue;
+      if (!extras.includes(r.url)) extras.push(r.url);
+      if (extras.length >= MAX_EXTRA_PAGES) {
+        console.warn(
+          `[audit] Extra page limit (${MAX_EXTRA_PAGES}) reached; the rest were ignored.`,
+        );
+        break;
+      }
+    }
+
   const source = { plp: plp ? "custom" : "none", pdp: pdp ? "custom" : "none" };
   const adopt = (found: { plp?: string; pdp?: string }, via: string) => {
     if (!plp && ownHost(found.plp)) {
@@ -611,10 +660,11 @@ export async function discoverPages(
       home: appendPreviewParams(home, params),
       plp: plp ? appendPreviewParams(plp, params) : undefined,
       pdp: pdp ? appendPreviewParams(pdp, params) : undefined,
+      extras: extras.map((u) => appendPreviewParams(u, params)),
     };
   }
 
-  return { home, plp, pdp };
+  return { home, plp, pdp, extras };
 }
 
 export type AuditPhase = "discovering" | "auditing" | "building";
@@ -664,6 +714,42 @@ const MAX_INTERACTION_TARGETS = 25; // 25 safe targets existed on a measured pag
 const INTERACTION_CLICK_TIMEOUT_MS = 1500; // per-click actionability timeout
 const INTERACTION_STEP_SETTLE_MS = 400; // pause after each click
 const INTERACTION_PHASE_TIMEOUT_MS = 30000; // hard cap: scroll + mouse + click
+
+/** How many times the whole page set is measured in one audit run.
+ *
+ *  Rationale: the storefront gate matches defer tokens as an EXACT substring of
+ *  the script URL, so a token carrying a value that varies per request (nonce,
+ *  A/B bucket, cache-buster) or that changes between deploys stops matching and
+ *  the script is silently never deferred.
+ *
+ *  `mergeSlugVariants` already unifies divergent variants of one script to their
+ *  longest common prefix, but with a single pass there is only ever ONE variant per
+ *  script, so the merge is a no-op. Repeating the pass feeds it the divergence it
+ *  was written to consume. Identical repeats stay verbatim, so a stable value is
+ *  never over-stripped.
+ */
+/** Hard cap on merchant-added extra pages. Each one is a full headless page
+ *  load per pass, so this bounds the audit's wall time. Reaching it logs a
+ *  warning rather than silently truncating. */
+const MAX_EXTRA_PAGES = 8;
+
+const AUDIT_REPEAT_PASSES = 3;
+
+/**
+ * Gap between passes, in ms.
+ *
+ * Set to 0 deliberately. The gap was two minutes of pure sleeping -- roughly
+ * half the wall time -- and it only bought ONE class: a value that rotates on a
+ * window shorter than the gap. The classes that actually cost deferral are
+ * covered elsewhere:
+ *   - per-request nonces / A-B / cache-busters are caught by repeat samples
+ *     alone, with no delay between them,
+ *   - deploy-time build hashes are caught for free by the cross-run merge
+ *     against the previous AuditLog row.
+ * A rotation window longer than an audit run is not observable by any in-run
+ * sampling, so a large gap bought very little for a very large cost.
+ */
+const AUDIT_PASS_GAP_MS = 0;
 
 interface PageAccumulators {
   p: string[];
@@ -1202,6 +1288,17 @@ async function measurePage(
   browser: Browser,
   url: string,
   password?: string,
+  /**
+   * Harvest only: collect the script NAMES this page loads and nothing else.
+   *
+   * Repeat passes after the first exist solely to observe token variation, and
+   * the names come from the in-page `P_KEY` accumulator. Coverage, the fold
+   * snapshot and the interaction pass all cost time and none of them affect a
+   * name. Skipping them is therefore free precision-wise: the fold/coverage
+   * filters are applied to the pooled token set afterwards, so a harvested name
+   * is still filtered exactly as before.
+   */
+  harvestOnly = false,
 ): Promise<MeasuredPage> {
   const context = await browser.newContext();
   try {
@@ -1234,17 +1331,23 @@ async function measurePage(
     // Playwright API if the CDP call is unavailable.
     let cdpCoverage: import("playwright").CDPSession | null = null;
     let usingPreciseCoverage = false;
-    try {
-      cdpCoverage = await page.context().newCDPSession(page);
-      await cdpCoverage.send("Profiler.enable");
-      await cdpCoverage.send("Profiler.startPreciseCoverage", {
-        detailed: true,
-        allowTriggeredUpdates: false,
-      });
-      usingPreciseCoverage = true;
-    } catch {
-      await page.coverage.startJSCoverage().catch(() => {});
-    }
+      // Coverage is skipped on a harvest pass: it costs a CDP session plus a
+      // stopJSCoverage round trip, and it only decides whether a token is
+      // PROTECTED -- it never changes the token's name, which is the only thing
+      // the repeat passes exist to observe.
+      if (!harvestOnly) {
+        try {
+          cdpCoverage = await page.context().newCDPSession(page);
+          await cdpCoverage.send("Profiler.enable");
+          await cdpCoverage.send("Profiler.startPreciseCoverage", {
+            detailed: true,
+            allowTriggeredUpdates: false,
+          });
+          usingPreciseCoverage = true;
+        } catch {
+          await page.coverage.startJSCoverage().catch(() => {});
+        }
+      }
     await page.addInitScript({ content: buildGatedSinglePageAuditScript(url) });
 
     try {
@@ -1301,7 +1404,9 @@ async function measurePage(
     // Capture the first FOLD_HEIGHT_PX ("initial viewport") before anything
     // is touched, then stop the pre-interaction JS coverage recording — both
     // describe the page exactly as it first renders (post-settle, pre-interaction).
-    const fold = await captureInitialFold(page);
+      const fold = harvestOnly
+        ? { selectors: [] as string[], scripts: [] as string[], reasons: {} as Record<string, string> }
+        : await captureInitialFold(page);
 
     // Read coverage now, while the page is still post-settle and
     // pre-interaction. Coverage has to be stopped here because anything the
@@ -1321,7 +1426,9 @@ async function measurePage(
     // Simulate a real browsing session (scroll, mouse movement, opening
     // menus/tabs/accordions/carousels) so lazy-loaded and interaction-gated
     // content actually renders before the page is measured.
-    const interaction = await simulateInteractions(page);
+      const interaction = harvestOnly
+        ? { revealed: [] as string[], steps: 0, clicks: 0 }
+        : await simulateInteractions(page);
     const revealedByInteraction = interaction.revealed;
 
     // Let the page settle again, then assert no *new* scripts arrived because
@@ -1627,12 +1734,52 @@ async function selectorsOverlapFoldOnPage(
  *  - defer list = union of every page's third-party script fragments,
  *  - hide selectors = selectors off-screen somewhere and never visible on any
  *    page (same rule the script itself applies across pages). */
+/**
+ * Defer tokens recorded by the PREVIOUS audit run, so this run can unify against
+ * them.
+ *
+ * The storefront gate matches a token as an exact substring of the script URL,
+ * so a build hash that changes on redeploy silently stops matching. Repeating
+ * the pass catches per-request and short time-windowed variation, but three
+ * passes minutes apart all hit the same build — so a deploy-time change is
+ * invisible to in-run sampling. Pooling the previous run's tokens catches it.
+ *
+ * `AuditLog.audit_data` already holds the whole result object, and this project
+ * already reads it for per-page data (see readPerPageAuditData), so no new
+ * storage is involved.
+ */
+async function readPriorDeferTokens(shopDomain: string): Promise<string[]> {
+  try {
+    const { default: prisma } = await import("../db.server");
+    const log = await prisma.auditLog.findFirst({
+      where: { domain: shopDomain },
+      orderBy: { timestamp: "desc" },
+      select: { audit_data: true },
+    });
+    const data = log?.audit_data as
+      | { deferArray?: unknown; deferArrayUnmerged?: unknown }
+      | null;
+    if (!data) return [];
+    const pick = (v: unknown): string[] =>
+      Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
+    return [...new Set([...pick(data.deferArrayUnmerged), ...pick(data.deferArray)])];
+  } catch (err) {
+    // The cross-run merge is an improvement, never a requirement: if the prior
+    // report cannot be read the audit must still complete.
+    console.warn("[audit] could not read the previous report:", err);
+    return [];
+  }
+}
+
 export async function runHiddenAudit({
   pages,
   password,
+  shopDomain,
   onProgress,
 }: {
   pages: DiscoveredPages;
+  /** Used only to pool the previous run's tokens (see readPriorDeferTokens). */
+  shopDomain?: string;
   // Store owner's storefront password (Step 1). `pages` URLs already carry
   // the `?password=` bypass query param when set — this is only used as a
   // fallback to submit Shopify's password form if the query param alone
@@ -1640,7 +1787,10 @@ export async function runHiddenAudit({
   password?: string;
   onProgress?: (progress: AuditProgress) => void | Promise<void>;
 }): Promise<HiddenAuditResult> {
-  const urls = [pages.home, pages.plp, pages.pdp].filter(
+  // Extras are appended so they are genuinely MEASURED, not merely stored. A
+  // saved-but-unaudited URL would be a lie in the UI. They keep the home/PLP/PDP
+  // order so the three canonical pages stay first in the report.
+  const urls = [pages.home, pages.plp, pages.pdp, ...(pages.extras ?? [])].filter(
     (u): u is string => Boolean(u),
   );
 
@@ -1648,38 +1798,63 @@ export async function runHiddenAudit({
   await onProgress?.({ done, total: urls.length });
 
   return withBrowser(async (browser) => {
+    // Every pass is kept, so a script whose token varies between passes produces
+    // several variants for `mergeSlugVariants` to unify.
+    const measuredAll: MeasuredPage[] = [];
+    // Deduplicated by URL (first pass wins). The funnel and the per-page selector
+    // logic want one row per page, not one per pass.
     const measured: MeasuredPage[] = [];
+    const seenPaths = new Set<string>();
     try {
       // allSettled: one page failing to open must not abandon the others'
       // contexts (they are all closed in `finally`).
-      const settled = await Promise.allSettled(
-        urls.map(async (url) => {
-          const m = await measurePage(browser, url, password);
-          measured.push(m);
-          done++;
-          let path: string | undefined;
-          try {
-            path = new URL(url).pathname || "/";
-          } catch {
-            path = url;
-          }
-          try {
-            await onProgress?.({ done, total: urls.length, path });
-          } catch {
-            // progress is best-effort
-          }
-        }),
-      );
+      for (let pass = 0; pass < AUDIT_REPEAT_PASSES; pass++) {
+        const settled = await Promise.allSettled(
+          urls.map(async (url) => {
+              const m = await measurePage(browser, url, password, pass > 0);
+            measuredAll.push(m);
+            let path: string | undefined;
+            try {
+              path = new URL(url).pathname || "/";
+            } catch {
+              path = url;
+            }
+            if (!seenPaths.has(path)) {
+              seenPaths.add(path);
+              measured.push(m);
+            }
+            done++;
+            try {
+              await onProgress?.({
+                done,
+                total: urls.length * AUDIT_REPEAT_PASSES,
+                path,
+              });
+            } catch {
+              // progress is best-effort
+            }
+          }),
+        );
+        const passFailed = measuredAll.length < (pass + 1) * urls.length;
+        if (passFailed && pass === 0) {
+          const failure = settled.find((r) => r.status === "rejected");
+          throw failure && failure.status === "rejected"
+            ? failure.reason
+            : new Error("No pages could be audited.");
+        }
+        if (pass < AUDIT_REPEAT_PASSES - 1) {
+          await new Promise((r) => setTimeout(r, AUDIT_PASS_GAP_MS));
+        }
+      }
       if (measured.some((m) => m.blocked)) {
         throw new AuditBlockedError(
           password ? "PASSWORD_INCORRECT" : "PASSWORD_REQUIRED",
         );
       }
       if (measured.length === 0) {
-        const failure = settled.find((r) => r.status === "rejected");
-        throw failure && failure.status === "rejected"
-          ? failure.reason
-          : new Error("No pages could be audited.");
+        // A pass that measured nothing already threw above on pass 0; this
+        // only guards the case where every later pass came back empty.
+        throw new Error("No pages could be audited.");
       }
 
       const pSet = new Set<string>();
@@ -1693,7 +1868,12 @@ export async function runHiddenAudit({
       const noise = new Set<string>();
       const selfScripts = new Set<string>();
       const funnel: PageFunnel[] = [];
-      for (const { acc } of measured) {
+        // Every pass contributes its script tokens, so a script whose name varies
+        // between passes yields several variants for `mergeSlugVariants` to unify.
+        // vis/off/fold/coverage are Sets, so extra samples can only widen coverage,
+        // never narrow it. The funnel below still uses the deduplicated `measured`
+        // so it keeps exactly one row per page.
+        for (const { acc } of measuredAll) {
         acc.p.forEach((x) => pSet.add(x));
         acc.vis.forEach((x) => visSet.add(x));
         acc.off.forEach((x) => offSet.add(x));
@@ -1889,7 +2069,26 @@ export async function runHiddenAudit({
       // emitted as `app.9pOKhaB_.js` stops silently matching after the merchant
       // redeploys: divergent variants of one script are unified to their
       // longest common prefix (`store-BTEJUR`/`store-BTEJKB` -> `store-BTE`).
-      const mergedDefer = mergeSlugVariants(emittedRaw).sort();
+      // Three sources feed the merge:
+      //   1. this run's tokens across AUDIT_REPEAT_PASSES (per-request and
+      //      short time-windowed variation),
+      //   2. the PREVIOUS run's tokens (deploy-time hash changes, which no
+      //      in-run sampling can see because every pass hits the same build),
+      //   3. nothing else — identical repeats stay verbatim.
+      //
+      // Prior tokens go through the SAME filter as this run's. Without that, a
+      // script that is fold-protected or coverage-verified NOW could be
+      // resurrected from the previous report and gated again, which is the
+      // unsafe direction.
+      const priorRaw = shopDomain ? await readPriorDeferTokens(shopDomain) : [];
+      const isEmittable = (x: string) =>
+        !foldRequiredScripts.has(x) &&
+        !coverageRan.has(x) &&
+        !coverageUnknown.has(x) &&
+        !selfScripts.has(x) &&
+        !neverDefer.has(x);
+      const priorFiltered = priorRaw.filter(isEmittable);
+      const mergedDefer = mergeSlugVariants([...emittedRaw, ...priorFiltered]).sort();
 
       return {
         deferArray: mergedDefer,

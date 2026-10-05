@@ -174,6 +174,10 @@ model StoreConfig {
   // Custom page URLs for audit (merchant-specified, optional)
   customPlpUrl String?  // Merchant-specified PLP URL
   customPdpUrl String?  // Merchant-specified PDP URL
+  // Extra pages the merchant added with the "+" button in Step 1. These have no
+  // PLP/PDP semantics — they are audited as generic pages and only contribute to
+  // the union (never a per-page variant), because their page type is unknown.
+  customPageUrls Json @default("[]")
 
   // Reference to the Shopify metaobject
   metaobjectId String?

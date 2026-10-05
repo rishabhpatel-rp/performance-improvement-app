@@ -113,6 +113,13 @@ export async function startAuditForStore(
       const customUrls = {
         plp: config?.customPlpUrl || undefined,
         pdp: config?.customPdpUrl || undefined,
+        // Extra pages from the "+" button. They have no PLP/PDP semantics, so
+        // they are audited as generic pages and only feed the union.
+        extras: Array.isArray(config?.customPageUrls)
+          ? (config.customPageUrls as unknown[]).filter(
+              (u): u is string => typeof u === "string" && u.trim() !== "",
+            )
+          : [],
       };
 
       const pages = await discoverPages(
@@ -150,6 +157,10 @@ export async function startAuditForStore(
       const report = await runHiddenAudit({
         pages,
         password: password || undefined,
+        // Lets the audit pool the previous run's defer tokens, so a build hash
+        // that changed since the last run is unified instead of silently
+        // ceasing to match the storefront.
+        shopDomain,
         // Pages are audited in parallel: `done` counts finished pages.
         onProgress: async ({ done, total, path }) => {
           if (!isCurrentRun()) return;

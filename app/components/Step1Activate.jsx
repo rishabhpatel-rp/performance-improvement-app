@@ -145,9 +145,23 @@ export default function Step1Activate({
   // Custom URL drafts — one Save writes both fields (matches the card layout).
   const [plpDraft, setPlpDraft] = useState(config.customPlpUrl || "");
   const [pdpDraft, setPdpDraft] = useState(config.customPdpUrl || "");
+  // Extra pages added with the "+" button. Kept as a fixed-length list of
+  // drafts (never holes) so React keys stay stable when a middle row is removed.
+  const [extraDrafts, setExtraDrafts] = useState(
+    Array.isArray(config.customPageUrls) ? config.customPageUrls : [],
+  );
+  const savedExtras = urlFetcher.data?.customPageUrls ?? config.customPageUrls ?? [];
+  // Row errors are keyed by 1-based row number by the action, so a merchant
+  // with eight rows can tell which one is wrong.
+  const pageErrors = urlFetcher.data?.pageErrors ?? {};
+  const extrasDirty =
+    extraDrafts.length !== savedExtras.length ||
+    extraDrafts.some((v, i) => v !== (savedExtras[i] || ""));
   const savedPlp = urlFetcher.data?.customPlpUrl ?? (config.customPlpUrl || "");
   const savedPdp = urlFetcher.data?.customPdpUrl ?? (config.customPdpUrl || "");
-  const urlsDirty = plpDraft !== savedPlp || pdpDraft !== savedPdp;
+  // extrasDirty is included so the "+" rows can enable Save on their own.
+  const urlsDirty =
+    plpDraft !== savedPlp || pdpDraft !== savedPdp || extrasDirty;
 
   // The server saves a cleaned URL (full https URL on this store, share-link
   // params stripped). Show that value so the fields are not "dirty" afterwards.
@@ -155,6 +169,11 @@ export default function Step1Activate({
     if (urlFetcher.data?.ok) {
       setPlpDraft(urlFetcher.data.customPlpUrl || "");
       setPdpDraft(urlFetcher.data.customPdpUrl || "");
+      setExtraDrafts(
+        Array.isArray(urlFetcher.data.customPageUrls)
+          ? urlFetcher.data.customPageUrls
+          : [],
+      );
     }
   }, [urlFetcher.data]);
 
@@ -171,15 +190,26 @@ export default function Step1Activate({
     if (pwFetcher.data.auditRestarted === true) onAuditRestarted?.();
   }, [pwFetcher.data, onAuditRestarted]);
 
+  const addExtraRow = () => setExtraDrafts((prev) => [...prev, ""]);
+  const removeExtraRow = (index) =>
+    setExtraDrafts((prev) => prev.filter((_, i) => i !== index));
+  const setExtraRow = (index, value) =>
+    setExtraDrafts((prev) => prev.map((v, i) => (i === index ? value : v)));
+
   const handleSaveUrls = () => {
-    urlFetcher.submit(
-      {
-        intent: "save-custom-page-urls",
-        customPlpUrl: plpDraft,
-        customPdpUrl: pdpDraft,
-      },
-      { method: "POST" },
-    );
+    // A real FormData is required, not a plain object. submit({ k: array })
+    // serialises the array with String(), so two URLs became ONE entry:
+    // "/pages/about,host/collections/sale". The action then accepted that as a
+    // single (nonsense) path and the merchant silently lost a page. FormData
+    // keeps one entry per key, which is what formData.getAll() reads back.
+    const fd = new FormData();
+    fd.set("intent", "save-custom-page-urls");
+    fd.set("customPlpUrl", plpDraft);
+    fd.set("customPdpUrl", pdpDraft);
+    for (const v of extraDrafts) {
+      if (v.trim() !== "") fd.append("customPageUrls", v);
+    }
+    urlFetcher.submit(fd, { method: "POST" });
   };
 
   // Priority: action response > optimistic formData > loader data.
@@ -206,6 +236,11 @@ export default function Step1Activate({
   // finished) -> building the storefront script. Step 2 only opens once the
   // script is stored.
   const auditPages = Array.isArray(auditStatus?.pages) ? auditStatus.pages : [];
+  // The "only N found" hint is about the collection/product pages specifically.
+  // Counting rows would be wrong now that merchant-added pages are in the same
+  // list: home + PLP + 1 extra is 3 rows yet still no PDP.
+  const missingPlp = !auditPages.some((p) => p.label === "Collection page");
+  const missingPdp = !auditPages.some((p) => p.label === "Product page");
   const totalPages = auditStatus?.totalPages > 0 ? auditStatus.totalPages : 0;
   const donePages = Math.min(Math.max(0, auditStatus?.pageIndex ?? 0), totalPages);
   const phase = auditStatus?.phase || "discovering";
@@ -533,8 +568,18 @@ export default function Step1Activate({
           conversions — just turn this ON 👇
         </div>
 
-        {/* Toggle switch */}
-        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 8, padding: 8 }}>
+        {/* Toggle switch + audit control in one row. The audit control sits
+            beside the toggle because that is where merchants reach for it, and
+            the long explanation it used to carry only made the card taller. */}
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            gap: 12,
+            flexWrap: "wrap",
+          }}
+        >
           <s-switch
             key={switchKey}
             label="Enable Performance Improvement App"
@@ -543,9 +588,33 @@ export default function Step1Activate({
             onChange={(e) => handleToggle(e.target.checked)}
           />
 
+          {/* Same availability rule as before: only when the app is ON and no
+              run is in flight, so it doubles as the "Re-run" affordance. */}
+          {appEnabled && !running && (
+            <s-button
+              variant={auditComplete ? "secondary" : "primary"}
+              onClick={startAudit}
+              disabled={!canRunAudit}
+            >
+              {auditStarting
+                ? "Starting…"
+                : auditComplete
+                  ? "Re-run audit"
+                  : "Run audit"}
+            </s-button>
+          )}
+        </div>
+
           {/* Validating: live-checking app embed + password status (<3s) */}
           {validating && (
-            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: 8,
+              }}
+            >
               <s-spinner size="small" />
               <s-text tone="subdued">Checking store setup…</s-text>
             </div>
@@ -578,7 +647,6 @@ export default function Step1Activate({
                 "Couldn't verify store setup in time. Please try again."}
             </s-banner>
           )}
-        </div>
 
         {/* Password + custom PLP/PDP URL cards — side by side */}
         <div
@@ -690,14 +758,56 @@ export default function Step1Activate({
                     onChange={(e) => setPdpDraft(e.target.value)}
                   />
                 </div>
-                <s-button
-                  variant="secondary"
-                  disabled={!urlsDirty || urlFetcher.state !== "idle"}
-                  onClick={handleSaveUrls}
-                >
-                  {urlFetcher.state !== "idle" ? "Saving…" : "Save"}
-                </s-button>
+                {/* "+" then Save, inline with the two URL fields. The button
+                    group is wrapped so the pair always moves together and the
+                    fields keep the remaining width. */}
+                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                  {/* No text child: Polaris renders `icon="plus"` itself, and
+                      a "+" child is ALSO slotted into the shadow root, so both
+                      appeared — two plus glyphs side by side. The delete buttons
+                      use this same icon-only form. */}
+                  <s-button
+                    variant="secondary"
+                    icon="plus"
+                    accessibilityLabel="Add another page to audit"
+                    onClick={addExtraRow}
+                  />
+                  <s-button
+                    variant="secondary"
+                    disabled={!urlsDirty || urlFetcher.state !== "idle"}
+                    onClick={handleSaveUrls}
+                  >
+                    {urlFetcher.state !== "idle" ? "Saving…" : "Save"}
+                  </s-button>
+                </div>
               </div>
+
+                {extraDrafts.map((draft, index) => (
+                  <div
+                    key={index}
+                    style={{ display: "flex", gap: 8, alignItems: "flex-start" }}
+                  >
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <s-text-field
+                        label={`Additional page ${index + 1}`}
+                        labelAccessibilityVisibility="exclusive"
+                        placeholder="/pages/about"
+                        name="customPageUrls"
+                        value={draft}
+                        onChange={(e) => setExtraRow(index, e.target.value)}
+                      />
+                    </div>
+                    <s-button
+                      variant="tertiary"
+                      icon="delete"
+                      accessibilityLabel={`Remove additional page ${index + 1}`}
+                      onClick={() => removeExtraRow(index)}
+                    />
+                    {pageErrors[index + 1] && (
+                      <s-text tone="critical">{pageErrors[index + 1]}</s-text>
+                    )}
+                  </div>
+                ))}
               {urlFetcher.data?.plpError && (
                 <s-text tone="critical">
                   Collection page: {urlFetcher.data.plpError}
@@ -721,42 +831,13 @@ export default function Step1Activate({
           </div>
         </div>
 
-        {/* Manual audit control. Shown whenever the app is ON and no run is in
-            flight, so it doubles as the "Re-run" affordance once a first audit
-            has completed. */}
-        {appEnabled && !running && (
-          <div
-            style={{
-              display: "flex",
-              flexDirection: "column",
-              alignItems: "center",
-              gap: 8,
-              padding: "4px 0 12px",
-            }}
-          >
-            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-              <s-button
-                variant={auditComplete ? "secondary" : "primary"}
-                onClick={startAudit}
-                disabled={!canRunAudit}
-              >
-                {auditStarting
-                  ? "Starting…"
-                  : auditComplete
-                    ? "Re-run audit"
-                    : "Run audit"}
-              </s-button>
-            </div>
-            <s-text tone="subdued">
-              {auditComplete
-                ? "The audit scans your home, collection and product pages and builds the defer/hide lists. Re-run it after major theme or app changes."
-                : "The audit scans your home, collection and product pages and builds the defer/hide lists. It usually takes a minute or two."}
-            </s-text>
-            {auditStartErrorText && (
+          {/* Start errors stay here so a refused run is still explained, even
+              though the button itself now lives beside the toggle. */}
+          {auditStartErrorText && (
+            <div style={{ textAlign: "center" }}>
               <s-text tone="critical">{auditStartErrorText}</s-text>
-            )}
-          </div>
-        )}
+            </div>
+          )}
 
         {/* Hidden backend audit feedback (below the toggle) */}
         {running && (
@@ -865,7 +946,8 @@ export default function Step1Activate({
               </div>
             )}
 
-            {auditPages.length > 0 && auditPages.length < 3 && (
+            {auditPages.length > 0 &&
+                (missingPlp || missingPdp) && (
               <div
                 style={{
                   fontSize: 12,
@@ -874,9 +956,14 @@ export default function Step1Activate({
                   maxWidth: 420,
                 }}
               >
-                Only {auditPages.map((p) => p.label).join(" and ")}{" "}
-                {auditPages.length === 1 ? "was" : "were"} found on your store.
-                Add a collection/product URL below for a fuller audit.
+                No{" "}
+                {missingPlp && missingPdp
+                  ? "collection or product"
+                  : missingPlp
+                    ? "collection"
+                    : "product"}{" "}
+                page was found on your store. Add the URL below for a fuller
+                audit.
               </div>
             )}
           </div>
