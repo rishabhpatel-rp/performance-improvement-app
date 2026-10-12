@@ -1,9 +1,26 @@
-<script src="/apps/performance-scripts"></script>
+{%- comment -%}
+  The app mirrors its already-obfuscated storefront script into app-owned shop
+  metafields (`script`, `script_2` ... `script_6`; `script_parts` says how many
+  are valid). They are printed here as ONE inline <script>: no network request,
+  no app server on the shopper path, runs as soon as the parser reaches it.
+
+  Target `compliance_head` is the earliest app-embed slot Shopify documents.
+  For first-byte-in-head delivery the app also writes
+  `snippets/pagepulse-head-inline.liquid` and a `{% render %}` immediately
+  after `<head>` in `layout/theme.liquid` (see theme-head-inject.server.ts).
+  When that path is active, `theme_head_active` is true and this embed prints
+  nothing (avoids double execution).
+
+  There is deliberately NO <script src> fallback and NO else branch.
+{%- endcomment -%}
+{%- unless app.metafields.pagepulse.theme_head_active -%}
+{% render 'pagepulse-inline' %}
+{%- endunless -%}
 
 {% schema %}
 {
   "name": "Performance Script Loader",
-  "target": "head",
+  "target": "compliance_head",
   "settings": []
 }
 {% endschema %}

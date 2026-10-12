@@ -211,6 +211,11 @@ model StoreConfig {
   // Theme the app extension (theme app embed) is installed in. null = live (MAIN) theme.
   selectedThemeId String? // e.g. "gid://shopify/OnlineStoreTheme/123"
 
+  // Automated layout/theme.liquid head injection (themeFilesUpsert); see theme-head-inject.server.ts
+  themeHeadInjectStatus       String?   // not_attempted | skipped | injected | exempt_denied | error
+  themeHeadInjectAttemptedAt  DateTime?
+  themeHeadInjectError        String?
+
   // Timestamps
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -269,11 +274,20 @@ model PerformanceScript {
 
   auditScript String?  @map("audit_script") // legacy (raw audit report JSON); no longer written or read
   // Final obfuscated storefront script, built by rebuildPerformanceScript() whenever
-  // its inputs change and served as-is by the app proxy (no per-request build).
+  // its inputs change. Served as-is by the app proxy (fallback) and mirrored
+  // byte-for-byte into the shop metafield that the theme app embed renders inline.
   deferScript String?  @map("defer_script")
   hiddenCss   String?  @map("hidden_css") // plain hide-lastfold CSS (already embedded in deferScript)
   scriptHash    String?   @map("script_hash") // sha256 of deferScript, used as the HTTP ETag
   scriptBuiltAt DateTime? @map("script_built_at")
+  // Fingerprint of the raw script + obfuscation profile/seed/debug flag. When it is
+  // unchanged, rebuildPerformanceScript() reuses deferScript instead of obfuscating
+  // again ("off" while the app is disabled).
+  inputsHash        String?   @map("inputs_hash")
+  // scriptHash currently live in the shop metafield rendered inline by the theme
+  // app embed (null = no inline script; storefront falls back to the app proxy).
+  metafieldHash     String?   @map("metafield_hash")
+  metafieldSyncedAt DateTime? @map("metafield_synced_at")
   createdAt   DateTime @default(now()) @map("created_at")
   updatedAt   DateTime @updatedAt @map("updated_at")
 

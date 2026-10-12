@@ -5,6 +5,7 @@ import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../shopify.server";
 import { getConfig, updateConfig, deleteConfig } from "../lib/metaobjects";
 import { syncConfigToDatabase, logActivity } from "../lib/store-sync.server";
+import { clearScriptMetafield } from "../lib/script-metafield.server";
 
 // Persists the merged metaobject config into PostgreSQL for the given shop
 // and swallows/logs any failure so a DB hiccup never breaks Settings.
@@ -112,6 +113,9 @@ export const action = async ({ request }) => {
           },
         }),
       ]);
+    // The compiled script row is gone; remove the inline copy as well so the
+    // theme falls back to the proxy (which serves the "off" script).
+    await clearScriptMetafield(session.shop);
     await safeLogActivity(session.shop, "config_changed", "All data reset", {
       changedFields: ["all"],
     });

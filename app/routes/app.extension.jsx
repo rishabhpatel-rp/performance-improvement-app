@@ -8,6 +8,8 @@ import {
   getSelectedThemeId,
   listThemes,
 } from "../lib/theme-embed.server";
+import prisma from "../db.server";
+import { THEME_HEAD_INJECT_STATUS } from "../lib/theme-head-inject-status.server";
 
 export const loader = async ({ request }) => {
   const { admin, session } = await authenticate.admin(request);
@@ -21,6 +23,15 @@ export const loader = async ({ request }) => {
   const theme = themes.find((t) =>
     selectedThemeId ? t.id === selectedThemeId : t.role === "MAIN",
   );
+  const cfg = await prisma.storeConfig.findFirst({
+    where: { store: { shopDomain: session.shop } },
+    orderBy: { updatedAt: "desc" },
+    select: {
+      themeHeadInjectStatus: true,
+      themeHeadInjectError: true,
+    },
+  });
+  const headStatus = cfg?.themeHeadInjectStatus ?? "not_attempted";
   return {
     shop: session.shop,
     embedEnabled: embedEnabled === true,
@@ -32,12 +43,22 @@ export const loader = async ({ request }) => {
       undefined,
       selectedThemeId,
     ),
+    headDelivery: {
+      status: headStatus,
+      error: cfg?.themeHeadInjectError ?? null,
+      active: headStatus === THEME_HEAD_INJECT_STATUS.INJECTED,
+    },
   };
 };
 
 export default function ExtensionInstall() {
-  const { embedEnabled, embedUnknown, embedActivateUrl, themeName } =
-    useLoaderData();
+  const {
+    embedEnabled,
+    embedUnknown,
+    embedActivateUrl,
+    themeName,
+    headDelivery,
+  } = useLoaderData();
   const themeLabel = themeName ? `“${themeName}”` : "your live theme";
   const revalidator = useRevalidator();
   const [searchParams] = useSearchParams();
@@ -108,6 +129,40 @@ export default function ExtensionInstall() {
               Back to dashboard
             </s-button>
           </div>
+        </s-stack>
+      </s-section>
+
+      <s-section heading="Storefront head delivery (automatic)">
+        <s-stack direction="block" gap="base">
+          {headDelivery.active ? (
+            <s-banner tone="success">
+              PagePulse installed its inline loader at the top of your theme
+              head automatically. Merchants do not edit theme code.
+            </s-banner>
+          ) : headDelivery.status === "exempt_denied" ? (
+            <s-banner tone="info">
+              The app embed still delivers the performance script. Automatic
+              first-in-head theme setup is pending platform approval for this
+              app (no action required in your theme code).
+            </s-banner>
+          ) : headDelivery.status === "error" ? (
+            <s-banner tone="warning">
+              Automatic head setup did not complete
+              {headDelivery.error ? `: ${headDelivery.error}` : "."} Open the
+              app dashboard and retry, or contact support.
+            </s-banner>
+          ) : (
+            <s-banner tone="info">
+              After you enable the app embed and run an audit, PagePulse tries
+              to place the script at the earliest point in the theme head
+              automatically when you open the app.
+            </s-banner>
+          )}
+          <s-paragraph>
+            Inline script content always comes from shop metafields (updated on
+            each audit). The theme app embed is the fallback until automatic
+            head placement succeeds.
+          </s-paragraph>
         </s-stack>
       </s-section>
     </s-page>

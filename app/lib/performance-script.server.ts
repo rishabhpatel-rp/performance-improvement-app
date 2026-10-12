@@ -5,7 +5,14 @@ import {
   orderPagePatterns,
   selectPerPageVariants,
 } from "./per-page";
-import { buildHiddenCss, generateDeferredScript } from "./script-generator";
+import {
+  buildHiddenCss,
+  buildRawScript,
+  fingerprintRawScript,
+  obfuscateRawScript,
+} from "./script-generator";
+import { hashScript, seedFromShop } from "./script-inline";
+import { syncScriptMetafield } from "./script-metafield.server";
 
 /**
  * Per-page data from the most recent completed audit.
@@ -132,10 +139,23 @@ export interface BuiltPerformanceScript {
   scriptBuiltAt: Date;
 }
 
+/** `inputsHash` stored while the app is off (no script is built at all). */
+const OFF_FINGERPRINT = "off";
+
 /**
  * Obfuscation is CPU-heavy (~0.7 s), so it runs here — once, whenever the
  * inputs change — and the result is stored in `PerformanceScript.deferScript`.
- * The storefront proxy route only reads that column.
+ *
+ * "Inputs changed" is decided by a fingerprint of the RAW script source plus the
+ * obfuscation profile, debug flag and seed (`fingerprintRawScript`). The raw
+ * source already contains every list, delay and selector, so an unchanged
+ * fingerprint means the stored obfuscated script is exactly what a rebuild would
+ * produce, and obfuscation is skipped. Saving an unchanged config therefore
+ * costs a string template, not an obfuscation run.
+ *
+ * After storing, the script is mirrored into the shop metafield that the theme
+ * app embed renders inline (`syncScriptMetafield`). The proxy route
+ * (`api.storefront-scripts`) only reads the DB column and remains the fallback.
  *
  * Inputs mirror the Step 2 cards: each list only counts while its own
  * `*Enabled` toggle is ON. Returns the row, or null when the store is unknown
@@ -149,15 +169,29 @@ export async function rebuildPerformanceScript(
   try {
     const store = await prisma.store.findUnique({
       where: { shopDomain },
-      include: { configs: { orderBy: { updatedAt: "desc" }, take: 1 } },
+      include: {
+        configs: { orderBy: { updatedAt: "desc" }, take: 1 },
+        performanceScript: {
+          select: {
+            inputsHash: true,
+            deferScript: true,
+            hiddenCss: true,
+            scriptHash: true,
+            scriptBuiltAt: true,
+          },
+        },
+      },
     });
     if (!store) return null;
 
     const config = store.configs[0];
+    const existing = store.performanceScript;
     const active = store.isActive && Boolean(config?.appEnabled);
 
     let deferScript = "";
     let hiddenCss = "";
+    let inputsHash = OFF_FINGERPRINT;
+    let reused = false;
 
     if (active && config) {
 
@@ -166,8 +200,10 @@ export async function rebuildPerformanceScript(
       const deferEnabled = config.auditDeferArrayEnabled !== false;
       const perPage = deferEnabled ? await readPerPageAuditData(shopDomain) : null;
       const hideEnabled = config.auditHideSelectorsEnabled;
+      const debugMode = config.debugMode === true;
+      const seed = seedFromShop(shopDomain);
 
-      deferScript = generateDeferredScript({
+      const rawScript = buildRawScript({
         // `baseScripts` is what every audited page loads and is only consulted
         // when a page variant matches; `interactionGatedScripts` is the union
         // used for an un-audited page (a blog post, a search result). With no
@@ -187,25 +223,52 @@ export async function rebuildPerformanceScript(
         firstVisitDelayMs: config.firstUserDelayMs ?? 12000,
         everyLoadDelayMs: config.everyTimeDelayMs ?? 6000,
         hideSelectors: hideEnabled ? readStringArray(config.auditHideSelectors) : [],
-        // Settings "Debug mode": keep console logging in the storefront bundle.
-        debugMode: config.debugMode === true,
       });
 
+      inputsHash = fingerprintRawScript(rawScript, { debugMode, seed });
+
+      if (existing?.deferScript && existing.inputsHash === inputsHash) {
+        // Identical script: keep the stored obfuscated bytes (no CPU work).
+        deferScript = existing.deferScript;
+        reused = true;
+        console.log(
+          `[perf] ${shopDomain}: script inputs unchanged, skipped obfuscation`,
+        );
+      } else {
+        // Settings "Debug mode": keep console logging in the storefront bundle.
+        deferScript = obfuscateRawScript(rawScript, { debugMode, seed });
+      }
+
       hiddenCss = hideEnabled ? buildHiddenCss(readStringArray(config.auditHideSelectors)) : "";
+    } else if (existing && existing.inputsHash === OFF_FINGERPRINT) {
+      reused = true; // already stored as "off"; nothing to rebuild
     }
 
-    const built: BuiltPerformanceScript = {
-      deferScript,
-      hiddenCss,
-      scriptHash: createHash("sha256").update(deferScript).digest("hex"),
-      scriptBuiltAt: new Date(),
-    };
+    const built: BuiltPerformanceScript = reused && existing
+      ? {
+          deferScript,
+          hiddenCss,
+          scriptHash: existing.scriptHash ?? hashScript(deferScript),
+          scriptBuiltAt: existing.scriptBuiltAt ?? new Date(),
+        }
+      : {
+          deferScript,
+          hiddenCss,
+          scriptHash: hashScript(deferScript),
+          scriptBuiltAt: new Date(),
+        };
 
-    await prisma.performanceScript.upsert({
-      where: { storeId: store.id },
-      create: { storeId: store.id, ...built },
-      update: built,
-    });
+    if (!reused) {
+      await prisma.performanceScript.upsert({
+        where: { storeId: store.id },
+        create: { storeId: store.id, ...built, inputsHash },
+        update: { ...built, inputsHash },
+      });
+    }
+
+    // Mirror into the shop metafield (write / clear / no-op as needed). Never
+    // throws; a failure is healed by reconcileScriptMetafield.
+    await syncScriptMetafield(shopDomain);
 
     return built;
   } catch (err) {

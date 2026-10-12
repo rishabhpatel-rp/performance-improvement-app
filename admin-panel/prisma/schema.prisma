@@ -256,6 +256,14 @@ model PerformanceScript {
   hiddenCss   String?  @map("hidden_css")
   scriptHash    String?   @map("script_hash")
   scriptBuiltAt DateTime? @map("script_built_at")
+  // Fingerprint of the raw script + obfuscation profile/seed/debug flag. When it is
+  // unchanged, rebuildPerformanceScript() reuses deferScript instead of obfuscating
+  // again ("off" while the app is disabled).
+  inputsHash        String?   @map("inputs_hash")
+  // scriptHash currently live in the shop metafield rendered inline by the theme
+  // app embed (null = no inline script; storefront falls back to the app proxy).
+  metafieldHash     String?   @map("metafield_hash")
+  metafieldSyncedAt DateTime? @map("metafield_synced_at")
   createdAt   DateTime @default(now()) @map("created_at")
   updatedAt   DateTime @updatedAt @map("updated_at")
 

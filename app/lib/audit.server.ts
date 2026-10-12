@@ -60,9 +60,17 @@ export interface HiddenAuditResult {
   deferArrayBase: string[];
   /** Per-page extras on top of `deferArrayBase`, keyed by page pathname. */
   deferArrayAddByPage: Record<string, string[]>;
+  /** Includes `popupSelectors`: every popup is hidden until first interaction. */
   hideSelectors: string[];
-  /** Per-page hide lists, keyed by the audited page's pathname. */
+  /** Per-page hide lists, keyed by the audited page's pathname. Includes
+   *  `popupSelectors` on every page. */
   hideSelectorsByPage: Record<string, string[]>;
+  /** Popups found while auditing (open at load, opened later, or opened and
+   *  closed again). Already merged into `hideSelectors`; listed separately so
+   *  they can be seen and reported on their own. */
+  popupSelectors: string[];
+  /** The popups each audited page produced, before they were shared sitewide. */
+  popupSelectorsByPage: Record<string, string[]>;
   /** Match patterns per audited page, most specific first. The consumer walks
    *  these in order against `location.pathname` so one bundle can serve every
    *  PDP/PLP on the store, not just the three URLs the audit saw. */
@@ -145,6 +153,11 @@ const STORE_KEY = "shopAuditState_v1";
 const P_KEY = "shopAuditP_v1";
 const VIS_KEY = "shopAuditVisible_v1";
 const OFF_KEY = "shopAuditOff_v1";
+/** Popup selectors recorded by the audit script's popup block (see POPUP_AUDIT_JS). */
+const POPUP_KEY = "shopAuditPopups_v1";
+/** Extra time a page is watched for popups that open on a timer / exit intent,
+ *  after the interaction pass and before the audit script measures. */
+const POPUP_WATCH_MS = 3500;
 
 function chromiumExecutablePath(): string | undefined {
   const envPath = process.env.CHROMIUM_PATH;
@@ -755,6 +768,9 @@ interface PageAccumulators {
   p: string[];
   vis: string[];
   off: string[];
+  /** Selectors of popups seen on this page (open now, opened later, or opened
+   *  and already closed). */
+  popups: string[];
   /** Kept-tokens required by fold-overlapping DOM, with the reason recorded so
    *  the blast radius of over-protection is visible per store. */
   foldScripts: string[];
@@ -802,6 +818,7 @@ function emptyAccumulators(): PageAccumulators {
     p: [],
     vis: [],
     off: [],
+    popups: [],
     foldScripts: [],
     foldReasons: {},
     coverageRan: [],
@@ -1281,6 +1298,45 @@ async function simulateInteractions(page: Page): Promise<{ revealed: string[]; s
   return { revealed: [...revealed], steps, clicks };
 }
 
+/** Provoke exit-intent popups, then watch the page for POPUP_WATCH_MS so popups
+ * that open on a timer are on record before the audit script measures. The
+ * recording itself is done inside the page by the audit script's popup block. */
+async function watchForPopups(page: Page): Promise<void> {
+  try {
+    await page.evaluate(() => {
+      // Exit intent: the pointer leaving through the top of the viewport.
+      const opts = { bubbles: true, cancelable: true, clientX: 600, clientY: 0 };
+      document.dispatchEvent(new MouseEvent("mouseleave", opts));
+      document.documentElement.dispatchEvent(new MouseEvent("mouseleave", opts));
+      document.dispatchEvent(new MouseEvent("mouseout", { ...opts, relatedTarget: null }));
+    });
+  } catch {
+    // best effort
+  }
+  await page.waitForTimeout(POPUP_WATCH_MS).catch(() => {});
+}
+
+/** Of `selectors`, those that on THIS page match only popup-like elements (or
+ * nothing at all). A selector that matches ordinary content here, such as a
+ * `.modal` class reused by a static section, must never be hidden. */
+async function popupSelectorsSafeOnPage(
+  page: Page,
+  selectors: string[],
+): Promise<string[]> {
+  if (selectors.length === 0) return [];
+  return page
+    .evaluate((sels) => {
+      const helpers = (
+        window as unknown as {
+          __ppHelpers?: { popupSafeOnPage: (sel: string) => boolean };
+        }
+      ).__ppHelpers;
+      if (!helpers || !helpers.popupSafeOnPage) return [] as string[];
+      return (sels as string[]).filter((s) => helpers.popupSafeOnPage(s));
+    }, selectors)
+    .catch(() => [] as string[]);
+}
+
 /** Loads one page in its own isolated browser context and runs the audit
  * script on it. The page is left open (caller closes the context) so the
  * merged selectors can be re-checked against it afterwards. */
@@ -1431,6 +1487,13 @@ async function measurePage(
         : await simulateInteractions(page);
     const revealedByInteraction = interaction.revealed;
 
+    // Popups that open on a timer or on exit intent never show during the
+    // scroll/click pass. Provoke exit intent and keep watching for a few
+    // seconds so they are on record before the audit script measures. (The
+    // script's own MutationObserver is what records them, even if they close
+    // again before measurement.)
+    if (!harvestOnly) await watchForPopups(page);
+
     // Let the page settle again, then assert no *new* scripts arrived because
     // of the interaction. On the measured stores this delta is 0, so nothing
     // loads late — but it is now an assertion rather than an assumption, so a
@@ -1475,7 +1538,7 @@ async function measurePage(
 
     const read = await page
       .evaluate(
-        ([P, VIS, OFF]) => {
+        ([P, VIS, OFF, POP]) => {
           const load = (k: string) => {
             try {
               return JSON.parse(localStorage.getItem(k) || "[]");
@@ -1483,11 +1546,16 @@ async function measurePage(
               return [];
             }
           };
-          return { p: load(P), vis: load(VIS), off: load(OFF) };
+          return { p: load(P), vis: load(VIS), off: load(OFF), popups: load(POP) };
         },
-        [P_KEY, VIS_KEY, OFF_KEY],
+        [P_KEY, VIS_KEY, OFF_KEY, POPUP_KEY],
       )
-      .catch(() => ({ p: [] as string[], vis: [] as string[], off: [] as string[] }));
+      .catch(() => ({
+        p: [] as string[],
+        vis: [] as string[],
+        off: [] as string[],
+        popups: [] as string[],
+      }));
 
     // ---- classify every script URL exactly once, from all three sources ----
     // The request log is authoritative; the in-page DOM and resource-timing
@@ -1579,6 +1647,9 @@ async function measurePage(
         p: [...mergedKept],
         vis: [...new Set([...read.vis, ...fold.selectors, ...revealedByInteraction])],
         off: read.off,
+        popups: (read.popups as unknown[]).filter(
+          (x): x is string => typeof x === "string" && x.length > 0,
+        ),
         foldScripts: [...new Set(foldScripts)],
         foldReasons,
         coverageRan: [...new Set(coverageRan)],
@@ -1955,7 +2026,48 @@ export async function runHiddenAudit({
       for (const s of selectorSet) {
         if (foldProtectedSelectors.has(s) || visSet.has(s)) selectorSet.delete(s);
       }
-      const hideSelectors = [...selectorSet].sort();
+      const baseHideSelectors = [...selectorSet].sort();
+
+      // ---- popups: hidden until first interaction -------------------------
+      // Everything the audit script recorded as a popup, from every page and
+      // every pass. Popups bypass the fold veto and the "visible somewhere"
+      // veto above on purpose: an open popup is by definition on top of the
+      // fold. They are checked differently: a selector is kept only if, on
+      // EVERY audited page, it matches nothing but popup-like elements, so a
+      // class shared with ordinary content can never get hidden.
+      const popupCandidates = new Set<string>();
+      for (const { acc } of measuredAll) acc.popups.forEach((x) => popupCandidates.add(x));
+      const popupCandidateList = [...popupCandidates];
+      const popupSafety = await Promise.all(
+        measured.map(({ page }) => popupSelectorsSafeOnPage(page, popupCandidateList)),
+      );
+      const popupSelectors = popupCandidateList
+        .filter((sel) => popupSafety.every((safe) => safe.includes(sel)))
+        .sort();
+      const popupRejected = popupCandidateList.filter((x) => !popupSelectors.includes(x));
+      if (popupCandidateList.length) {
+        console.log(
+          `[audit] popups: ${popupSelectors.length} hidden until interaction` +
+            (popupRejected.length
+              ? `, ${popupRejected.length} rejected as unsafe (${popupRejected.slice(0, 5).join(", ")})`
+              : ""),
+        );
+      }
+      const popupSelectorsByPage: Record<string, string[]> = {};
+      measured.forEach((m, i) => {
+        popupSelectorsByPage[safePathname(urls[i])] = [
+          ...new Set(m.acc.popups.filter((x) => popupSelectors.includes(x))),
+        ].sort();
+      });
+
+      // The fold assertion below must only see the ordinary hide list: a popup
+      // overlaps the fold by nature, and hiding it is the intent.
+      const hideSelectors = baseHideSelectors;
+      // What is actually emitted: ordinary below-fold selectors plus every
+      // popup, on every page. Popups are shared sitewide (a cookie bar or a
+      // newsletter modal is not tied to the one page it happened to show on,
+      // and a timed popup may simply not have fired on the other audited pages).
+      const emittedHideSelectors = [...new Set([...hideSelectors, ...popupSelectors])].sort();
 
       // Per-page hide lists. The consumer resolves its page at runtime from
       // location.pathname, so each audited page contributes its own collapsed
@@ -2058,6 +2170,7 @@ export async function runHiddenAudit({
             })),
             emittedTotal: emittedRaw.length,
             hideSelectors: hideSelectors.length,
+            popupSelectors: popupSelectors.length,
           },
           null,
           0,
@@ -2101,8 +2214,15 @@ export async function runHiddenAudit({
         deferArrayBase: [...baseScripts].sort(),
         /** Per-page extras on top of `deferArrayBase`. */
         deferArrayAddByPage,
-        hideSelectors,
-        hideSelectorsByPage,
+        hideSelectors: emittedHideSelectors,
+        hideSelectorsByPage: Object.fromEntries(
+          Object.entries(hideSelectorsByPage).map(([path, list]) => [
+            path,
+            [...new Set([...list, ...popupSelectors])].sort(),
+          ]),
+        ),
+        popupSelectors,
+        popupSelectorsByPage,
         pagePatterns,
         neverDefer: [...neverDefer].sort(),
         selfExcluded: [...selfScripts].sort(),

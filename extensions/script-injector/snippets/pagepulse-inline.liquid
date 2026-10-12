@@ -1,0 +1,14 @@
+{%- comment -%}
+  Obfuscated JS must not be printed raw with {{ value }} — Shopify HTML-escapes
+  &, <, etc. and breaks the parser ("Invalid or unexpected token"). Each chunk is
+  emitted with | json and concatenated in JS, then eval'd (same execution model
+  as a plain inline script tag).
+{%- endcomment -%}
+{%- assign pp_ns = '$app:pagepulse' -%}
+{%- assign pp = shop.metafields[pp_ns] -%}
+{%- if pp.script.value == blank -%}
+  {%- assign pp = app.metafields.pagepulse -%}
+{%- endif -%}
+{%- if pp.script.value != blank -%}
+<script>(function(){var __ppS={{ pp.script.value | json }}{%- if pp.script_parts.value >= 2 -%}+{{ pp.script_2.value | json }}{%- endif -%}{%- if pp.script_parts.value >= 3 -%}+{{ pp.script_3.value | json }}{%- endif -%}{%- if pp.script_parts.value >= 4 -%}+{{ pp.script_4.value | json }}{%- endif -%}{%- if pp.script_parts.value >= 5 -%}+{{ pp.script_5.value | json }}{%- endif -%}{%- if pp.script_parts.value >= 6 -%}+{{ pp.script_6.value | json }}{%- endif -%};(0,eval)(__ppS);})();</script>
+{%- endif -%}
