@@ -54,5 +54,9 @@ export default defineConfig({
   },
   optimizeDeps: {
     include: ["@shopify/app-bridge-react"],
+    exclude: ["playwright", "playwright-core"],
+  },
+  ssr: {
+    external: ["playwright", "playwright-core"],
   },
 });

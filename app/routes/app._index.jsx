@@ -26,6 +26,8 @@ import {
   normalizeCustomUrlList,
 } from "../lib/page-urls.server";
 import { rebuildPerformanceScript } from "../lib/performance-script.server";
+import { reconcileScriptMetafield } from "../lib/script-metafield.server";
+import { healStoreIfReinstalled } from "../lib/store-heal.server";
 import {
   getPasswordProtection,
   refreshPasswordProtection,
@@ -190,6 +192,9 @@ const STORE_CONFIG_SELECT = {
   firstUserDelayScriptsPreserved: true,
   firstUserDelayMs: true,
   everyTimeDelayMs: true,
+  themeHeadInjectStatus: true,
+  themeHeadInjectError: true,
+  themeHeadInjectAttemptedAt: true,
   // NEW: Cached values for fast path
   isPasswordProtected: true,
   cachedAppEndpoint: true,
@@ -246,6 +251,8 @@ export const loader = async ({ request }) => {
   }
   const { admin, session } = request[AUTH_CACHE_KEY];
 
+  void healStoreIfReinstalled(session.shop).catch(() => undefined);
+
   // eslint-disable-next-line no-undef
   const appUrl = process.env.SHOPIFY_APP_URL || "";
   const endpoint = appUrl ? `${appUrl.replace(/\/+$/, "")}/audit-submit` : "";
@@ -262,6 +269,11 @@ export const loader = async ({ request }) => {
   });
 
   const hasActiveStore = store?.isActive === true;
+  if (hasActiveStore) {
+    // Backfill / heal the inline-script metafield without delaying the
+    // dashboard: rate-limited per shop and it never throws.
+    void reconcileScriptMetafield(session.shop);
+  }
   const sc = store?.configs?.[0];
   const selectedThemeId = sc?.selectedThemeId ?? null;
 
@@ -562,6 +574,11 @@ let shopResult = { shopData: null, isNewStore: false };
     embedActivateUrl,
     selectedThemeId,
     passwordProtected,
+    headDelivery: {
+      status: sc?.themeHeadInjectStatus ?? "not_attempted",
+      error: sc?.themeHeadInjectError ?? null,
+      attemptedAt: sc?.themeHeadInjectAttemptedAt?.toISOString?.() ?? null,
+    },
   };
 };
 
@@ -569,6 +586,16 @@ export const action = async ({ request }) => {
   const { admin, session } = await authenticate.admin(request);
   const formData = await request.formData();
   const intent = formData.get("intent");
+
+  if (intent === "retry-head-inject") {
+    const { attemptThemeHeadInject } = await import(
+      "../lib/theme-head-inject-status.server"
+    );
+    const result = await attemptThemeHeadInject(session.shop, admin, {
+      force: true,
+    });
+    return { ok: true, intent: "retry-head-inject", headInject: result };
+  }
 
   if (intent === "toggle-app") {
     const appEnabled = formData.get("appEnabled") === "true";
