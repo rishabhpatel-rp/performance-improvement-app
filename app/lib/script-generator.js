@@ -104,6 +104,10 @@ export function buildRawScript({
     pattern: v.pattern,
     add: v.add || [],
     hideIndex: internHide(v.hide || []),
+    firstUserAdd: v.firstUserAdd || [],
+    everyAdd: v.everyAdd || [],
+    firstUserDelayMs: v.firstUserDelayMs,
+    everyLoadDelayMs: v.everyLoadDelayMs,
   }));
   const fallbackHideIndex = internHide(hideSelectors);
 
@@ -411,8 +415,14 @@ export function buildRawScript({
 
       if (alreadyRan) return;
 
-      var FIRST_VISIT_DELAYED_SCRIPTS = ${firstVisitDelayedJson};
-      var _delay = ${firstVisitDelayMs};
+      var GLOBAL_FIRST_VISIT_DELAYED = ${firstVisitDelayedJson};
+      var GLOBAL_FIRST_VISIT_DELAY_MS = ${firstVisitDelayMs};
+      var _firstAdd = PAGE && PAGE.firstUserAdd ? PAGE.firstUserAdd : [];
+      var FIRST_VISIT_DELAYED_SCRIPTS = GLOBAL_FIRST_VISIT_DELAYED.concat(_firstAdd);
+      var _delay =
+        PAGE && PAGE.firstUserDelayMs != null
+          ? PAGE.firstUserDelayMs
+          : GLOBAL_FIRST_VISIT_DELAY_MS;
       var fudRe = FIRST_VISIT_DELAYED_SCRIPTS.length
         ? new RegExp(
             FIRST_VISIT_DELAYED_SCRIPTS.map(function (p) {
@@ -510,7 +520,14 @@ export function buildRawScript({
     })();
 
     (function () {
-      var EVERY_LOAD_DELAYED_SCRIPTS = ${everyLoadDelayedJson};
+      var GLOBAL_EVERY_LOAD_DELAYED = ${everyLoadDelayedJson};
+      var GLOBAL_EVERY_LOAD_DELAY_MS = ${everyLoadDelayMs};
+      var _everyAdd = PAGE && PAGE.everyAdd ? PAGE.everyAdd : [];
+      var EVERY_LOAD_DELAYED_SCRIPTS = GLOBAL_EVERY_LOAD_DELAYED.concat(_everyAdd);
+      var _etDelay =
+        PAGE && PAGE.everyLoadDelayMs != null
+          ? PAGE.everyLoadDelayMs
+          : GLOBAL_EVERY_LOAD_DELAY_MS;
 
       var etRe = EVERY_LOAD_DELAYED_SCRIPTS.length
         ? new RegExp(
@@ -577,7 +594,7 @@ export function buildRawScript({
       setTimeout(function () {
         etReleased = true;
         releaseHeldET();
-      }, ${everyLoadDelayMs});
+      }, _etDelay);
     })();
   })();
   `;

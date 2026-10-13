@@ -132,9 +132,22 @@ model StoreConfig {
 
   // Script data (stored as JSON arrays)
   scriptTitles       Json     @default("[]") // ["Title1","Title2","Title3"]
-  auditDeferArray    Json     @default("[]") // Defer/blocklist entries
-  auditHideSelectors Json     @default("[]") // CSS selectors to hide
-  staticDeferDefaults Json    @default("[\"wpm\",\"gtm\"]") // Static always-defer defaults e.g. ["wpm","gtm"]
+  auditDeferArray    Json @default("[]") // Union fallback (all template defer scopes)
+  auditHideSelectors Json @default("[]") // Union fallback (all template hide scopes)
+  staticDeferDefaults Json @default("[\"wpm\",\"gtm\"]") // Union fallback for every-visit delay scripts
+
+  auditDeferGlobal      Json @default("[]")
+  auditDeferHome        Json @default("[]")
+  auditDeferCollection  Json @default("[]")
+  auditDeferProduct     Json @default("[]")
+  auditHideGlobal       Json @default("[]")
+  auditHideHome         Json @default("[]")
+  auditHideCollection   Json @default("[]")
+  auditHideProduct      Json @default("[]")
+  staticDeferDefaultsGlobal      Json @default("[\"wpm\",\"gtm\"]")
+  staticDeferDefaultsHome        Json @default("[]")
+  staticDeferDefaultsCollection  Json @default("[]")
+  staticDeferDefaultsProduct     Json @default("[]")
 
   // Audit field toggle states (on/off) — Step 3 "Audit Results" textareas
   auditDeferArrayEnabled      Boolean @default(true)
@@ -168,16 +181,28 @@ model StoreConfig {
   // First User Delay Scripts (maps to FIRST_USER_DELAY_SCRIPTS in script)
   // Only runs for first-time visitors (localStorage check)
   // ============================================================
-  firstUserDelayScripts          Json    @default("[\"wpm\",\"gtm\"]")
+  firstUserDelayScripts          Json @default("[\"wpm\",\"gtm\"]") // Union fallback
   firstUserDelayScriptsEnabled   Boolean @default(true)
-  firstUserDelayScriptsPreserved Json    @default("[]")
-  firstUserDelayMs               Int     @default(12000) // 12 seconds in milliseconds
+  firstUserDelayScriptsPreserved Json @default("[]")
+  firstUserDelayMs               Int @default(12000) // Legacy; mirrors Global
+
+  firstUserDelayScriptsGlobal      Json @default("[\"wpm\",\"gtm\"]")
+  firstUserDelayScriptsHome        Json @default("[]")
+  firstUserDelayScriptsCollection  Json @default("[]")
+  firstUserDelayScriptsProduct     Json @default("[]")
+  firstUserDelayMsGlobal      Int @default(12000)
+  firstUserDelayMsHome        Int @default(12000)
+  firstUserDelayMsCollection  Int @default(12000)
+  firstUserDelayMsProduct     Int @default(12000)
 
   // ============================================================
   // Delay time for "Delay Scripts" box (EVERY_TIME_DELAY_SCRIPTS)
-  // This is the timeout at line 400 in script-generator.js
   // ============================================================
-  everyTimeDelayMs               Int     @default(6000) // 6 seconds in milliseconds
+  everyTimeDelayMs               Int @default(6000) // Legacy; mirrors Global
+  everyTimeDelayMsGlobal      Int @default(6000)
+  everyTimeDelayMsHome        Int @default(6000)
+  everyTimeDelayMsCollection  Int @default(6000)
+  everyTimeDelayMsProduct     Int @default(6000)
 
   // Audit status (hidden backend audit lifecycle)
   auditRunning Boolean @default(false)

@@ -50,7 +50,7 @@ async function main() {
   for (let i = 0; i < stores.length; i += CONCURRENCY) {
     const batch = stores.slice(i, i + CONCURRENCY);
     await Promise.all(
-      batch.map(async ({ shopDomain }) => {
+      batch.map(async ({ shopDomain }: { shopDomain: string }) => {
         if (dryRun) {
           console.log(`  would ${clearMode ? "clear" : "reconcile"} ${shopDomain}`);
           counts.dryRun = (counts.dryRun ?? 0) + 1;

@@ -44,8 +44,29 @@ import { usePasswordStatus } from "../lib/use-password-status";
 import WizardProgress from "../components/WizardProgress";
 import Step1Activate from "../components/Step1Activate";
 import Step2Configure from "../components/Step2Configure";
+import {
+  templateConfigFromRow,
+  templateListFormKeys,
+  templateDelayFormKeys,
+  readBucketsFromRow,
+  auditDeferColumn,
+  auditHideColumn,
+  firstUserDelayColumn,
+  staticDeferColumn,
+  unionTemplateLists,
+} from "../lib/template-script-config";
+import Step3AuditResults from "../components/Step3AuditResults";
 import WizardNavigation from "../components/WizardNavigation";
 import FooterBranding from "../components/FooterBranding";
+import {
+  buildAuditReportSummary,
+  loadLatestAuditReport,
+} from "../lib/audit-report-summary.server";
+import { PSI_SKIP_PASSWORD_STORE_NOTE, shouldSkipPsiFetch } from "../lib/psi.server";
+import {
+  buildPageSpeedViews,
+  loadPsiSnapshotsForShop,
+} from "../lib/psi-scheduler.server";
 
 const DEFAULT_CONFIG = {
   appEnabled: false,
@@ -192,9 +213,36 @@ const STORE_CONFIG_SELECT = {
   firstUserDelayScriptsPreserved: true,
   firstUserDelayMs: true,
   everyTimeDelayMs: true,
+  auditDeferGlobal: true,
+  auditDeferHome: true,
+  auditDeferCollection: true,
+  auditDeferProduct: true,
+  auditHideGlobal: true,
+  auditHideHome: true,
+  auditHideCollection: true,
+  auditHideProduct: true,
+  staticDeferDefaultsGlobal: true,
+  staticDeferDefaultsHome: true,
+  staticDeferDefaultsCollection: true,
+  staticDeferDefaultsProduct: true,
+  firstUserDelayScriptsGlobal: true,
+  firstUserDelayScriptsHome: true,
+  firstUserDelayScriptsCollection: true,
+  firstUserDelayScriptsProduct: true,
+  firstUserDelayMsGlobal: true,
+  firstUserDelayMsHome: true,
+  firstUserDelayMsCollection: true,
+  firstUserDelayMsProduct: true,
+  everyTimeDelayMsGlobal: true,
+  everyTimeDelayMsHome: true,
+  everyTimeDelayMsCollection: true,
+  everyTimeDelayMsProduct: true,
   themeHeadInjectStatus: true,
   themeHeadInjectError: true,
   themeHeadInjectAttemptedAt: true,
+  psiFieldVitals: true,
+  psiLastFetchedAt: true,
+  psiBackoffUntil: true,
   // NEW: Cached values for fast path
   isPasswordProtected: true,
   cachedAppEndpoint: true,
@@ -558,7 +606,52 @@ let shopResult = { shopData: null, isNewStore: false };
       // Check the length explicitly to get the schema default.
     firstUserDelayMs: sc?.firstUserDelayMs ?? 12000,
     everyTimeDelayMs: sc?.everyTimeDelayMs ?? 6000,
+    ...templateConfigFromRow(sc),
   };
+
+  let auditReportSummary = null;
+  if (sc?.auditComplete) {
+    const latestReport = await loadLatestAuditReport(session.shop);
+    if (latestReport) {
+      const fieldVitals =
+        sc.psiFieldVitals && typeof sc.psiFieldVitals === "object"
+          ? sc.psiFieldVitals
+          : null;
+      const psiSkipForPassword = shouldSkipPsiFetch(sc?.isPasswordProtected);
+      const psiRows = psiSkipForPassword
+        ? []
+        : await loadPsiSnapshotsForShop(session.shop, 24);
+      const psiByUrl = psiRows.map((row) => ({
+        url: row.url,
+        fieldSource: row.fieldSource,
+        lcp: row.lcp,
+      }));
+      const pagesForPsi = (latestReport.pagesAudited || []).map((path) => ({
+        label:
+          path === "/"
+            ? "Home"
+            : path.includes("/products/")
+              ? "Product"
+              : path.includes("/collections/")
+                ? "Collection"
+                : path,
+        path,
+      }));
+      const pageSpeedViews = buildPageSpeedViews(pagesForPsi, psiRows);
+      const { healStoreTemplateFromReport } = await import(
+        "../lib/heal-template-config.server"
+      );
+      await healStoreTemplateFromReport(session.shop, latestReport);
+
+      auditReportSummary = buildAuditReportSummary(
+        latestReport,
+        fieldVitals,
+        psiSkipForPassword ? [] : psiByUrl,
+        pageSpeedViews,
+        psiSkipForPassword ? PSI_SKIP_PASSWORD_STORE_NOTE : undefined,
+      );
+    }
+  }
 
   console.log(
     `[Dashboard] loader ${Date.now() - loaderStarted}ms shopifyConfig=${Boolean(
@@ -568,6 +661,7 @@ let shopResult = { shopData: null, isNewStore: false };
 
   return {
     config: finalConfig,
+    auditReportSummary,
     auditStatus,
     embedEnabled,
     embedStatus,
@@ -926,6 +1020,95 @@ export const action = async ({ request }) => {
   
   // DB-only step-3 writer for the audit/static arrays. Each provided field
   // must parse as a JSON array of strings; otherwise nothing is written.
+  if (intent === "script-token-action") {
+    const token = String(formData.get("token") || "").trim();
+    const action = String(formData.get("action") || "keep");
+    const scopeRaw = String(formData.get("scope") || "global");
+    const scope = ["global", "home", "collection", "product"].includes(scopeRaw)
+      ? scopeRaw
+      : "global";
+    if (!token) {
+      return { ok: false, error: "Missing script token." };
+    }
+    const {
+      applyScopedTokenAction,
+      storePatchFromTemplateLists,
+    } = await import("../lib/audit-script-actions.server");
+    const {
+      readBucketsFromRow,
+      auditDeferColumn,
+      auditHideColumn,
+      firstUserDelayColumn,
+      staticDeferColumn,
+    } = await import("../lib/template-script-config");
+    const storeRow = await prisma.store.findUnique({
+      where: { shopDomain: session.shop },
+      select: {
+        configs: {
+          select: {
+            auditDeferArrayEnabled: true,
+            firstUserDelayScriptsEnabled: true,
+            staticDeferDefaultsEnabled: true,
+            auditDeferGlobal: true,
+            auditDeferHome: true,
+            auditDeferCollection: true,
+            auditDeferProduct: true,
+            auditHideGlobal: true,
+            auditHideHome: true,
+            auditHideCollection: true,
+            auditHideProduct: true,
+            firstUserDelayScriptsGlobal: true,
+            firstUserDelayScriptsHome: true,
+            firstUserDelayScriptsCollection: true,
+            firstUserDelayScriptsProduct: true,
+            staticDeferDefaultsGlobal: true,
+            staticDeferDefaultsHome: true,
+            staticDeferDefaultsCollection: true,
+            staticDeferDefaultsProduct: true,
+          },
+        },
+      },
+    });
+    const sc = storeRow?.configs?.[0];
+    if (!sc) {
+      return { ok: false, error: "Store config not found." };
+    }
+    if (!(sc.auditDeferArrayEnabled ?? true)) {
+      return { ok: false, error: "Defer lists are disabled in Step 2." };
+    }
+    const row = sc;
+    const defer = readBucketsFromRow(row, auditDeferColumn, "auditDeferArray");
+    const hide = readBucketsFromRow(row, auditHideColumn, "auditHideSelectors");
+    const first = readBucketsFromRow(row, firstUserDelayColumn, "firstUserDelayScripts");
+    const every = readBucketsFromRow(row, staticDeferColumn, "staticDeferDefaults");
+    const updated = applyScopedTokenAction(defer, first, every, scope, token, action);
+    if (!updated) {
+      return { ok: true, noop: true, token, action, scope };
+    }
+    const patch = storePatchFromTemplateLists(
+      updated.defer,
+      hide,
+      updated.first,
+      updated.every,
+    );
+    try {
+      const result = await updateAuditArrays(session.shop, patch);
+      if (!result) {
+        return { ok: false, error: "Store record not found." };
+      }
+      await safeLogActivity(session.shop, "config_changed", `script action ${action} on ${token}`, {
+        token,
+        action,
+      });
+      return { ok: true, token, action, scope, ...patch };
+    } catch (err) {
+      return {
+        ok: false,
+        error: err instanceof Error ? err.message : "Save failed",
+      };
+    }
+  }
+
   if (intent === "save-audit-arrays") {
     const parseJsonArray = (raw) => {
       try {
@@ -968,28 +1151,33 @@ export const action = async ({ request }) => {
     };
 
     const patch = {};
-    const fields = [
-      ["auditDeferArray", formData.get("auditDeferArray")],
-      ["auditHideSelectors", formData.get("auditHideSelectors")],
-      ["staticDeferDefaults", formData.get("staticDeferDefaults")],
-      ["firstUserDelayScripts", formData.get("firstUserDelayScripts")],
-    ];
-    for (const [key, raw] of fields) {
-      if (formData.has(key)) {
-        const value = (toggleState[key] ?? true)
-          ? parseJsonArray(raw)
-          : [];
-        if (value === null) {
-          return {
-            ok: false,
-            error: "Each field must be a valid JSON array of strings.",
-          };
-        }
-        patch[key] = value;
+    const listToggleEnabled = (key) => {
+      if (key.startsWith("auditDefer")) return toggleState.auditDeferArray;
+      if (key.startsWith("auditHide")) return toggleState.auditHideSelectors;
+      if (key.startsWith("firstUserDelayScripts")) return toggleState.firstUserDelayScripts;
+      if (key.startsWith("staticDeferDefaults")) return toggleState.staticDeferDefaults;
+      return true;
+    };
+    for (const key of templateListFormKeys()) {
+      if (!formData.has(key)) continue;
+      const value = listToggleEnabled(key) ? parseJsonArray(formData.get(key)) : [];
+      if (value === null) {
+        return {
+          ok: false,
+          error: "Each field must be a valid JSON array of strings.",
+        };
       }
+      patch[key] = value;
     }
 
-    // NEW: Handle delay integer fields (stored in milliseconds)
+    for (const delayKey of templateDelayFormKeys()) {
+      if (!formData.has(delayKey)) continue;
+      const raw = formData.get(delayKey);
+      if (raw === null || raw === "") continue;
+      const ms = parseInt(raw, 10);
+      if (!Number.isNaN(ms) && ms >= 0) patch[delayKey] = ms;
+    }
+
     const firstUserDelayMs = formData.get("firstUserDelayMs");
     const everyTimeDelayMs = formData.get("everyTimeDelayMs");
 
@@ -997,6 +1185,7 @@ export const action = async ({ request }) => {
       const ms = parseInt(firstUserDelayMs, 10);
       if (!isNaN(ms) && ms >= 0) {
         patch.firstUserDelayMs = ms;
+        patch.firstUserDelayMsGlobal = ms;
       }
     }
 
@@ -1010,6 +1199,20 @@ export const action = async ({ request }) => {
     if (Object.keys(patch).length === 0) {
       return { ok: false, error: "No fields to save." };
     }
+
+    const mergedRow = { ...(sc || {}), ...patch };
+    patch.auditDeferArray = unionTemplateLists(
+      readBucketsFromRow(mergedRow, auditDeferColumn, "auditDeferArray"),
+    );
+    patch.auditHideSelectors = unionTemplateLists(
+      readBucketsFromRow(mergedRow, auditHideColumn, "auditHideSelectors"),
+    );
+    patch.firstUserDelayScripts = unionTemplateLists(
+      readBucketsFromRow(mergedRow, firstUserDelayColumn, "firstUserDelayScripts"),
+    );
+    patch.staticDeferDefaults = unionTemplateLists(
+      readBucketsFromRow(mergedRow, staticDeferColumn, "staticDeferDefaults"),
+    );
 
     try {
       const result = await updateAuditArrays(session.shop, patch);
@@ -1149,6 +1352,7 @@ export default function Dashboard() {
     embedActivateUrl = "",
     selectedThemeId = null,
     passwordProtected: loaderPasswordProtected = null,
+    auditReportSummary = null,
   } = useLoaderData();
   const revalidator = useRevalidator();
   const [currentStep, setCurrentStep] = useState(1);
@@ -1216,7 +1420,7 @@ export default function Dashboard() {
   // completed before Step 2 (Scripts + Titles) unlocks. Until then the wizard
   // stays locked on Step 1. Step 2 auto-opens when the poll reports complete.
   const maxStep =
-    appEnabled && !extensionBlocked && auditStatus?.complete ? 2 : 1;
+    appEnabled && !extensionBlocked && auditStatus?.complete ? 3 : 1;
 
   // Poll the hidden backend audit only while the main toggle is ON.
   // Toggle OFF must not start or keep showing an audit in progress.
@@ -1319,7 +1523,7 @@ export default function Dashboard() {
           if (!completingRef.current && appEnabled && !extensionBlocked) {
             completingRef.current = true;
             void revalidator.revalidate();
-            setCurrentStep((step) => (step === 1 ? 2 : step));
+            setCurrentStep((step) => (step === 1 ? 3 : step));
           }
         } else if (data.failed) {
           setExpectingAudit(false);
@@ -1366,7 +1570,18 @@ export default function Dashboard() {
           onAuditRestarted={handleAuditRestarted}
         />
       )}
-      {currentStep === 2 && <Step2Configure config={liveConfig} />}
+      {currentStep === 2 && (
+        <Step2Configure config={liveConfig} appEnabled={appEnabled} />
+      )}
+      {currentStep === 3 && (
+        <Step3AuditResults
+          config={liveConfig}
+          auditReportSummary={auditReportSummary}
+          auditStatus={auditStatus}
+          appEnabled={appEnabled}
+          passwordProtected={passwordProtected === true}
+        />
+      )}
 
       <WizardNavigation
         currentStep={currentStep}

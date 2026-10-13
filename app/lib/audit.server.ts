@@ -13,6 +13,21 @@ import {
   type CoverageEntry,
 } from "./audit-candidates";
 import { normalizeCustomUrl } from "./page-urls.server";
+import type {
+  AuditRunMeta,
+  FieldVitalsSummary,
+  GateImpactEntry,
+  LabVitalsEntry,
+} from "./audit-report-types";
+import { buildScriptInventory } from "./audit-inventory.server";
+import { COLLECT_LAB_VITALS_JS } from "./audit-metrics.server";
+import { measureGateImpactOnHome } from "./audit-gate-impact.server";
+import { applyMobileLabThrottling } from "./audit-metrics.server";
+import {
+  buildTemplateDeferBuckets,
+  buildTemplateListBuckets,
+  type AuditPageRole,
+} from "./audit-template-buckets";
 
 /** A `Profiler.ScriptCoverage` record: `coverageVerdict` only needs
  *  `functions`, but callers also need the `url` to map the record back to
@@ -75,6 +90,13 @@ export interface HiddenAuditResult {
    *  these in order against `location.pathname` so one bundle can serve every
    *  PDP/PLP on the store, not just the three URLs the audit saw. */
   pagePatterns: Record<string, string[]>;
+  /** Audited pathname -> template role (home / collection / product / extra). */
+  pageRoles?: Record<string, AuditPageRole>;
+  /** Defer lists split for storefront variants (see audit-template-buckets.ts). */
+  templateBuckets?: {
+    defer: import("./audit-template-buckets").TemplateDeferBuckets;
+    hide: import("./audit-template-buckets").TemplateDeferBuckets;
+  };
   /** Shopify-critical scripts recorded but never gated (`chunk*`, `storefront*`). */
   neverDefer: string[];
   /** The app's own scripts, excluded so it cannot defer its own gate. */
@@ -89,6 +111,13 @@ export interface HiddenAuditResult {
   foldAssertion: FoldAssertion;
   pagesAudited: string[];
   completedAt: string;
+  warnings?: string[];
+  limits?: string[];
+  scriptInventory?: import("./audit-report-types").ScriptInventoryBlock;
+  labVitalsByPath?: Record<string, LabVitalsEntry>;
+  gateImpact?: GateImpactEntry;
+  auditRunMeta?: AuditRunMeta;
+  fieldVitals?: FieldVitalsSummary;
 }
 
 export interface PageFunnel {
@@ -121,6 +150,15 @@ function safePathname(rawUrl: string): string {
   } catch {
     return rawUrl;
   }
+}
+
+function pageRolesFromDiscovery(pages: DiscoveredPages): Record<string, AuditPageRole> {
+  const roles: Record<string, AuditPageRole> = {};
+  roles[safePathname(pages.home)] = "home";
+  if (pages.plp) roles[safePathname(pages.plp)] = "collection";
+  if (pages.pdp) roles[safePathname(pages.pdp)] = "product";
+  for (const u of pages.extras ?? []) roles[safePathname(u)] = "extra";
+  return roles;
 }
 
 /** The storefront could not be audited because of its password page. The
@@ -467,7 +505,7 @@ async function discoverViaHtml(
   try {
     const res = await fetch(home, {
       redirect: "follow",
-      headers: { "user-agent": "Mozilla/5.0 (compatible; PagePulseAudit/1.0)" },
+      headers: { "user-agent": PAGEPULSE_AUDIT_UA },
       signal: AbortSignal.timeout(HOME_FETCH_TIMEOUT_MS),
     });
     if (!res.ok) return {};
@@ -683,10 +721,18 @@ export async function discoverPages(
 export type AuditPhase = "discovering" | "auditing" | "building";
 
 export type AuditProgress = {
-  done: number; // pages whose audit has finished
-  total: number; // total pages to audit
-  path?: string; // pathname of the page that just finished (parallel audit)
+  done: number;
+  total: number;
+  path?: string;
+  pass?: number;
+  waitMs?: number;
+  scripts?: number;
+  emitted?: number;
+  foldOk?: boolean;
 };
+
+export const PAGEPULSE_AUDIT_UA =
+  "Mozilla/5.0 (compatible; PagePulseAudit/2.0; +https://pagepulse.app)";
 
 // Audit timing. The old script slept a fixed 30 s per page; now each page is
 // measured once it has actually settled. All pages run at the same time, so
@@ -851,6 +897,16 @@ interface MeasuredPage {
   acc: PageAccumulators;
   /** Still on the storefront password page (none saved, or it was wrong). */
   blocked?: boolean;
+  labVitals?: LabVitalsEntry;
+  resourceRows?: Array<{
+    url: string;
+    transferSize?: number;
+    encodedBodySize?: number;
+    duration?: number;
+    pathname: string;
+    requestOrder?: number;
+    startTime?: number;
+  }>;
 }
 
 /**
@@ -1356,9 +1412,20 @@ async function measurePage(
    */
   harvestOnly = false,
 ): Promise<MeasuredPage> {
-  const context = await browser.newContext();
+  const context = await browser.newContext({
+    userAgent: PAGEPULSE_AUDIT_UA,
+    ...(harvestOnly
+      ? {}
+      : {
+          viewport: { width: 390, height: 844 },
+          deviceScaleFactor: 2,
+        }),
+  });
   try {
     const page = await context.newPage();
+    if (!harvestOnly) {
+      await applyMobileLabThrottling(page).catch(() => {});
+    }
 
     // Authoritative script inventory. `performance.getEntriesByType('resource')`
     // is capped at 250 entries by Chromium, and on a measured store 32 of 204
@@ -1640,9 +1707,55 @@ async function measurePage(
 
     page.off("request", onRequest);
 
+    const pathname = safePathname(url);
+    let labVitals: LabVitalsEntry | undefined;
+    let resourceRows: MeasuredPage["resourceRows"];
+    if (!harvestOnly) {
+      labVitals = (await page
+        .evaluate(COLLECT_LAB_VITALS_JS)
+        .catch(() => undefined)) as LabVitalsEntry | undefined;
+      resourceRows = await page
+        .evaluate((pagePath) => {
+          const rows: Array<{
+            url: string;
+            transferSize?: number;
+            encodedBodySize?: number;
+            duration?: number;
+            pathname: string;
+            requestOrder?: number;
+            startTime?: number;
+          }> = [];
+          const entries = performance.getEntriesByType(
+            "resource",
+          ) as PerformanceResourceTiming[];
+          const scripts = entries
+            .filter(
+              (e) => e.initiatorType === "script" || /\.js(\?|$)/i.test(e.name),
+            )
+            .sort((a, b) => a.startTime - b.startTime);
+          let order = 0;
+          for (const e of scripts) {
+            order += 1;
+            rows.push({
+              url: e.name,
+              transferSize: e.transferSize,
+              encodedBodySize: e.encodedBodySize,
+              duration: e.duration,
+              startTime: e.startTime,
+              requestOrder: order,
+              pathname: pagePath as string,
+            });
+          }
+          return rows;
+        }, pathname)
+        .catch(() => []);
+    }
+
     return {
       context,
       page,
+      labVitals,
+      resourceRows,
       acc: {
         p: [...mergedKept],
         vis: [...new Set([...read.vis, ...fold.selectors, ...revealedByInteraction])],
@@ -1868,6 +1981,7 @@ export async function runHiddenAudit({
   let done = 0;
   await onProgress?.({ done, total: urls.length });
 
+  const auditStarted = Date.now();
   return withBrowser(async (browser) => {
     // Every pass is kept, so a script whose token varies between passes produces
     // several variants for `mergeSlugVariants` to unify.
@@ -1876,10 +1990,14 @@ export async function runHiddenAudit({
     // logic want one row per page, not one per pass.
     const measured: MeasuredPage[] = [];
     const seenPaths = new Set<string>();
+    let passesRun = 0;
+    let lastPassTokenKey = "";
+    let stablePassStreak = 0;
     try {
       // allSettled: one page failing to open must not abandon the others'
       // contexts (they are all closed in `finally`).
       for (let pass = 0; pass < AUDIT_REPEAT_PASSES; pass++) {
+        passesRun = pass + 1;
         const settled = await Promise.allSettled(
           urls.map(async (url) => {
               const m = await measurePage(browser, url, password, pass > 0);
@@ -1900,6 +2018,11 @@ export async function runHiddenAudit({
                 done,
                 total: urls.length * AUDIT_REPEAT_PASSES,
                 path,
+                pass,
+                waitMs: m.acc?.settle?.postInteractionWaitMs,
+                scripts: m.acc?.sources?.request,
+                emitted: m.acc?.p?.length,
+                foldOk: true,
               });
             } catch {
               // progress is best-effort
@@ -1913,7 +2036,20 @@ export async function runHiddenAudit({
             ? failure.reason
             : new Error("No pages could be audited.");
         }
-        if (pass < AUDIT_REPEAT_PASSES - 1) {
+        const passTokens = new Set<string>();
+        for (const m of measuredAll.slice(-urls.length)) {
+          m.acc.p.forEach((t) => passTokens.add(t));
+        }
+        const passKey = [...passTokens].sort().join("|");
+        if (pass > 0 && passKey === lastPassTokenKey) {
+          stablePassStreak++;
+          if (stablePassStreak >= 2) break;
+        } else {
+          stablePassStreak = 0;
+        }
+        lastPassTokenKey = passKey;
+
+        if (pass < AUDIT_REPEAT_PASSES - 1 && stablePassStreak < 2) {
           await new Promise((r) => setTimeout(r, AUDIT_PASS_GAP_MS));
         }
       }
@@ -2140,6 +2276,8 @@ export async function runHiddenAudit({
         deferArrayAddByPage[k] = deferArrayByPage[k].filter((x) => !baseScripts.has(x));
       }
 
+      const pageRoles = pageRolesFromDiscovery(pages);
+
       // The funnel is logged here rather than in audit-runner.server.ts so the
       // change stays inside the audit module. A `defer=[]` from "everything is
       // fold-protected" must be distinguishable from `defer=[]` caused by a
@@ -2203,16 +2341,47 @@ export async function runHiddenAudit({
       const priorFiltered = priorRaw.filter(isEmittable);
       const mergedDefer = mergeSlugVariants([...emittedRaw, ...priorFiltered]).sort();
 
-      return {
+      const labVitalsByPath: Record<string, LabVitalsEntry> = {};
+      const resourcesByPath: Record<
+        string,
+        NonNullable<MeasuredPage["resourceRows"]>
+      > = {};
+      measured.forEach((m, i) => {
+        const path = safePathname(urls[i]);
+        if (m.labVitals) labVitalsByPath[path] = m.labVitals;
+        if (m.resourceRows?.length) resourcesByPath[path] = m.resourceRows;
+      });
+
+      const {
+        applyExtraPageDeferRules,
+        tokensSeenByPathFromResources,
+      } = await import("./audit-template-extra.server");
+      const seenByPath = tokensSeenByPathFromResources(resourcesByPath);
+      const deferByPageMerged = Object.fromEntries(
+        Object.entries(deferArrayByPage).map(([k, v]) => [
+          k,
+          mergeSlugVariants(v).sort(),
+        ]),
+      );
+      let deferBuckets = buildTemplateDeferBuckets(deferByPageMerged, pageRoles);
+      deferBuckets = applyExtraPageDeferRules(
+        deferBuckets,
+        deferByPageMerged,
+        pageRoles,
+        seenByPath,
+      );
+      const templateBuckets = {
+        defer: deferBuckets,
+        hide: buildTemplateListBuckets(hideSelectorsByPage, pageRoles),
+      };
+
+      const draftReport: HiddenAuditResult = {
         deferArray: mergedDefer,
         deferArrayByPage: Object.fromEntries(
           Object.entries(deferArrayByPage).map(([k, v]) => [k, mergeSlugVariants(v).sort()]),
         ),
-        /** The un-merged tokens, kept so the funnel can be reconciled. */
         deferArrayUnmerged: emittedRaw.sort(),
-        /** Scripts every audited page loads — shipped once in the bundle. */
         deferArrayBase: [...baseScripts].sort(),
-        /** Per-page extras on top of `deferArrayBase`. */
         deferArrayAddByPage,
         hideSelectors: emittedHideSelectors,
         hideSelectorsByPage: Object.fromEntries(
@@ -2224,23 +2393,47 @@ export async function runHiddenAudit({
         popupSelectors,
         popupSelectorsByPage,
         pagePatterns,
+        pageRoles,
+        templateBuckets,
         neverDefer: [...neverDefer].sort(),
         selfExcluded: [...selfScripts].sort(),
         noiseDropped: [...noise].sort(),
         foldReasons,
         funnel,
         foldAssertion,
-        // Paths only: the audited URLs carry `?password=` / `preview_theme_id=`,
-        // and this list is persisted in AuditLog.
-        pagesAudited: urls.map((u) => {
-          try {
-            return new URL(u).pathname || "/";
-          } catch {
-            return u;
-          }
-        }),
+        pagesAudited: urls.map((u) => safePathname(u)),
         completedAt: new Date().toISOString(),
+        labVitalsByPath,
       };
+
+      draftReport.scriptInventory = buildScriptInventory(draftReport, resourcesByPath);
+
+      const homeUrl = urls[0];
+      const homePath = safePathname(homeUrl);
+      const gateImpact = await measureGateImpactOnHome(
+        browser,
+        homeUrl,
+        password,
+        mergedDefer,
+        emittedHideSelectors,
+        labVitalsByPath[homePath],
+      );
+      if (gateImpact) {
+        draftReport.gateImpact = gateImpact;
+      } else {
+        draftReport.warnings = [
+          ...(draftReport.warnings ?? []),
+          "GATE_IMPACT_SKIPPED",
+        ];
+      }
+
+      draftReport.auditRunMeta = {
+        wallTimeMs: Date.now() - auditStarted,
+        passesRun,
+        passesPlanned: AUDIT_REPEAT_PASSES,
+      };
+
+      return draftReport;
     } finally {
       await Promise.all(measured.map((m) => m.context.close().catch(() => {})));
     }

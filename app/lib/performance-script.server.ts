@@ -5,6 +5,19 @@ import {
   orderPagePatterns,
   selectPerPageVariants,
 } from "./per-page";
+import { templateDeferToPageVariants } from "./audit-template-buckets";
+import {
+  auditDeferColumn,
+  auditHideColumn,
+  everyTimeDelayMsColumn,
+  firstUserDelayColumn,
+  firstUserDelayMsColumn,
+  readBucketsFromRow,
+  staticDeferColumn,
+  type TemplateScope,
+  unionTemplateLists,
+  TEMPLATE_SCOPES,
+} from "./template-script-config";
 import {
   buildHiddenCss,
   buildRawScript,
@@ -13,6 +26,49 @@ import {
 } from "./script-generator";
 import { hashScript, seedFromShop } from "./script-inline";
 import { syncScriptMetafield } from "./script-metafield.server";
+
+function patternScope(pattern: string): TemplateScope {
+  if (pattern === "/products/") return "product";
+  if (pattern === "/collections/") return "collection";
+  return "home";
+}
+
+function readTemplatePayloadFromConfig(config: Record<string, unknown>) {
+  const deferBuckets = readBucketsFromRow(config, auditDeferColumn, "auditDeferArray");
+  const hideBuckets = readBucketsFromRow(config, auditHideColumn, "auditHideSelectors");
+  const firstBuckets = readBucketsFromRow(
+    config,
+    firstUserDelayColumn,
+    "firstUserDelayScripts",
+  );
+  const staticBuckets = readBucketsFromRow(
+    config,
+    staticDeferColumn,
+    "staticDeferDefaults",
+  );
+  const hasTemplate = TEMPLATE_SCOPES.some((s) => deferBuckets[s].length > 0);
+  if (!hasTemplate) return null;
+
+  const variants = selectPerPageVariants(
+    templateDeferToPageVariants(deferBuckets, hideBuckets).map((v) => {
+      const scope = patternScope(v.pattern);
+      return {
+        pattern: v.pattern,
+        add: v.add,
+        hide: v.hide,
+        firstUserAdd: firstBuckets[scope],
+        everyAdd: staticBuckets[scope],
+        firstUserDelayMs:
+          (config[firstUserDelayMsColumn(scope)] as number | undefined) ??
+          (config.firstUserDelayMs as number | undefined),
+        everyLoadDelayMs:
+          (config[everyTimeDelayMsColumn(scope)] as number | undefined) ??
+          (config.everyTimeDelayMs as number | undefined),
+      };
+    }),
+  );
+  return { baseScripts: deferBuckets.global, variants, deferBuckets, firstBuckets };
+}
 
 /**
  * Per-page data from the most recent completed audit.
@@ -42,10 +98,34 @@ async function readPerPageAuditData(
           deferArrayAddByPage?: unknown;
           hideSelectorsByPage?: unknown;
           pagePatterns?: unknown;
+          templateBuckets?: {
+            defer?: {
+              global?: unknown;
+              home?: unknown;
+              collection?: unknown;
+              product?: unknown;
+            };
+          };
         }
       | null
       | undefined;
     if (!data) return null;
+
+    const templateDefer = data.templateBuckets?.defer;
+    if (templateDefer) {
+      const buckets = {
+        global: readStringArray(templateDefer.global),
+        home: readStringArray(templateDefer.home),
+        collection: readStringArray(templateDefer.collection),
+        product: readStringArray(templateDefer.product),
+      };
+      const variants = selectPerPageVariants(
+        templateDeferToPageVariants(buckets).map((v) => ({ ...v, hide: [] })),
+      );
+      if (buckets.global.length || variants.length) {
+        return { baseScripts: buckets.global, variants };
+      }
+    }
 
     const baseScripts = readStringArray(data.deferArrayBase);
     const adds = data.deferArrayAddByPage;
@@ -198,30 +278,48 @@ export async function rebuildPerformanceScript(
       // The toggle must win over per-page data: when deferral is switched off
       // nothing may be gated, so per-page lists are only read when it is on.
       const deferEnabled = config.auditDeferArrayEnabled !== false;
-      const perPage = deferEnabled ? await readPerPageAuditData(shopDomain) : null;
+      const templatePayload = readTemplatePayloadFromConfig(
+        config as Record<string, unknown>,
+      );
+      const perPage =
+        deferEnabled && templatePayload
+          ? templatePayload
+          : deferEnabled
+            ? await readPerPageAuditData(shopDomain)
+            : null;
       const hideEnabled = config.auditHideSelectorsEnabled;
       const debugMode = config.debugMode === true;
       const seed = seedFromShop(shopDomain);
 
+      const deferUnion = templatePayload
+        ? unionTemplateLists(templatePayload.deferBuckets)
+        : readStringArray(config.auditDeferArray);
+
       const rawScript = buildRawScript({
-        // `baseScripts` is what every audited page loads and is only consulted
-        // when a page variant matches; `interactionGatedScripts` is the union
-        // used for an un-audited page (a blog post, a search result). With no
-        // per-page data the variant list is empty, so every page uses the union
-        // — the pre-existing behaviour.
         baseScripts: perPage?.baseScripts ?? [],
         pageVariants: perPage?.variants ?? [],
-        interactionGatedScripts: deferEnabled
-          ? readStringArray(config.auditDeferArray)
-          : [],
-        firstVisitDelayedScripts: config.firstUserDelayScriptsEnabled
-          ? readStringArray(config.firstUserDelayScripts)
-          : [],
-        everyLoadDelayedScripts: config.staticDeferDefaultsEnabled
-          ? readStringArray(config.staticDeferDefaults)
-          : [],
-        firstVisitDelayMs: config.firstUserDelayMs ?? 12000,
-        everyLoadDelayMs: config.everyTimeDelayMs ?? 6000,
+        interactionGatedScripts: deferEnabled ? deferUnion : [],
+        firstVisitDelayedScripts:
+          config.firstUserDelayScriptsEnabled !== false
+            ? (templatePayload?.firstBuckets.global ??
+              readStringArray(config.firstUserDelayScripts))
+            : [],
+        everyLoadDelayedScripts:
+          config.staticDeferDefaultsEnabled !== false
+            ? readBucketsFromRow(
+                config as Record<string, unknown>,
+                staticDeferColumn,
+                "staticDeferDefaults",
+              ).global
+            : [],
+        firstVisitDelayMs:
+          config.firstUserDelayMsGlobal ??
+          config.firstUserDelayMs ??
+          12000,
+        everyLoadDelayMs:
+          config.everyTimeDelayMsGlobal ??
+          config.everyTimeDelayMs ??
+          6000,
         hideSelectors: hideEnabled ? readStringArray(config.auditHideSelectors) : [],
       });
 

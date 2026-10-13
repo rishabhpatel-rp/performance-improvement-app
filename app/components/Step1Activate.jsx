@@ -128,8 +128,11 @@ export default function Step1Activate({
   const blockedAtToggle =
     validationFetcher.data?.blockReason === "password_required" ||
     fetcher.data?.error === "password_required";
+  const isPasswordProtectedStore = passwordProtected === true;
   const showPasswordBox =
-    passwordProtected === true || passwordBlockCode !== null || blockedAtToggle;
+    isPasswordProtectedStore || passwordBlockCode !== null || blockedAtToggle;
+  const checkingPasswordProtection =
+    passwordProtected === null && !passwordBlockCode && !blockedAtToggle;
 
   // Password is required if store is protected AND no password saved yet
   const passwordRequired =
@@ -658,7 +661,21 @@ export default function Step1Activate({
             margin: "0 0 16px 0",
           }}
         >
-          {/* Hidden until password protection is confirmed (or an audit hit the password page) */}
+          {checkingPasswordProtection && (
+            <div
+              style={{
+                flex: "1 1 280px",
+                backgroundColor: "#f5f5f5",
+                borderRadius: 8,
+                padding: 16,
+                minWidth: 260,
+              }}
+            >
+              <s-text tone="subdued">Checking whether your storefront is password-protected…</s-text>
+            </div>
+          )}
+
+          {/* Storefront password (+ optional PSI preview link) — only when protected or audit blocked */}
           {showPasswordBox && (
             <div
               style={{
@@ -689,13 +706,15 @@ export default function Step1Activate({
               <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <s-text-field
-                    type="text"
+                    type="password"
+                    name="storefrontPassword"
                     label="Storefront password"
                     labelAccessibilityVisibility="exclusive"
                     placeholder="Enter storefront password (required)"
                     value={pwDraft}
                     onChange={(e) => setPwDraft(e.target.value)}
                     required
+                    autocomplete="current-password"
                   />
                 </div>
                 <s-button

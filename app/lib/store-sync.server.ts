@@ -4,7 +4,10 @@ import {
   readStringArray,
 } from "./performance-script.server";
 
-import type { AuditPageInfo } from "./audit.server";
+import type { AuditPageInfo, HiddenAuditResult } from "./audit.server";
+import { applyFoldPolicy } from "./audit-fold-policy.server";
+import { schedulePsiAfterAudit } from "./psi-scheduler.server";
+import { templateBucketsToStorePatch } from "./template-script-config";
 
 export { readStringArray };
 
@@ -517,12 +520,7 @@ export async function getDashboardStats() {
 // FUNCTION 10: Save a completed audit report + audit-log trail
 // ============================================================
 
-export interface AuditReport {
-  deferArray: string[];
-  hideSelectors: string[];
-  pagesAudited: string[];
-  completedAt: string;
-}
+export type AuditReport = HiddenAuditResult;
 
 export async function saveAuditReport(
   shopDomain: string,
@@ -547,7 +545,18 @@ export async function saveAuditReport(
   const deferOn = current?.auditDeferArrayEnabled ?? true;
   const hideOn = current?.auditHideSelectorsEnabled ?? true;
   const activeDefer = deferOn ? report.deferArray : [];
-  const activeHide = hideOn ? report.hideSelectors : [];
+
+  const foldPolicy = applyFoldPolicy(
+    report.hideSelectors ?? [],
+    report.foldAssertion ?? { ok: true, violations: [], pagesChecked: 0 },
+  );
+  const hideForStore = hideOn ? foldPolicy.hideSelectors : [];
+  const reportWarnings = [...(report.warnings ?? []), ...foldPolicy.warnings];
+  const reportToPersist: AuditReport = {
+    ...report,
+    hideSelectors: hideForStore,
+    warnings: reportWarnings,
+  };
 
   // On success the audit stays "running" here: the flag flips to complete only
   // after the storefront script has been rebuilt and stored (below), so the
@@ -566,6 +575,24 @@ export async function saveAuditReport(
         auditError: details ?? null,
       };
 
+  let templatePatch: Record<string, string[]> = {};
+  if (report.templateBuckets?.defer && report.templateBuckets?.hide) {
+    templatePatch = templateBucketsToStorePatch(
+      report.templateBuckets.defer,
+      report.templateBuckets.hide,
+    );
+    if (!deferOn) {
+      for (const key of Object.keys(templatePatch)) {
+        if (key.startsWith("auditDefer")) templatePatch[key] = [];
+      }
+    }
+    if (!hideOn) {
+      for (const key of Object.keys(templatePatch)) {
+        if (key.startsWith("auditHide")) templatePatch[key] = [];
+      }
+    }
+  }
+
   await prisma.storeConfig.upsert({
     where: { storeId: store.id },
     create: {
@@ -578,19 +605,21 @@ export async function saveAuditReport(
       scriptTitles: [],
       ...runState,
       lastAuditAt: new Date(),
-      auditDeferArray: activeDefer,
-      auditHideSelectors: activeHide,
+      auditDeferArray: deferOn ? templatePatch.auditDeferArray ?? activeDefer : [],
+      auditHideSelectors: hideOn ? templatePatch.auditHideSelectors ?? hideForStore : [],
       auditDeferArrayPreserved: deferOn ? [] : report.deferArray,
       auditHideSelectorsPreserved: hideOn ? [] : report.hideSelectors,
       staticDeferDefaults: DEFAULT_STATIC_DEFER,
+      ...templatePatch,
     },
     update: {
       ...runState,
       lastAuditAt: new Date(),
-      auditDeferArray: activeDefer,
-      auditHideSelectors: activeHide,
+      auditDeferArray: deferOn ? templatePatch.auditDeferArray ?? activeDefer : [],
+      auditHideSelectors: hideOn ? templatePatch.auditHideSelectors ?? hideForStore : [],
       auditDeferArrayPreserved: deferOn ? undefined : report.deferArray,
       auditHideSelectorsPreserved: hideOn ? undefined : report.hideSelectors,
+      ...templatePatch,
     },
   });
 
@@ -598,7 +627,7 @@ export async function saveAuditReport(
     data: {
       domain: shopDomain,
       audit_type: "auto-audit",
-      audit_data: report,
+      audit_data: reportToPersist,
       status,
       details,
     },
@@ -611,19 +640,24 @@ export async function saveAuditReport(
       where: { storeId: store.id },
       data: { auditComplete: true, auditRunning: false, auditPhase: null },
     });
+    const pageUrls = (report.pagesAudited || []).map((path) => {
+      try {
+        return new URL(path, `https://${shopDomain}`).href;
+      } catch {
+        return `https://${shopDomain}${path.startsWith("/") ? path : `/${path}`}`;
+      }
+    });
+    schedulePsiAfterAudit(
+      shopDomain,
+      pageUrls.length ? pageUrls : [`https://${shopDomain}/`],
+      current?.storefrontPassword ?? null,
+    );
   }
 
   return { ok: true };
 }
 
-export interface AuditArrayPatch {
-  auditDeferArray?: string[];
-  auditHideSelectors?: string[];
-  staticDeferDefaults?: string[];
-  firstUserDelayScripts?: string[];
-  firstUserDelayMs?: number;
-  everyTimeDelayMs?: number;
-}
+export type AuditArrayPatch = Record<string, string[] | number | undefined>;
 
 /**
  * DB-only writer for the three Step-3 audit/static arrays. This deliberately
@@ -668,26 +702,9 @@ export async function updateAuditArrays(
       scriptTitles: [],
       ...createData,
     },
-    update: {
-      ...(patch.auditDeferArray !== undefined
-        ? { auditDeferArray: patch.auditDeferArray }
-        : {}),
-      ...(patch.auditHideSelectors !== undefined
-        ? { auditHideSelectors: patch.auditHideSelectors }
-        : {}),
-      ...(patch.staticDeferDefaults !== undefined
-        ? { staticDeferDefaults: patch.staticDeferDefaults }
-        : {}),
-      ...(patch.firstUserDelayScripts !== undefined
-        ? { firstUserDelayScripts: patch.firstUserDelayScripts }
-        : {}),
-      ...(patch.firstUserDelayMs !== undefined
-        ? { firstUserDelayMs: patch.firstUserDelayMs }
-        : {}),
-      ...(patch.everyTimeDelayMs !== undefined
-        ? { everyTimeDelayMs: patch.everyTimeDelayMs }
-        : {}),
-    },
+    update: Object.fromEntries(
+      Object.entries(patch).filter(([, v]) => v !== undefined),
+    ),
   });
 
   await rebuildPerformanceScript(shopDomain);
