@@ -47,3 +47,13 @@ admin-panel/tsconfig.tsbuildinfo
 # gocryptfs key material must NEVER be committed: gocryptfs.conf holds the
 # scrypt-wrapped master key and gocryptfs.diriv is the directory IV.
 admin-panel/admindata/
+
+# Ponytail: full upstream clone (local hook scripts only; not part of PagePulse)
+/ponytail/
+
+# Cursor Agent skills installed via `npx skills add DietrichGebert/ponytail` (reinstall per machine)
+.agents/skills/ponytail*
+/skills-lock.json
+
+# Machine-specific Ponytail hook paths (see docs/dev/agent-artifacts.md)
+.cursor/hooks.json

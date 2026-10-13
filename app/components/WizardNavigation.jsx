@@ -1,26 +1,25 @@
 /* eslint-disable react/prop-types */
-/**
- * Pure UI step navigation — no longer responsible for saving, since each
- * step's inputs save themselves via useFetcher as soon as they change.
- */
+import PpPillButton from "./PpPillButton";
+
 export default function WizardNavigation({ currentStep, maxStep, onChange }) {
   const isFirst = currentStep === 1;
   const isLast = currentStep >= maxStep;
-  // On Step 1, "Continue" is disabled until the app is enabled (maxStep > 1).
   const canContinue = maxStep >= currentStep + 1;
 
   return (
-    <s-stack direction="inline" gap="tight" justifyContent="end">
+    <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 16 }}>
       {!isFirst && (
-        <s-button variant="secondary" onClick={() => onChange(currentStep - 1)}>
-          Back
-        </s-button>
+        <PpPillButton onClick={() => onChange(currentStep - 1)}>Back</PpPillButton>
       )}
       {!isLast && (
-        <s-button variant="primary" disabled={!canContinue} onClick={() => onChange(currentStep + 1)}>
+        <PpPillButton
+          variant="primary"
+          disabled={!canContinue}
+          onClick={() => onChange(currentStep + 1)}
+        >
           Continue
-        </s-button>
+        </PpPillButton>
       )}
-    </s-stack>
+    </div>
   );
 }

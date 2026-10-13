@@ -6,15 +6,11 @@ import Step3Titles from "./Step3Titles";
 const FIELD_BY_INDEX = ["script1Enabled", "script2Enabled", "script3Enabled"];
 
 /**
- * Step 2 — one toggle per predefined script (Audit / Defer / Hide CSS),
- * labeled with the current title from config.scriptTitles[i] (falling back
- * to the script's default name, purely cosmetic). Toggles are disabled
- * while the app itself is off.
+ * Step 2 — predefined script toggles only (audit UI lives on Step 3).
  */
-export default function Step2Configure({ config }) {
+export default function Step2Configure({ config, appEnabled }) {
   const fetcher = useFetcher();
 
-  // Merge action response into config for fresh state after toggle
   const liveConfig = fetcher.data?.config
     ? { ...config, ...fetcher.data.config }
     : config;
@@ -54,8 +50,12 @@ export default function Step2Configure({ config }) {
         </s-stack>
       )}
 
-      {/* Step 3 content merged into Step 2: editable audit-result arrays */}
-      <Step3Titles config={liveConfig} />
+      {liveConfig.appEnabled && liveConfig.auditComplete && (
+        <>
+          <s-divider />
+          <Step3Titles config={liveConfig} appEnabled={appEnabled ?? liveConfig.appEnabled} />
+        </>
+      )}
     </s-section>
   );
 }

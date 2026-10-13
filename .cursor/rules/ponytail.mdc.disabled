@@ -1,0 +1,14 @@
+---
+description: DISABLED — Ponytail uses project hooks (.cursor/hooks.json) instead. Re-enable only if you remove hooks and want rule-only mode.
+globs:
+alwaysApply: false
+---
+
+# Ponytail (disabled)
+
+This file is kept as a backup of the compact rule. Active Ponytail is via:
+
+- `.cursor/hooks.json` (default level `full`; message `/ponytail lite|full|ultra|off`)
+- `.agents/skills/ponytail*` (audit, review, debt, gain, help)
+
+Do not set `alwaysApply: true` on this file while hooks are installed.
