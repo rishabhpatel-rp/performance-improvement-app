@@ -13,14 +13,12 @@ export type ScriptListState = {
   staticDeferDefaults: string[];
 };
 
-export type TemplateListBuckets = {
-  global: string[];
-  home: string[];
-  collection: string[];
-  product: string[];
-};
+import type {
+  TemplateListBuckets,
+  TemplateScope,
+} from "./template-script-config";
 
-export type TemplateScope = "global" | "home" | "collection" | "product";
+export type { TemplateListBuckets, TemplateScope };
 
 function without(list: string[], token: string) {
   return list.filter((t) => t !== token);

@@ -723,7 +723,8 @@ export function generateDeferredScript(options = {}) {
   // every storefront page load. Off by default; flip to true to re-measure.
 // Re-enabled so storefront timing logs are available while diagnosing load
 // bottlenecks. Switch back to false when you're done measuring.
-const TEMP_TIMING_LOG = true;
+export const STOREFRONT_TIMING_LOG_ENABLED = true;
+const TEMP_TIMING_LOG = STOREFRONT_TIMING_LOG_ENABLED;
 
 // TEST-ONLY. Set to true, save any Step 2 field (or toggle the app off/on) to
 // force a rebuild, then read the numbers in DevTools with:
@@ -756,7 +757,7 @@ const TEMP_TIMING_LOG = true;
 //
 // Flip back to false when done: these are un-obfuscated bytes added to a script
 // that blocks rendering on every page load.
-const TEMP_TIMING_PROBE = true;
+const TEMP_TIMING_PROBE = false;
 
 function withTimingProbe(obfuscated) {
   const before = `

@@ -6,6 +6,7 @@ import {
   fingerprintRawScript,
   generateDeferredScript,
   obfuscateRawScript,
+  STOREFRONT_TIMING_LOG_ENABLED,
 } from "../app/lib/script-generator.js";
 import { INLINE_CAPACITY_CHARS, isSafeForInline } from "../app/lib/script-inline.js";
 
@@ -22,7 +23,22 @@ test("obfuscated output is safe to inline and within the inline capacity", () =>
   const out = obfuscateRawScript(buildRawScript(OPTIONS), { seed: 42 });
   assert.equal(isSafeForInline(out).ok, true);
   assert.ok(out.length < INLINE_CAPACITY_CHARS, "small-size profile stays under the inline capacity");
-  assert.ok(out.includes("[PagePulse]"), "timing logger should be present while measuring load timings");
+  if (!STOREFRONT_TIMING_LOG_ENABLED) {
+    assert.ok(
+      !out.includes("[PagePulse]"),
+      "production builds must not ship the timing logger",
+    );
+  } else {
+    assert.ok(out.includes("[PagePulse]"), "TEMP timing log is on for measurement");
+  }
+});
+
+test("debugMode enables the timing logger for measurement builds", () => {
+  const out = obfuscateRawScript(buildRawScript(OPTIONS), {
+    seed: 42,
+    debugMode: true,
+  });
+  assert.ok(out.includes("[PagePulse]"));
 });
 
 test("same input + same seed gives identical output; the seed changes it", () => {
@@ -56,9 +72,14 @@ test("fingerprint is stable for equal inputs and changes with any input", () => 
   );
 });
 
-test("timing logger is enabled for debugging and stays available in debug mode", () => {
+test("timing logger is off in production builds and on in debug mode", () => {
   const raw = buildRawScript(OPTIONS);
-  assert.ok(obfuscateRawScript(raw).includes("[PagePulse]"));
+  const prod = obfuscateRawScript(raw);
+  if (STOREFRONT_TIMING_LOG_ENABLED) {
+    assert.ok(prod.includes("[PagePulse]"));
+  } else {
+    assert.ok(!prod.includes("[PagePulse]"));
+  }
   assert.ok(obfuscateRawScript(raw, { debugMode: true }).includes("[PagePulse]"));
 });
 

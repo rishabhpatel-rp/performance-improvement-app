@@ -1,5 +1,11 @@
 import { useEffect } from "react";
-import { useLoaderData, useRevalidator, useRouteError, useSearchParams } from "react-router";
+import {
+  useFetcher,
+  useLoaderData,
+  useRevalidator,
+  useRouteError,
+  useSearchParams,
+} from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../shopify.server";
 import {
@@ -61,8 +67,15 @@ export default function ExtensionInstall() {
   } = useLoaderData();
   const themeLabel = themeName ? `“${themeName}”` : "your live theme";
   const revalidator = useRevalidator();
+  const headRetryFetcher = useFetcher();
   const [searchParams] = useSearchParams();
   const fromToggle = searchParams.get("from") === "toggle";
+
+  useEffect(() => {
+    if (headRetryFetcher.data?.ok && headRetryFetcher.data?.headInject) {
+      void revalidator.revalidate();
+    }
+  }, [headRetryFetcher.data, revalidator]);
 
   // Re-check the embed status whenever the merchant returns (e.g. after
   // enabling it in the theme editor tab that the button below opens).
@@ -146,11 +159,27 @@ export default function ExtensionInstall() {
               app (no action required in your theme code).
             </s-banner>
           ) : headDelivery.status === "error" ? (
-            <s-banner tone="warning">
-              Automatic head setup did not complete
-              {headDelivery.error ? `: ${headDelivery.error}` : "."} Open the
-              app dashboard and retry, or contact support.
-            </s-banner>
+            <>
+              <s-banner tone="warning">
+                Automatic head setup did not complete
+                {headDelivery.error ? `: ${headDelivery.error}` : "."} Try again
+                below, or contact support.
+              </s-banner>
+              <s-button
+                variant="secondary"
+                disabled={headRetryFetcher.state !== "idle"}
+                onClick={() =>
+                  headRetryFetcher.submit(
+                    { intent: "retry-head-inject" },
+                    { method: "POST", action: "/app" },
+                  )
+                }
+              >
+                {headRetryFetcher.state !== "idle"
+                  ? "Retrying…"
+                  : "Retry head setup"}
+              </s-button>
+            </>
           ) : (
             <s-banner tone="info">
               After you enable the app embed and run an audit, PagePulse tries

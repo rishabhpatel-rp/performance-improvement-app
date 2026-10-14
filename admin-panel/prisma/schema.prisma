@@ -1,6 +1,9 @@
 // This is your Prisma schema file,
 // learn more about it in the docs: https://pris.ly/d/prisma-schema
 //
+// Source of truth for migrations: `../../prisma/schema.prisma` (root app).
+// After root schema changes, mirror shared models here and run `prisma generate` only.
+//
 // DECISION NEEDED (REMEDIATION_PROMPT.md / Task 4): this schema was
 // one-time caught up to match `../../prisma/schema.prisma` for the models
 // both apps share (Session, Store, StoreConfig, StoreActivity, AdminUser,
@@ -214,6 +217,7 @@ model StoreConfig {
   auditPages         Json?      // [{ label, path, done }] pages discovered for the current/last audit
   auditPageStartedAt DateTime?  // when the page currently being audited started (countdown survives refresh)
   auditPhase         String?    // "discovering" | "auditing" | "building" while auditRunning; null otherwise.
+  activeAuditJobId   String?
 
   // Theme the app extension (theme app embed) is installed in. null = live (MAIN) theme.
   selectedThemeId String? // e.g. "gid://shopify/OnlineStoreTheme/123"

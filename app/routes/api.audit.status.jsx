@@ -1,7 +1,6 @@
 import { authenticate } from "../shopify.server";
 import prisma from "../db.server";
 import { readAuditPages } from "../lib/store-sync.server";
-
 export async function loader({ request }) {
   const { session } = await authenticate.admin(request);
 
