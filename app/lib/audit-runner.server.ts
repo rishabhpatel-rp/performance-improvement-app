@@ -8,11 +8,12 @@ import {
 import { saveAuditReport } from "./store-sync.server";
 import { listThemes, numericThemeId } from "./theme-embed.server";
 import { logAuditPageDone } from "./audit-logging.server";
+import { touchAuditJobHeartbeat } from "./audit-queue-reconcile.server";
+import { sweepStaleAuditStateForShop } from "./audit-watchdog.server";
+import { drainAuditQueue } from "./audit-queue.server";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AdminClient = any;
-
-const auditRunGenerations = new Map<string, number>();
 
 async function resolvePreviewThemeId(
   admin: AdminClient,
@@ -43,10 +44,13 @@ export async function startAuditForStore(
   shopDomain: string,
   { enableOnCreate = false }: { enableOnCreate?: boolean } = {},
 ): Promise<{ started: boolean; reason?: string }> {
+  const swept = await sweepStaleAuditStateForShop(shopDomain).catch(() => false);
+  if (swept) void drainAuditQueue();
+
   const store = await prisma.store.findUnique({ where: { shopDomain } });
   if (!store) {
     console.warn(`[Audit] SKIPPED — no Store row for ${shopDomain}.`);
-    return { started: false };
+    return { started: false, reason: "store_not_found" };
   }
   const storeId = store.id;
 
@@ -64,6 +68,7 @@ export async function startAuditForStore(
       auditRunning: true,
       auditFailed: false,
       auditError: null,
+      auditPageStartedAt: new Date(),
     },
     update: {
       auditRunning: true,
@@ -73,7 +78,7 @@ export async function startAuditForStore(
       auditPageIndex: 0,
       auditTotalPages: 0,
       auditPages: [],
-      auditPageStartedAt: null,
+      auditPageStartedAt: new Date(),
       auditPhase: "discovering",
     },
   });
@@ -86,6 +91,7 @@ export async function startAuditForStore(
       data: {
         auditRunning: false,
         auditPhase: null,
+        activeAuditJobId: null,
       },
     });
     return { started: false, reason: result.reason };
@@ -99,18 +105,25 @@ export async function startAuditForStore(
 export async function executeAuditJob(
   admin: AdminClient,
   shopDomain: string,
-  { enableOnCreate = false }: { enableOnCreate?: boolean } = {},
+  { jobId }: { jobId: string },
 ): Promise<void> {
   const store = await prisma.store.findUnique({ where: { shopDomain } });
   if (!store) throw new Error(`No store for ${shopDomain}`);
   const storeId = store.id;
 
-  const runGeneration = (auditRunGenerations.get(shopDomain) ?? 0) + 1;
-  auditRunGenerations.set(shopDomain, runGeneration);
-  const isCurrentRun = () => auditRunGenerations.get(shopDomain) === runGeneration;
+  const isCurrentRun = async () => {
+    const job = await prisma.auditJob.findUnique({
+      where: { id: jobId },
+      select: { status: true, stopRequested: true },
+    });
+    if (!job || job.stopRequested) return false;
+    return job.status === "running";
+  };
 
   try {
-    if (!isCurrentRun()) return;
+    await touchAuditJobHeartbeat(jobId);
+    if (!(await isCurrentRun())) return;
+
     const config = await prisma.storeConfig.findUnique({ where: { storeId } });
     const password = config?.storefrontPassword || "";
     const themeId = await resolvePreviewThemeId(admin, config?.selectedThemeId);
@@ -138,7 +151,7 @@ export async function executeAuditJob(
         .join(", ")}`,
     );
 
-    if (!isCurrentRun()) return;
+    if (!(await isCurrentRun())) return;
     await prisma.storeConfig.update({
       where: { storeId },
       data: {
@@ -146,6 +159,7 @@ export async function executeAuditJob(
         auditTotalPages: described.length,
         auditPageIndex: 0,
         auditPhase: "auditing",
+        auditPageStartedAt: new Date(),
       },
     });
 
@@ -156,7 +170,8 @@ export async function executeAuditJob(
       password: password || undefined,
       shopDomain,
       onProgress: async ({ done, total, path, pass, waitMs, scripts, emitted, foldOk }) => {
-        if (!isCurrentRun()) return;
+        if (!(await isCurrentRun())) return;
+        await touchAuditJobHeartbeat(jobId);
         if (path) {
           logAuditPageDone({
             shop: shopDomain,
@@ -190,13 +205,13 @@ export async function executeAuditJob(
       },
     });
 
-    if (!isCurrentRun()) return;
+    if (!(await isCurrentRun())) return;
     await prisma.storeConfig.update({
       where: { storeId },
       data: { auditPhase: "building" },
     });
     await saveAuditReport(shopDomain, report);
-    if (!isCurrentRun()) return;
+    if (!(await isCurrentRun())) return;
     await prisma.storeConfig.update({
       where: { storeId },
       data: {
@@ -211,7 +226,7 @@ export async function executeAuditJob(
     });
     console.log(`[Audit] COMPLETED for ${shopDomain}`);
   } catch (err) {
-    if (!isCurrentRun()) return;
+    if (!(await isCurrentRun())) return;
     const msg = err instanceof Error ? err.message : String(err);
     console.error(`[Audit] FAILED for ${shopDomain}:`, msg);
     const auditError = err instanceof AuditBlockedError ? err.code : msg;
@@ -238,7 +253,5 @@ export async function executeAuditJob(
       })
       .catch(() => {});
     throw err;
-  } finally {
-    if (isCurrentRun()) auditRunGenerations.delete(shopDomain);
   }
 }

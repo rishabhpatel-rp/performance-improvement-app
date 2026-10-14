@@ -1,7 +1,5 @@
 import { urlToCandidates } from "./audit-candidates";
 
-export { applyExtraPageDeferRules } from "./audit-template-extra";
-
 export function tokensSeenByPathFromResources(
   resourcesByPath: Record<string, Array<{ url: string }>>,
 ): Record<string, Set<string>> {

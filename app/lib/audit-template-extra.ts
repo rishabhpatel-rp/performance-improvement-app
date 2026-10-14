@@ -1,11 +1,8 @@
 /** Extra-page defer rules — no relative imports (node --test). */
 
-export type TemplateListBuckets = {
-  global: string[];
-  home: string[];
-  collection: string[];
-  product: string[];
-};
+import type { TemplateListBuckets } from "./template-script-config";
+
+export type { TemplateListBuckets };
 
 /** Extra audit URLs: add extra-only defers to global; veto global if seen on extra but not deferred there. */
 export function applyExtraPageDeferRules(

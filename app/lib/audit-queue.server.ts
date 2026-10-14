@@ -1,7 +1,16 @@
 import prisma from "../db.server";
 import { Prisma } from "@prisma/client";
-import { decideAdmission, STALE_RUNNING_MS } from "./audit-queue-policy";
-import { unauthenticated } from "../shopify.server";
+import {
+  decideAdmission,
+  MAX_CONCURRENT_AUDITS,
+  STALE_RUNNING_MS,
+} from "./audit-queue-policy";
+import { QUEUED_JOB_STALE_MS } from "./audit-lifecycle";
+import {
+  reconcileStoreAfterJobEnd,
+  setStoreActiveAuditJob,
+  touchAuditJobHeartbeat,
+} from "./audit-queue-reconcile.server";
 
 const DRAIN_LOCK = { draining: false };
 
@@ -9,8 +18,9 @@ export async function enqueueAuditJob(
   shopDomain: string,
   storeId: string,
   payload: { enableOnCreate?: boolean } = {},
-): Promise<{ enqueued: boolean; reason?: string }> {
-  await requeueStaleRunningJobs();
+): Promise<{ enqueued: boolean; reason?: string; jobId?: string }> {
+  await failStaleQueuedJobs();
+  await failStaleRunningJobs();
 
   const activeForShop = await prisma.auditJob.count({
     where: {
@@ -31,7 +41,7 @@ export async function enqueueAuditJob(
   }
 
   try {
-    await prisma.auditJob.create({
+    const job = await prisma.auditJob.create({
       data: {
         storeId,
         shopDomain,
@@ -39,27 +49,63 @@ export async function enqueueAuditJob(
         payload,
       },
     });
+    await setStoreActiveAuditJob(storeId, job.id);
+    void drainAuditQueue();
+    return { enqueued: true, jobId: job.id };
   } catch (err) {
     if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002") {
       return { enqueued: false, reason: "already_running" };
     }
     throw err;
   }
-
-  void drainAuditQueue();
-  return { enqueued: true };
 }
 
-async function requeueStaleRunningJobs() {
-  const cutoff = new Date(Date.now() - STALE_RUNNING_MS);
-  await prisma.auditJob.updateMany({
-    where: { status: "running", lockedAt: { lt: cutoff } },
-    data: {
-      status: "queued",
-      lockedAt: null,
-      lastError: "requeued: stale running",
-    },
+async function failStaleQueuedJobs() {
+  const cutoff = new Date(Date.now() - QUEUED_JOB_STALE_MS);
+  const stale = await prisma.auditJob.findMany({
+    where: { status: "queued", createdAt: { lt: cutoff } },
+    select: { id: true, storeId: true },
   });
+  for (const job of stale) {
+    await prisma.auditJob.update({
+      where: { id: job.id },
+      data: {
+        status: "failed",
+        lockedAt: null,
+        lastError: "stale: queued too long without starting",
+      },
+    });
+    await reconcileStoreAfterJobEnd(
+      job.storeId,
+      job.id,
+      "failed",
+      "stale: queued too long without starting",
+    );
+  }
+}
+
+async function failStaleRunningJobs() {
+  const cutoff = new Date(Date.now() - STALE_RUNNING_MS);
+  const stale = await prisma.auditJob.findMany({
+    where: { status: "running", lockedAt: { lt: cutoff } },
+    select: { id: true, storeId: true },
+  });
+  for (const job of stale) {
+    await prisma.auditJob.update({
+      where: { id: job.id },
+      data: {
+        status: "failed",
+        lockedAt: null,
+        lastError: "stale: no heartbeat within 15 minutes",
+      },
+    });
+    await reconcileStoreAfterJobEnd(
+      job.storeId,
+      job.id,
+      "failed",
+      "stale: no heartbeat within 15 minutes",
+    );
+  }
 }
 
 export async function claimNextAuditJob() {
@@ -72,6 +118,7 @@ export async function claimNextAuditJob() {
     WHERE id = (
       SELECT id FROM "AuditJob"
       WHERE status = 'queued'
+        AND "stopRequested" = false
       ORDER BY "createdAt" ASC
       FOR UPDATE SKIP LOCKED
       LIMIT 1
@@ -90,7 +137,7 @@ export async function drainAuditQueue(): Promise<void> {
       const otherRunning = await prisma.auditJob.count({
         where: { status: "running" },
       });
-      if (otherRunning >= Number(process.env.AUDIT_MAX_CONCURRENT_SHOPS || "3")) {
+      if (otherRunning >= MAX_CONCURRENT_AUDITS) {
         break;
       }
       const job = await claimNextAuditJob();
@@ -104,32 +151,34 @@ export async function drainAuditQueue(): Promise<void> {
 
 async function runClaimedJob(job: {
   id: string;
+  storeId: string;
   shopDomain: string;
   payload: unknown;
 }) {
   try {
     const { executeAuditJob } = await import("./audit-runner.server");
+    const { unauthenticated } = await import("../shopify.server");
     const { admin } = await unauthenticated.admin(job.shopDomain);
-    const payload = (job.payload || {}) as { enableOnCreate?: boolean };
-    await executeAuditJob(admin, job.shopDomain, {
-      enableOnCreate: payload.enableOnCreate ?? false,
-    });
+    await touchAuditJobHeartbeat(job.id);
+    await executeAuditJob(admin, job.shopDomain, { jobId: job.id });
     await prisma.auditJob.update({
       where: { id: job.id },
       data: { status: "succeeded", lockedAt: null },
     });
+    await reconcileStoreAfterJobEnd(job.storeId, job.id, "succeeded");
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     await prisma.auditJob.update({
       where: { id: job.id },
       data: { status: "failed", lockedAt: null, lastError: msg },
     });
+    await reconcileStoreAfterJobEnd(job.storeId, job.id, "failed", msg);
   } finally {
     void drainAuditQueue();
   }
 }
 
-/** SIGTERM: stop claiming new jobs; in-flight audits finish via runner generation. */
+/** SIGTERM: stop claiming new jobs; in-flight audits finish via runner. */
 export function registerAuditQueueShutdown() {
   process.once("SIGTERM", () => {
     console.log("[audit-queue] SIGTERM — no new claims until process exit");

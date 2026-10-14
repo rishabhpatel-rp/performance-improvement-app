@@ -163,26 +163,18 @@ export default function Step3Titles({ config, appEnabled }) {
     return delayDrafts[delayKey] !== delayOriginals[delayKey];
   };
 
-  // Update delay originals after successful save
+  // Update delay originals after successful save (omit originals from deps).
   useEffect(() => {
     if (!saveData?.ok) return;
-
-    const nextDelayOriginals = { ...delayOriginals };
-    let changed = false;
 
     ALL_FIELDS.forEach(({ delayKey }) => {
       if (delayKey && saveData[delayKey] !== undefined) {
         const seconds = Math.floor(saveData[delayKey] / 1000);
-        nextDelayOriginals[delayKey] = seconds;
         setDelayDrafts((prev) => ({ ...prev, [delayKey]: seconds }));
-        changed = true;
+        setDelayOriginals((prev) => ({ ...prev, [delayKey]: seconds }));
       }
     });
-
-    if (changed) {
-      setDelayOriginals(nextDelayOriginals);
-    }
-  }, [saveData, delayOriginals]);
+  }, [saveData]);
 
   const isEnabled = (field) => toggles[field.key] ?? config?.[field.enabledKey] ?? true;
 

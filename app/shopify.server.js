@@ -10,8 +10,10 @@ import {
   drainAuditQueue,
   registerAuditQueueShutdown,
 } from "./lib/audit-queue.server";
+import { registerAuditWatchdog } from "./lib/audit-watchdog.server";
 
 registerAuditQueueShutdown();
+registerAuditWatchdog();
 void drainAuditQueue();
 
 const shopify = shopifyApp({
