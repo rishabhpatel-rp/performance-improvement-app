@@ -2,6 +2,7 @@ import prisma from "../db.server";
 import {
   ensureThemeHeadInlineScript,
   type ThemeHeadInjectResult,
+  type AdminGraphQL,
 } from "./theme-head-inject.server";
 import {
   isThemeFilesExemptDenied,
@@ -82,7 +83,7 @@ async function persistInjectStatus(
  */
 export async function attemptThemeHeadInject(
   shopDomain: string,
-  admin: { graphql: Function },
+  admin: AdminGraphQL,
   options: { force?: boolean } = {},
 ): Promise<ThemeHeadInjectResult> {
   const cfg = await getInjectState(shopDomain);

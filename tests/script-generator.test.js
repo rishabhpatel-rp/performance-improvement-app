@@ -135,7 +135,7 @@ function makeBrowser(pathname) {
   };
   ctx.window = ctx;
   vm.createContext(ctx);
-  return { ctx, classes, listeners, dispatched };
+  return { ctx, classes, listeners, dispatched, timers };
 }
 
 function makeScript(src) {
@@ -171,6 +171,18 @@ test("bundle runs, parks a gated script on a matching page, and releases on inte
   assert.ok(listeners.pointerdown?.length, "interaction listeners registered");
   listeners.pointerdown[0]();
   assert.ok(classes.has("interacted"));
+});
+
+test("empty delay lists do not arm delay timers", () => {
+  const code = generateDeferredScript({
+    ...OPTIONS,
+    firstVisitDelayedScripts: [],
+    everyLoadDelayedScripts: [],
+    seed: 9,
+  });
+  const { ctx, timers } = makeBrowser("/products/gift-card");
+  vm.runInContext(code, ctx);
+  assert.equal(timers.length, 0);
 });
 
 test("an un-audited page falls back to the union list", () => {

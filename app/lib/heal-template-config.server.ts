@@ -1,9 +1,7 @@
 import prisma from "../db.server";
-import { readStringArray } from "./performance-script.server";
-import { templateBucketsToStorePatch } from "./template-script-config";
-import { auditDeferColumn, TEMPLATE_SCOPES } from "./template-script-config";
+import { readStringArray, rebuildPerformanceScript } from "./performance-script.server";
+import { templateBucketsToStorePatch, auditDeferColumn, TEMPLATE_SCOPES } from "./template-script-config";
 import type { HiddenAuditResult } from "./audit.server";
-import { rebuildPerformanceScript } from "./performance-script.server";
 
 export function storeNeedsTemplateHeal(
   sc: Record<string, unknown> | null | undefined,

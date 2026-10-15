@@ -70,7 +70,7 @@ export async function sweepStaleAuditStateForShop(
 ): Promise<boolean> {
   const loaded = await loadStoreAuditRow(shopDomain);
   if (!loaded) return false;
-  const { storeId, sc } = loaded;
+  const { sc } = loaded;
   let changed = false;
 
   const jobId = sc.activeAuditJobId;
@@ -105,44 +105,55 @@ export async function sweepStaleAuditStateForShop(
   }
 
   const latest = await loadStoreAuditRow(shopDomain);
-  if (!latest?.sc.auditRunning || !staleReason(latest.sc)) {
+  if (!latest?.sc.auditRunning) {
     return changed;
   }
+
+  const staleMsg = `stale: no progress within ${Math.round(AUDIT_STALE_MS / 60_000)} minutes`;
 
   const activeJobId = latest.sc.activeAuditJobId;
   if (activeJobId) {
     const job = await prisma.auditJob.findUnique({
       where: { id: activeJobId },
-      select: { id: true, storeId: true, status: true, lockedAt: true },
+      select: {
+        id: true,
+        storeId: true,
+        status: true,
+        lockedAt: true,
+        createdAt: true,
+      },
     });
+    // Waiting behind the global concurrency cap — not "stuck" until QUEUED_JOB_STALE_MS.
+    if (job?.status === "queued") {
+      return changed;
+    }
     if (
       job?.status === "running" &&
       runningJobHasFreshHeartbeat(job.lockedAt)
     ) {
       return changed;
     }
-    if (job && (job.status === "queued" || job.status === "running")) {
+    if (job?.status === "running") {
       await prisma.auditJob.update({
         where: { id: job.id },
         data: {
           status: "failed",
           lockedAt: null,
-          lastError: "stale: no progress within 15 minutes",
+          lastError: staleMsg,
         },
       });
-      await reconcileStoreAfterJobEnd(
-        job.storeId,
-        job.id,
-        "failed",
-        "stale: no progress within 15 minutes",
-      );
+      await reconcileStoreAfterJobEnd(job.storeId, job.id, "failed", staleMsg);
       return true;
     }
   }
 
+  if (!staleReason(latest.sc)) {
+    return changed;
+  }
+
   const afterJob = await loadStoreAuditRow(shopDomain);
   if (afterJob && needsOrphanStaleClear(afterJob.sc)) {
-    await clearOrphanStaleRunningStore(afterJob.storeId);
+    await clearOrphanStaleRunningStore(afterJob.storeId, staleMsg);
     return true;
   }
 

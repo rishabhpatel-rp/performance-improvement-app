@@ -1,14 +1,10 @@
 import prisma from "../db.server";
 import { Prisma } from "@prisma/client";
-import {
-  decideAdmission,
-  MAX_CONCURRENT_AUDITS,
-  STALE_RUNNING_MS,
-} from "./audit-queue-policy";
+import { MAX_CONCURRENT_AUDITS, STALE_RUNNING_MS } from "./audit-queue-policy";
 import { QUEUED_JOB_STALE_MS } from "./audit-lifecycle";
 import {
+  AUDIT_SUPERSEDED_ERROR,
   reconcileStoreAfterJobEnd,
-  setStoreActiveAuditJob,
   touchAuditJobHeartbeat,
 } from "./audit-queue-reconcile.server";
 
@@ -18,43 +14,79 @@ export async function enqueueAuditJob(
   shopDomain: string,
   storeId: string,
   payload: { enableOnCreate?: boolean } = {},
-): Promise<{ enqueued: boolean; reason?: string; jobId?: string }> {
+): Promise<{
+  enqueued: boolean;
+  reason?: string;
+  jobId?: string;
+  waiting?: boolean;
+}> {
   await failStaleQueuedJobs();
   await failStaleRunningJobs();
 
-  const activeForShop = await prisma.auditJob.count({
-    where: {
-      storeId,
-      status: { in: ["queued", "running"] },
-    },
-  });
-  const otherActive = await prisma.auditJob.count({
-    where: {
-      status: { in: ["queued", "running"] },
-      storeId: { not: storeId },
-    },
-  });
+  // Fail the previous job and point the store at the new one in one
+  // transaction. Clearing auditRunning here (or leaving a gap with no job id)
+  // made the dashboard drop a live run.
+  const swapInQueuedJob = () =>
+    prisma.$transaction(async (tx: Prisma.TransactionClient) => {
+      await tx.auditJob.updateMany({
+        where: { storeId, status: { in: ["queued", "running"] } },
+        data: {
+          status: "failed",
+          lockedAt: null,
+          stopRequested: true,
+          lastError: AUDIT_SUPERSEDED_ERROR,
+        },
+      });
+      const created = await tx.auditJob.create({
+        data: {
+          storeId,
+          shopDomain,
+          status: "queued",
+          payload,
+        },
+      });
+      await tx.storeConfig.update({
+        where: { storeId },
+        data: { activeAuditJobId: created.id },
+      });
+      return created;
+    });
 
-  const admission = decideAdmission(activeForShop > 0, otherActive);
-  if (!admission.allow) {
-    return { enqueued: false, reason: admission.code };
-  }
+  const finishEnqueue = async (job: { id: string }) => {
+    const runningNow = await prisma.auditJob.count({
+      where: { status: "running" },
+    });
+    if (runningNow >= MAX_CONCURRENT_AUDITS) {
+      await prisma.storeConfig.updateMany({
+        where: { storeId, activeAuditJobId: job.id },
+        data: { auditPhase: "queued" },
+      });
+    }
+    void drainAuditQueue();
+    return {
+      enqueued: true as const,
+      jobId: job.id,
+      waiting: runningNow >= MAX_CONCURRENT_AUDITS,
+    };
+  };
 
   try {
-    const job = await prisma.auditJob.create({
-      data: {
-        storeId,
-        shopDomain,
-        status: "queued",
-        payload,
-      },
-    });
-    await setStoreActiveAuditJob(storeId, job.id);
-    void drainAuditQueue();
-    return { enqueued: true, jobId: job.id };
+    const job = await swapInQueuedJob();
+    return finishEnqueue(job);
   } catch (err) {
     if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002") {
-      return { enqueued: false, reason: "already_running" };
+      try {
+        const job = await swapInQueuedJob();
+        return finishEnqueue(job);
+      } catch (retryErr) {
+        if (
+          retryErr instanceof Prisma.PrismaClientKnownRequestError &&
+          retryErr.code === "P2002"
+        ) {
+          return { enqueued: false, reason: "already_running" };
+        }
+        throw retryErr;
+      }
     }
     throw err;
   }
@@ -96,14 +128,14 @@ async function failStaleRunningJobs() {
       data: {
         status: "failed",
         lockedAt: null,
-        lastError: "stale: no heartbeat within 15 minutes",
+        lastError: `stale: no heartbeat within ${Math.round(STALE_RUNNING_MS / 60_000)} minutes`,
       },
     });
     await reconcileStoreAfterJobEnd(
       job.storeId,
       job.id,
       "failed",
-      "stale: no heartbeat within 15 minutes",
+      `stale: no heartbeat within ${Math.round(STALE_RUNNING_MS / 60_000)} minutes`,
     );
   }
 }
@@ -161,10 +193,13 @@ async function runClaimedJob(job: {
     const { admin } = await unauthenticated.admin(job.shopDomain);
     await touchAuditJobHeartbeat(job.id);
     await executeAuditJob(admin, job.shopDomain, { jobId: job.id });
-    await prisma.auditJob.update({
-      where: { id: job.id },
+    // A stop or a newer run already marked this row failed. Writing
+    // "succeeded" here brought a cancelled audit back and cleared the live one.
+    const marked = await prisma.auditJob.updateMany({
+      where: { id: job.id, status: "running", stopRequested: false },
       data: { status: "succeeded", lockedAt: null },
     });
+    if (marked.count === 0) return;
     await reconcileStoreAfterJobEnd(job.storeId, job.id, "succeeded");
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);

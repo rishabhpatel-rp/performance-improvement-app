@@ -419,6 +419,8 @@ export function buildRawScript({
       var GLOBAL_FIRST_VISIT_DELAY_MS = ${firstVisitDelayMs};
       var _firstAdd = PAGE && PAGE.firstUserAdd ? PAGE.firstUserAdd : [];
       var FIRST_VISIT_DELAYED_SCRIPTS = GLOBAL_FIRST_VISIT_DELAYED.concat(_firstAdd);
+      // Empty list still used to wrap src/setAttribute for the whole page.
+      if (!FIRST_VISIT_DELAYED_SCRIPTS.length) return;
       var _delay =
         PAGE && PAGE.firstUserDelayMs != null
           ? PAGE.firstUserDelayMs
@@ -524,6 +526,7 @@ export function buildRawScript({
       var GLOBAL_EVERY_LOAD_DELAY_MS = ${everyLoadDelayMs};
       var _everyAdd = PAGE && PAGE.everyAdd ? PAGE.everyAdd : [];
       var EVERY_LOAD_DELAYED_SCRIPTS = GLOBAL_EVERY_LOAD_DELAYED.concat(_everyAdd);
+      if (!EVERY_LOAD_DELAYED_SCRIPTS.length) return;
       var _etDelay =
         PAGE && PAGE.everyLoadDelayMs != null
           ? PAGE.everyLoadDelayMs
@@ -717,13 +720,10 @@ export function generateDeferredScript(options = {}) {
 // disableConsoleOutput replaces console.log with a no-op for everything that
 // runs after it, so the logger captures a bound console.log first.
 // ---------------------------------------------------------------------------
-// The injection-timing log has served its purpose (it produced the
-  // "gate installs at ~1s, before first paint" numbers that confirmed the gate
-  // lands early enough) and it costs bytes in a script that blocks rendering on
-  // every storefront page load. Off by default; flip to true to re-measure.
-// Re-enabled so storefront timing logs are available while diagnosing load
-// bottlenecks. Switch back to false when you're done measuring.
-export const STOREFRONT_TIMING_LOG_ENABLED = true;
+// The injection-timing log costs bytes and keeps console output in a script
+// that blocks rendering on every storefront page load. Off unless the store's
+// debug mode is on (that path still wraps with withTimingLog).
+export const STOREFRONT_TIMING_LOG_ENABLED = false;
 const TEMP_TIMING_LOG = STOREFRONT_TIMING_LOG_ENABLED;
 
 // TEST-ONLY. Set to true, save any Step 2 field (or toggle the app off/on) to

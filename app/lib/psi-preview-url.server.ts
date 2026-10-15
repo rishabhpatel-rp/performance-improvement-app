@@ -15,7 +15,6 @@ export function hasPsiPreviewBypass(
 
 export function shouldSkipPsiForPasswordStore(
   isPasswordProtected: boolean | null | undefined,
-  _bypass?: PsiPreviewBypassParams | null | undefined,
 ): boolean {
   return isPasswordProtected === true;
 }

@@ -1,5 +1,11 @@
 import prisma from "../db.server";
-import { AUDIT_STOPPED_BY_USER, queuedJobStale } from "./audit-lifecycle";
+import {
+  AUDIT_STOPPED_BY_USER,
+  auditProgressFlags,
+  needsOrphanStaleClear,
+  queuedJobStale,
+} from "./audit-lifecycle";
+export const AUDIT_SUPERSEDED_ERROR = "superseded by new audit start";
 
 /** Keeps a claimed job from being marked stale while the worker is alive. */
 export async function touchAuditJobHeartbeat(jobId: string): Promise<void> {
@@ -20,6 +26,74 @@ export async function setStoreActiveAuditJob(
 }
 
 /** Clear stuck audit UI when the job row is no longer active. */
+/** Fail queued/running jobs so a new audit can enqueue (re-run, OFF→ON toggle). */
+export async function cancelLiveAuditJobsForStore(
+  storeId: string,
+  lastError: string = AUDIT_SUPERSEDED_ERROR,
+): Promise<void> {
+  await prisma.auditJob.updateMany({
+    where: { storeId, status: { in: ["queued", "running"] } },
+    data: {
+      status: "failed",
+      lockedAt: null,
+      stopRequested: true,
+      lastError,
+    },
+  });
+
+  const superseded = lastError === AUDIT_SUPERSEDED_ERROR;
+  await prisma.storeConfig.update({
+    where: { storeId },
+    data: {
+      activeAuditJobId: null,
+      ...(superseded
+        ? {
+            auditRunning: false,
+            auditPhase: null,
+            auditFailed: false,
+            auditError: null,
+          }
+        : {}),
+    },
+  });
+}
+
+/**
+ * Reconcile stale rows and abandon leftover queue jobs before a new run.
+ */
+export async function prepareStoreForNewAudit(
+  shopDomain: string,
+): Promise<{ storeId: string } | null> {
+  await reconcileOrphanedStoreAuditState(shopDomain);
+
+  const store = await prisma.store.findUnique({
+    where: { shopDomain },
+    select: {
+      id: true,
+      configs: {
+        select: {
+          auditRunning: true,
+          auditComplete: true,
+          auditFailed: true,
+        },
+        take: 1,
+      },
+    },
+  });
+  if (!store) return null;
+
+  const sc = store.configs[0];
+  if (sc && auditProgressFlags(sc).running && sc.auditComplete) {
+    await prisma.storeConfig.update({
+      where: { storeId: store.id },
+      data: { auditRunning: false, auditPhase: null },
+    });
+  }
+
+  await cancelLiveAuditJobsForStore(store.id);
+  return { storeId: store.id };
+}
+
 export async function reconcileOrphanedStoreAuditState(
   shopDomain: string,
 ): Promise<void> {
@@ -30,6 +104,9 @@ export async function reconcileOrphanedStoreAuditState(
       configs: {
         select: {
           auditRunning: true,
+          auditComplete: true,
+          auditPageStartedAt: true,
+          updatedAt: true,
           activeAuditJobId: true,
         },
         take: 1,
@@ -39,8 +116,32 @@ export async function reconcileOrphanedStoreAuditState(
   const sc = store?.configs?.[0];
   if (!store || !sc?.auditRunning) return;
 
+  if (sc.auditComplete) {
+    await prisma.storeConfig.update({
+      where: { storeId: store.id },
+      data: {
+        auditRunning: false,
+        auditPhase: null,
+        activeAuditJobId: null,
+      },
+    });
+    return;
+  }
+
   const jobId = sc.activeAuditJobId;
   if (!jobId) {
+    // A start sets auditRunning before the job id is written. Failing that
+    // immediately made the dashboard kill a run that had just begun.
+    if (
+      !needsOrphanStaleClear({
+        auditRunning: true,
+        auditPageStartedAt: sc.auditPageStartedAt,
+        updatedAt: sc.updatedAt,
+        activeAuditJobId: null,
+      })
+    ) {
+      return;
+    }
     await prisma.storeConfig.update({
       where: { storeId: store.id },
       data: {

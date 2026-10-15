@@ -310,6 +310,9 @@ function OverviewLighthouse({ view, pageLabel }) {
         }}
       >
         {pageLabel} · {sourceLabel}
+        {view?.note ? (
+          <div style={{ marginTop: 6, color: "#9CA3AF", fontSize: 11 }}>{view.note}</div>
+        ) : null}
       </div>
       <div
         style={{
@@ -477,7 +480,10 @@ export default function AuditReportPanel({
       )}
 
       {!passwordProtected && summary.psiSkipNote && (
-        <s-banner tone="info" style={{ marginBottom: 12 }}>
+        <s-banner
+          tone={summary.psiSkipNote.includes("password") ? "info" : "warning"}
+          style={{ marginBottom: 12 }}
+        >
           {summary.psiSkipNote}
         </s-banner>
       )}

@@ -1,7 +1,6 @@
 /** Per-page timing caps for hidden-browser audit (settle + measure). */
 
 export const PAGE_LOAD_TIMEOUT_MS = 45_000;
-export const NETWORK_IDLE_CAP_MS = 8_000;
 export const SETTLE_STABLE_CHECKS = 2;
 export const SETTLE_PROBE_GAP_MS = 900;
 export const SETTLE_MIN_MS = 5_000;

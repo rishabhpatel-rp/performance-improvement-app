@@ -1,43 +1,19 @@
 import prisma from "../db.server";
 import { startAuditForStore } from "./audit-runner.server";
-import {
-  normalizeCustomUrl,
-  normalizeCustomUrlList,
-} from "./page-urls.server";
-import { rebuildPerformanceScript } from "./performance-script.server";
 import { getPasswordProtection } from "./password-protection.server";
 import {
   isAppEmbedEnabled,
   getAppEmbedDeepLink,
   getSelectedThemeId,
-  listThemes,
 } from "./theme-embed.server";
 import { withShopifyTimeout, rethrowAuthRedirect } from "./shopify-timeout.server";
-import {
-  updateAuditArrays,
-  updateAuditFieldToggle,
-} from "./store-sync.server";
-import {
-  templateListFormKeys,
-  templateDelayFormKeys,
-  readBucketsFromRow,
-  auditDeferColumn,
-  auditHideColumn,
-  firstUserDelayColumn,
-  staticDeferColumn,
-  unionTemplateLists,
-} from "./template-script-config";
 import {
   safeUpdateConfig,
   safeSyncConfig,
   safeLogActivity,
-  disableAppBecauseEmbedOff,
 } from "./dashboard-helpers.server.js";
 import { stopAuditForShop } from "./audit-watchdog.server";
-import {
-  applyScopedTokenAction,
-  storePatchFromTemplateLists,
-} from "./audit-script-actions";
+import { rebuildPerformanceScript } from "./performance-script.server";
 
 export async function handleToggleApp({ admin, session, formData }) {
 const appEnabled = formData.get("appEnabled") === "true";
@@ -149,6 +125,15 @@ await safeLogActivity(
   { changedFields: ["appEnabled"] },
 );
 
+if (!appEnabled) {
+  await stopAuditForShop(session.shop).catch((err) => {
+    console.warn(
+      "[toggle-app] stop audit on disable:",
+      err instanceof Error ? err.message : err,
+    );
+  });
+}
+
 // Turning the app ON from OFF re-runs the audit automatically. A storefront
 // that was serving an empty gate has never been measured, so the stored
 // script does not reflect the current theme; leaving it stale would serve a
@@ -206,12 +191,6 @@ if (!store) return { ok: false, error: "Store record not found." };
 const sc = store.configs[0];
 if (!sc?.appEnabled) {
   return { ok: false, error: "app_disabled" };
-}
-
-// One run at a time: `startAuditForStore` would spawn a second concurrent
-// Chromium run, and only the newer generation would be allowed to write.
-if (sc?.auditRunning) {
-  return { ok: false, error: "already_running" };
 }
 
 const selectedThemeId = await getSelectedThemeId(session.shop).catch(

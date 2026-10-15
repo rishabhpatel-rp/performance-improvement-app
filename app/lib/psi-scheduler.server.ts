@@ -9,6 +9,13 @@ import {
 import type { FieldVitalsSummary, PageSpeedPageView } from "./audit-report-types";
 
 const MIN_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000;
+const psiInFlight = new Set<string>();
+
+function claimPsi(shopDomain: string): boolean {
+  if (psiInFlight.has(shopDomain)) return false;
+  psiInFlight.add(shopDomain);
+  return true;
+}
 
 function jitterMs(shopDomain: string): number {
   let h = 0;
@@ -21,7 +28,18 @@ export function schedulePsiAfterAudit(
   pageUrls: string[],
   storefrontPassword?: string | null,
 ): void {
-  void runPsiJob(shopDomain, pageUrls, storefrontPassword).catch((err) => {
+  if (!claimPsi(shopDomain)) return;
+  void (async () => {
+    try {
+      await prisma.storeConfig.updateMany({
+        where: { store: { shopDomain } },
+        data: { psiLastFetchedAt: null, psiBackoffUntil: null },
+      });
+      await runPsiJob(shopDomain, pageUrls, storefrontPassword);
+    } finally {
+      psiInFlight.delete(shopDomain);
+    }
+  })().catch((err) => {
     console.warn("[psi] job failed:", err instanceof Error ? err.message : err);
   });
 }
@@ -33,13 +51,18 @@ export async function refreshPsiForShop(
   storefrontPassword?: string | null,
   { force = false }: { force?: boolean } = {},
 ) {
-  if (force) {
-    await prisma.storeConfig.updateMany({
-      where: { store: { shopDomain } },
-      data: { psiLastFetchedAt: null, psiBackoffUntil: null },
-    });
+  if (!claimPsi(shopDomain)) return;
+  try {
+    if (force) {
+      await prisma.storeConfig.updateMany({
+        where: { store: { shopDomain } },
+        data: { psiLastFetchedAt: null, psiBackoffUntil: null },
+      });
+    }
+    await runPsiJob(shopDomain, pageUrls, storefrontPassword);
+  } finally {
+    psiInFlight.delete(shopDomain);
   }
-  await runPsiJob(shopDomain, pageUrls, storefrontPassword);
 }
 
 async function runPsiJob(

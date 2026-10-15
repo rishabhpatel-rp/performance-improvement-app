@@ -8,9 +8,7 @@ import {
 } from "../app/lib/audit-script-actions-pure.ts";
 import {
   auditDeferColumn,
-  firstUserDelayColumn,
   readBucketsFromRow,
-  staticDeferColumn,
 } from "../app/lib/template-script-config.ts";
 
 const base = {

@@ -6,7 +6,6 @@ import { COLLECT_LAB_VITALS_JS, applyMobileLabThrottling } from "./audit-metrics
 import {
   FOLD_HEIGHT_PX,
   MEASURE_TIMEOUT_MS,
-  NETWORK_IDLE_CAP_MS,
   PAGE_LOAD_TIMEOUT_MS,
   POPUP_WATCH_MS,
   SCROLL_STEP_PX,
@@ -169,13 +168,11 @@ export interface MeasuredPage {
 /**
  * Wait until the page has genuinely finished loading its scripts.
  *
- * `networkidle` is deliberately NOT the exit condition: on stores with
- * long-polling analytics it never fires, so a capped `networkidle` measures a
- * page that is still loading. Instead we track `max(responseEnd)` across script
- * resource entries and require it to stop moving across consecutive probes.
- * `NETWORK_IDLE_CAP_MS` only bounds each individual quiet-period probe so a page
- * that never goes quiet still gets probed, and `SETTLE_SAFETY_NET_MS` is a
- * guard against a pathological page rather than the normal exit.
+ * `networkidle` is deliberately not used. On stores with long-polling
+ * analytics it never fires, so each probe waited the full cap (8s) and a
+ * settle that should take ~5s took ~27s — twice per page, on every pass.
+ * Exit when `max(responseEnd)` across script resources stops moving.
+ * `SETTLE_SAFETY_NET_MS` bounds a page that never goes quiet.
  */
 async function waitForScriptsSettled(
   page: Page,
@@ -186,7 +183,6 @@ async function waitForScriptsSettled(
   let stable = 0;
 
   while (Date.now() - started < SETTLE_SAFETY_NET_MS) {
-    await page.waitForLoadState("networkidle", { timeout: NETWORK_IDLE_CAP_MS }).catch(() => {});
     await page.waitForTimeout(SETTLE_PROBE_GAP_MS);
     let snap: { lastResponseEnd: number; count: number };
     try {
@@ -504,11 +500,16 @@ async function simulateInteractions(page: Page): Promise<{ revealed: string[]; s
     Math.max(MIN_SCROLL_STEPS, Math.ceil((docHeight || 0) / SCROLL_STEP_PX)),
   );
   let clicks = 0;
+  let cancelled = false;
+  const cancelTimer = setTimeout(() => {
+    cancelled = true;
+  }, INTERACTION_PHASE_TIMEOUT_MS);
 
   const run = async () => {
     // 1. Scroll through the page so IntersectionObserver / lazy-load /
     // scroll-gated code actually fires.
     for (let i = 0; i < steps; i++) {
+      if (cancelled) return;
       await page.mouse.wheel(0, SCROLL_STEP_PX).catch(() => {});
       await page.waitForTimeout(SCROLL_STEP_SETTLE_MS);
     }
@@ -516,12 +517,14 @@ async function simulateInteractions(page: Page): Promise<{ revealed: string[]; s
     // 2. Move the mouse across a few regions to wake pointer/hover-gated
     // scripts (in addition to the existing two-point wake-up in the settle
     // block below).
+    if (cancelled) return;
     const viewport = page.viewportSize() ?? { width: 1280, height: 800 };
     await page.mouse.move(viewport.width * 0.25, viewport.height * 0.25).catch(() => {});
     await page.mouse.move(viewport.width * 0.75, viewport.height * 0.5).catch(() => {});
     await page.mouse.move(viewport.width * 0.5, viewport.height * 0.75).catch(() => {});
 
     // 3. Find and stamp a handful of clearly-safe interactive elements.
+    if (cancelled) return;
     const count = await page
       .evaluate((maxTargets: number) => {
         const SELECTORS = [
@@ -574,6 +577,7 @@ async function simulateInteractions(page: Page): Promise<{ revealed: string[]; s
     // 4. Click each stamped target and record its own selector plus its
     // aria-controls target's selector (if any).
     for (let i = 0; i < count; i++) {
+      if (cancelled) return;
       const clickedOk = await page
         .locator(`[data-pp-interact="${i}"]`)
         .click({ timeout: INTERACTION_CLICK_TIMEOUT_MS })
@@ -603,10 +607,15 @@ async function simulateInteractions(page: Page): Promise<{ revealed: string[]; s
     }
   };
 
-  await Promise.race([
-    run(),
-    new Promise<void>((resolve) => setTimeout(resolve, INTERACTION_PHASE_TIMEOUT_MS)),
-  ]).catch(() => {});
+  // Promise.race does not stop `run()`. Those queued clicks kept the page
+  // busy after the cap, so the settle that follows waited behind them.
+  try {
+    await run();
+  } catch {
+    // best effort
+  } finally {
+    clearTimeout(cancelTimer);
+  }
 
   return { revealed: [...revealed], steps, clicks };
 }

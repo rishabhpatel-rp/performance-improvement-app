@@ -94,7 +94,7 @@ function validateArray(text) {
  * beside the toggle when that box is dirty and valid. Invalid JSON replaces
  * the hint and tints the card critical. Invalid content is never saved.
  */
-export default function Step3Titles({ config, appEnabled }) {
+export default function Step3Titles({ config }) {
   const fetcher = useFetcher();
   const saveData = fetcher.data;
   const [scopeTab, setScopeTab] = useState("global");

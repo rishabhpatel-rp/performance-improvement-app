@@ -6,9 +6,29 @@ import {
   queuedJobStale,
   planStaleSweep,
   needsOrphanStaleClear,
+  auditProgressFlags,
   AUDIT_STALE_MS,
   QUEUED_JOB_STALE_MS,
 } from "../app/lib/audit-lifecycle.ts";
+
+test("auditProgressFlags ignores running when complete or failed", () => {
+  assert.deepEqual(
+    auditProgressFlags({
+      auditRunning: true,
+      auditComplete: true,
+      auditFailed: false,
+    }),
+    { running: false, complete: true, failed: false },
+  );
+  assert.deepEqual(
+    auditProgressFlags({
+      auditRunning: true,
+      auditComplete: false,
+      auditFailed: false,
+    }),
+    { running: true, complete: false, failed: false },
+  );
+});
 
 test("lastSignOfLife uses auditPageStartedAt when set", () => {
   const started = new Date("2026-01-01T12:00:00Z");

@@ -8,9 +8,9 @@ import {
 import { saveAuditReport } from "./store-sync.server";
 import { listThemes, numericThemeId } from "./theme-embed.server";
 import { logAuditPageDone } from "./audit-logging.server";
-import { touchAuditJobHeartbeat } from "./audit-queue-reconcile.server";
-import { sweepStaleAuditStateForShop } from "./audit-watchdog.server";
-import { drainAuditQueue } from "./audit-queue.server";
+import { touchAuditJobHeartbeat, prepareStoreForNewAudit } from "./audit-queue-reconcile.server";
+import { AUDIT_HEARTBEAT_INTERVAL_MS } from "./audit-lifecycle";
+import { maybeSweepStaleAuditStateForShop } from "./audit-watchdog.server";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AdminClient = any;
@@ -44,15 +44,16 @@ export async function startAuditForStore(
   shopDomain: string,
   { enableOnCreate = false }: { enableOnCreate?: boolean } = {},
 ): Promise<{ started: boolean; reason?: string }> {
-  const swept = await sweepStaleAuditStateForShop(shopDomain).catch(() => false);
-  if (swept) void drainAuditQueue();
+  await maybeSweepStaleAuditStateForShop(shopDomain, { force: true }).catch(
+    () => undefined,
+  );
 
-  const store = await prisma.store.findUnique({ where: { shopDomain } });
-  if (!store) {
+  const prepared = await prepareStoreForNewAudit(shopDomain);
+  if (!prepared) {
     console.warn(`[Audit] SKIPPED — no Store row for ${shopDomain}.`);
     return { started: false, reason: "store_not_found" };
   }
-  const storeId = store.id;
+  const storeId = prepared.storeId;
 
   await prisma.storeConfig.upsert({
     where: { storeId },
@@ -120,9 +121,36 @@ export async function executeAuditJob(
     return job.status === "running";
   };
 
+  const bumpStoreLife = () =>
+    prisma.storeConfig
+      .updateMany({
+        where: { storeId, activeAuditJobId: jobId },
+        data: { auditPageStartedAt: new Date() },
+      })
+      .catch(() => {});
+
+  const heartbeatTimer = setInterval(() => {
+    void (async () => {
+      if (!(await isCurrentRun())) {
+        clearInterval(heartbeatTimer);
+        return;
+      }
+      await touchAuditJobHeartbeat(jobId);
+      await bumpStoreLife();
+    })();
+  }, AUDIT_HEARTBEAT_INTERVAL_MS);
+
   try {
     await touchAuditJobHeartbeat(jobId);
     if (!(await isCurrentRun())) return;
+
+    await prisma.storeConfig.updateMany({
+      where: { storeId, activeAuditJobId: jobId },
+      data: {
+        auditPhase: "discovering",
+        auditPageStartedAt: new Date(),
+      },
+    });
 
     const config = await prisma.storeConfig.findUnique({ where: { storeId } });
     const password = config?.storefrontPassword || "";
@@ -152,8 +180,8 @@ export async function executeAuditJob(
     );
 
     if (!(await isCurrentRun())) return;
-    await prisma.storeConfig.update({
-      where: { storeId },
+    await prisma.storeConfig.updateMany({
+      where: { storeId, activeAuditJobId: jobId },
       data: {
         auditPages: described,
         auditTotalPages: described.length,
@@ -188,8 +216,8 @@ export async function executeAuditJob(
             const page = pagesState.find((p) => p.path === path && !p.done);
             if (page) page.done = true;
           }
-          await prisma.storeConfig.update({
-            where: { storeId },
+          await prisma.storeConfig.updateMany({
+            where: { storeId, activeAuditJobId: jobId },
             data: {
               auditPageIndex: done,
               auditTotalPages: total,
@@ -206,14 +234,14 @@ export async function executeAuditJob(
     });
 
     if (!(await isCurrentRun())) return;
-    await prisma.storeConfig.update({
-      where: { storeId },
+    await prisma.storeConfig.updateMany({
+      where: { storeId, activeAuditJobId: jobId },
       data: { auditPhase: "building" },
     });
-    await saveAuditReport(shopDomain, report);
+    await saveAuditReport(shopDomain, report, "completed", undefined, jobId);
     if (!(await isCurrentRun())) return;
-    await prisma.storeConfig.update({
-      where: { storeId },
+    await prisma.storeConfig.updateMany({
+      where: { storeId, activeAuditJobId: jobId },
       data: {
         auditRunning: false,
         auditComplete: true,
@@ -231,8 +259,8 @@ export async function executeAuditJob(
     console.error(`[Audit] FAILED for ${shopDomain}:`, msg);
     const auditError = err instanceof AuditBlockedError ? err.code : msg;
     await prisma.storeConfig
-      .update({
-        where: { storeId },
+      .updateMany({
+        where: { storeId, activeAuditJobId: jobId },
         data: {
           auditRunning: false,
           auditFailed: true,
@@ -253,5 +281,7 @@ export async function executeAuditJob(
       })
       .catch(() => {});
     throw err;
+  } finally {
+    clearInterval(heartbeatTimer);
   }
 }

@@ -11,13 +11,12 @@ test("decideAdmission blocks duplicate shop job", () => {
   assert.equal(d.code, "already_running");
 });
 
-test("decideAdmission blocks when global cap reached", () => {
+test("decideAdmission allows enqueue when other shops are at global cap (queue waits)", () => {
   const d = decideAdmission(false, 3);
-  assert.equal(d.allow, false);
-  assert.equal(d.code, "busy");
+  assert.equal(d.allow, true);
 });
 
-test("decideAdmission allows new shop under cap", () => {
+test("decideAdmission allows new shop when none active for this store", () => {
   const d = decideAdmission(false, 2);
   assert.equal(d.allow, true);
 });

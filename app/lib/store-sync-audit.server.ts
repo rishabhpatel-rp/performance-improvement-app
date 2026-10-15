@@ -16,6 +16,7 @@ export async function saveAuditReport(
   report: AuditReport,
   status = "completed",
   details?: string,
+  activeJobId?: string,
 ) {
   const store = await prisma.store.findUnique({
     where: { shopDomain },
@@ -79,35 +80,46 @@ export async function saveAuditReport(
     }
   }
 
-  await prisma.storeConfig.upsert({
-    where: { storeId: store.id },
-    create: {
-      storeId: store.id,
-      appEnabled: false,
-      script1Enabled: false,
-      script2Enabled: false,
-      script3Enabled: false,
-      debugMode: false,
-      scriptTitles: [],
-      ...runState,
-      lastAuditAt: new Date(),
-      auditDeferArray: deferOn ? templatePatch.auditDeferArray ?? activeDefer : [],
-      auditHideSelectors: hideOn ? templatePatch.auditHideSelectors ?? hideForStore : [],
-      auditDeferArrayPreserved: deferOn ? [] : report.deferArray,
-      auditHideSelectorsPreserved: hideOn ? [] : report.hideSelectors,
-      staticDeferDefaults: DEFAULT_STATIC_DEFER,
-      ...templatePatch,
-    },
-    update: {
-      ...runState,
-      lastAuditAt: new Date(),
-      auditDeferArray: deferOn ? templatePatch.auditDeferArray ?? activeDefer : [],
-      auditHideSelectors: hideOn ? templatePatch.auditHideSelectors ?? hideForStore : [],
-      auditDeferArrayPreserved: deferOn ? undefined : report.deferArray,
-      auditHideSelectorsPreserved: hideOn ? undefined : report.hideSelectors,
-      ...templatePatch,
-    },
-  });
+  const reportPatch = {
+    ...runState,
+    lastAuditAt: new Date(),
+    auditDeferArray: deferOn ? templatePatch.auditDeferArray ?? activeDefer : [],
+    auditHideSelectors: hideOn ? templatePatch.auditHideSelectors ?? hideForStore : [],
+    ...(deferOn ? {} : { auditDeferArrayPreserved: report.deferArray }),
+    ...(hideOn ? {} : { auditHideSelectorsPreserved: report.hideSelectors }),
+    ...templatePatch,
+  };
+
+  if (activeJobId) {
+    const wrote = await prisma.storeConfig.updateMany({
+      where: { storeId: store.id, activeAuditJobId: activeJobId },
+      data: reportPatch,
+    });
+    if (wrote.count === 0) {
+      console.warn(
+        `[saveAuditReport] skipped stale job ${activeJobId} for ${shopDomain}`,
+      );
+      return null;
+    }
+  } else {
+    await prisma.storeConfig.upsert({
+      where: { storeId: store.id },
+      create: {
+        storeId: store.id,
+        appEnabled: false,
+        script1Enabled: false,
+        script2Enabled: false,
+        script3Enabled: false,
+        debugMode: false,
+        scriptTitles: [],
+        auditDeferArrayPreserved: deferOn ? [] : report.deferArray,
+        auditHideSelectorsPreserved: hideOn ? [] : report.hideSelectors,
+        staticDeferDefaults: DEFAULT_STATIC_DEFER,
+        ...reportPatch,
+      },
+      update: reportPatch,
+    });
+  }
 
   await prisma.auditLog.create({
     data: {
@@ -122,10 +134,13 @@ export async function saveAuditReport(
   await rebuildPerformanceScript(shopDomain);
 
   if (completed) {
-    await prisma.storeConfig.update({
-      where: { storeId: store.id },
+    const finished = await prisma.storeConfig.updateMany({
+      where: activeJobId
+        ? { storeId: store.id, activeAuditJobId: activeJobId }
+        : { storeId: store.id },
       data: { auditComplete: true, auditRunning: false, auditPhase: null },
     });
+    if (finished.count === 0) return { ok: true };
     const pageUrls = (report.pagesAudited || []).map((path) => {
       try {
         return new URL(path, `https://${shopDomain}`).href;
