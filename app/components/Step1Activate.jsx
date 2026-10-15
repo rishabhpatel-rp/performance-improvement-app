@@ -447,7 +447,7 @@ export default function Step1Activate({
               width: 24,
               height: 24,
               borderRadius: "50%",
-              backgroundColor: "#00C853",
+              backgroundColor: "#000",
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
