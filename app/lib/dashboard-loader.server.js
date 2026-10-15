@@ -28,6 +28,7 @@ import {
   emptyAuditStatus,
   configFromDbRow,
 } from "./dashboard-helpers.server.js";
+import { auditProgressFlags } from "./audit-lifecycle.ts";
 
 export const loader = async ({ request }) => {
   const loaderStarted = Date.now();
@@ -64,9 +65,24 @@ export const loader = async ({ request }) => {
     // dashboard: rate-limited per shop and it never throws.
     void reconcileScriptMetafield(session.shop);
     void maybeSweepStaleAuditStateForShop(session.shop);
+  }
+  let sc = store?.configs?.[0];
+  if (
+    hasActiveStore &&
+    sc &&
+    (sc.activeAuditJobId ||
+      (sc.auditRunning &&
+        !(sc.auditComplete || sc.auditFailed)))
+  ) {
+    await reconcileOrphanedStoreAuditState(session.shop).catch(() => undefined);
+    const refreshed = await prisma.store.findUnique({
+      where: { shopDomain: session.shop },
+      select: { configs: { select: STORE_CONFIG_SELECT } },
+    });
+    sc = refreshed?.configs?.[0] ?? sc;
+  } else if (hasActiveStore) {
     void reconcileOrphanedStoreAuditState(session.shop).catch(() => undefined);
   }
-  const sc = store?.configs?.[0];
   const selectedThemeId = sc?.selectedThemeId ?? null;
 
   // Always re-check the theme app embed (fast path included), in parallel with
@@ -317,10 +333,11 @@ let shopResult = { shopData: null, isNewStore: false };
     customPageUrls = readStringArray(sc.customPageUrls);
     const pageIndex = sc.auditPageIndex ?? 0;
     const totalPages = sc.auditTotalPages ?? 0;
+    const progress = auditProgressFlags(sc);
     auditStatus = {
-      running: sc.auditRunning,
-      complete: sc.auditComplete,
-      failed: sc.auditFailed,
+      running: progress.running,
+      complete: progress.complete,
+      failed: progress.failed,
       error: sc.auditError,
       pageIndex,
       totalPages,

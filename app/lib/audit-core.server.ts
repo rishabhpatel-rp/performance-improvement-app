@@ -1,15 +1,8 @@
 import {
   chromium,
   type Browser,
-  type BrowserContext,
   type Page,
 } from "playwright";
-import {
-  mergeSlugVariants,
-  pageMatchPatterns,
-  urlToCandidates,
-  type CoverageEntry,
-} from "./audit-candidates";
 import { normalizeCustomUrl } from "./page-urls.server";
 import type {
   AuditRunMeta,
@@ -17,14 +10,7 @@ import type {
   GateImpactEntry,
   LabVitalsEntry,
 } from "./audit-report-types";
-import { COLLECT_LAB_VITALS_JS } from "./audit-metrics.server";
-import { applyMobileLabThrottling } from "./audit-metrics.server";
 import type { AuditPageRole } from "./audit-template-buckets";
-
-/** A `Profiler.ScriptCoverage` record: `coverageVerdict` only needs
- *  `functions`, but callers also need the `url` to map the record back to
- *  candidate tokens. */
-type ScriptCoverageEntry = CoverageEntry & { url: string };
 
 /**
  * Only real network scripts are meaningful for deferral decisions.
@@ -195,16 +181,6 @@ interface CustomUrls {
 
 /** Hard cap on merchant-added extra pages (full headless load each). */
 const MAX_EXTRA_PAGES = 8;
-
-const STORE_KEY = "shopAuditState_v1";
-const P_KEY = "shopAuditP_v1";
-const VIS_KEY = "shopAuditVisible_v1";
-const OFF_KEY = "shopAuditOff_v1";
-/** Popup selectors recorded by the audit script's popup block (see POPUP_AUDIT_JS). */
-const POPUP_KEY = "shopAuditPopups_v1";
-/** Extra time a page is watched for popups that open on a timer / exit intent,
- *  after the interaction pass and before the audit script measures. */
-const POPUP_WATCH_MS = 3500;
 
 function chromiumExecutablePath(): string | undefined {
   const envPath = process.env.CHROMIUM_PATH;

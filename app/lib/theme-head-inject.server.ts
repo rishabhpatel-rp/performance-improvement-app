@@ -6,17 +6,13 @@
  * `pagepulse.theme_head_active` to true so the theme app embed does not double-run.
  */
 
-import fs from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { getSelectedThemeId, listThemes } from "./theme-embed.server.js";
 import {
   THEME_LAYOUT_FILENAME,
   THEME_SNIPPET_FILENAME,
   patchThemeLayoutHead,
 } from "./theme-head-patch.js";
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
+import { readExtensionInlineSnippetLiquid } from "./theme-head-inject-utils.js";
 
 const HEAD_INJECT_ENABLED =
   process.env.PAGEPULSE_THEME_HEAD_INJECT !== "false";
@@ -28,26 +24,30 @@ function formatGraphqlErrors(errors: unknown): string {
   return typeof errors === "string" ? errors : JSON.stringify(errors);
 }
 
-async function graphqlJson(admin: { graphql: Function }, query: string, variables?: object) {
+export interface GraphQLResponse<T = unknown> {
+  data?: T;
+  errors?: Array<{ message?: string; field?: string }>;
+}
+
+export type AdminGraphQL = {
+  graphql: (query: string, variables?: Record<string, unknown>) => Promise<{ json(): Promise<unknown> }>;
+};
+
+async function graphqlJson<T = unknown>(
+  admin: AdminGraphQL,
+  query: string,
+  variables?: object,
+): Promise<T | undefined> {
   const res = await admin.graphql(query, variables ? { variables } : undefined);
-  const json = await res.json();
+  const json = await res.json() as GraphQLResponse<T>;
   if (json.errors?.length || (json.errors && !json.data)) {
     throw new Error(formatGraphqlErrors(json.errors));
   }
   return json.data;
 }
 
-/** Liquid body copied into the merchant theme (same as the extension snippet). */
-export function readExtensionInlineSnippetLiquid(): string {
-  const snippetPath = path.join(
-    __dirname,
-    "../../extensions/script-injector/snippets/pagepulse-inline.liquid",
-  );
-  return fs.readFileSync(snippetPath, "utf8");
-}
-
 async function resolveThemeGid(
-  admin: { graphql: Function },
+  admin: AdminGraphQL,
   shopDomain: string,
 ): Promise<string | null> {
   const selected = await getSelectedThemeId(shopDomain);
@@ -58,11 +58,20 @@ async function resolveThemeGid(
 }
 
 async function readThemeFile(
-  admin: { graphql: Function },
+  admin: AdminGraphQL,
   themeId: string,
   filename: string,
 ): Promise<string | null> {
-  const data = await graphqlJson(
+  const data = await graphqlJson<{
+    theme?: {
+      files?: {
+        nodes?: Array<{
+          filename: string;
+          body?: { content?: string };
+        }>;
+      };
+    };
+  }>(
     admin,
     `#graphql
     query ThemeFile($id: ID!, $filenames: [String!]!) {
@@ -81,17 +90,22 @@ async function readThemeFile(
     }`,
     { id: themeId, filenames: [filename] },
   );
-  const node = data.theme?.files?.nodes?.[0];
+  const node = data?.theme?.files?.nodes?.[0];
   const content = node?.body?.content;
   return typeof content === "string" ? content : null;
 }
 
 async function upsertThemeFiles(
-  admin: { graphql: Function },
+  admin: AdminGraphQL,
   themeId: string,
   files: Array<{ filename: string; body: string }>,
 ): Promise<void> {
-  const data = await graphqlJson(
+  const data = await graphqlJson<{
+    themeFilesUpsert?: {
+      upsertedThemeFiles?: Array<{ filename: string }>;
+      userErrors?: Array<{ field: string; message: string }>;
+    };
+  }>(
     admin,
     `#graphql
     mutation ThemeFilesUpsert($themeId: ID!, $files: [OnlineStoreThemeFilesUpsertFileInput!]!) {
@@ -113,17 +127,19 @@ async function upsertThemeFiles(
       })),
     },
   );
-  const errors = data.themeFilesUpsert?.userErrors ?? [];
+  const errors = data?.themeFilesUpsert?.userErrors ?? [];
   if (errors.length) {
     throw new Error(errors.map((e: { message: string }) => e.message).join("; "));
   }
 }
 
 async function setThemeHeadActive(
-  admin: { graphql: Function },
+  admin: AdminGraphQL,
   active: boolean,
 ): Promise<void> {
-  const installData = await graphqlJson(
+  const installData = await graphqlJson<{
+    currentAppInstallation?: { id: string };
+  }>(
     admin,
     `#graphql
     query CurrentAppInstallation {
@@ -132,11 +148,15 @@ async function setThemeHeadActive(
       }
     }`,
   );
-  const ownerId = installData.currentAppInstallation?.id;
+  const ownerId = installData?.currentAppInstallation?.id;
   if (!ownerId) {
     throw new Error("currentAppInstallation not found");
   }
-  const data = await graphqlJson(
+  const data = await graphqlJson<{
+    metafieldsSet?: {
+      userErrors?: Array<{ field: string; message: string }>;
+    };
+  }>(
     admin,
     `#graphql
     mutation SetThemeHeadActive($metafields: [MetafieldsSetInput!]!) {
@@ -159,7 +179,7 @@ async function setThemeHeadActive(
       ],
     },
   );
-  const errors = data.metafieldsSet?.userErrors ?? [];
+  const errors = data?.metafieldsSet?.userErrors ?? [];
   if (errors.length) {
     throw new Error(errors.map((e: { message: string }) => e.message).join("; "));
   }
@@ -174,7 +194,7 @@ export type ThemeHeadInjectResult =
  * Ensure the inline script is rendered as the first content inside <head>.
  */
 export async function ensureThemeHeadInlineScript(
-  admin: { graphql: Function },
+  admin: AdminGraphQL,
   shopDomain: string,
 ): Promise<ThemeHeadInjectResult> {
   if (!HEAD_INJECT_ENABLED) {
@@ -224,9 +244,7 @@ export async function ensureThemeHeadInlineScript(
 /**
  * Re-enable the app embed delivery path (e.g. after uninstall cleanup).
  */
-export async function clearThemeHeadDelivery(admin: {
-  graphql: Function;
-}): Promise<void> {
+export async function clearThemeHeadDelivery(admin: AdminGraphQL): Promise<void> {
   try {
     await setThemeHeadActive(admin, false);
   } catch (err) {

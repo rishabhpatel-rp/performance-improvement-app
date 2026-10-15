@@ -177,6 +177,7 @@ export const STORE_CONFIG_SELECT = {
   cachedAppEndpoint: true,
   lastAuditAt: true,
   auditPhase: true,
+  activeAuditJobId: true,
 };
 
 export function emptyAuditStatus() {

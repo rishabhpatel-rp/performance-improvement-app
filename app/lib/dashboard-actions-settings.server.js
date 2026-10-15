@@ -4,40 +4,6 @@ import {
   normalizeCustomUrl,
   normalizeCustomUrlList,
 } from "./page-urls.server";
-import { rebuildPerformanceScript } from "./performance-script.server";
-import { getPasswordProtection } from "./password-protection.server";
-import {
-  isAppEmbedEnabled,
-  getAppEmbedDeepLink,
-  getSelectedThemeId,
-  listThemes,
-} from "./theme-embed.server";
-import { withShopifyTimeout, rethrowAuthRedirect } from "./shopify-timeout.server";
-import {
-  updateAuditArrays,
-  updateAuditFieldToggle,
-} from "./store-sync.server";
-import {
-  templateListFormKeys,
-  templateDelayFormKeys,
-  readBucketsFromRow,
-  auditDeferColumn,
-  auditHideColumn,
-  firstUserDelayColumn,
-  staticDeferColumn,
-  unionTemplateLists,
-} from "./template-script-config";
-import {
-  safeUpdateConfig,
-  safeSyncConfig,
-  safeLogActivity,
-  disableAppBecauseEmbedOff,
-} from "./dashboard-helpers.server.js";
-import { stopAuditForShop } from "./audit-watchdog.server";
-import {
-  applyScopedTokenAction,
-  storePatchFromTemplateLists,
-} from "./audit-script-actions";
 
 export async function handleSaveStorefrontPassword({ admin, session, formData }) {
 const storefrontPassword = (formData.get("storefrontPassword") || "").trim();

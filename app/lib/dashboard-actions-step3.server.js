@@ -1,18 +1,4 @@
 import prisma from "../db.server";
-import { startAuditForStore } from "./audit-runner.server";
-import {
-  normalizeCustomUrl,
-  normalizeCustomUrlList,
-} from "./page-urls.server";
-import { rebuildPerformanceScript } from "./performance-script.server";
-import { getPasswordProtection } from "./password-protection.server";
-import {
-  isAppEmbedEnabled,
-  getAppEmbedDeepLink,
-  getSelectedThemeId,
-  listThemes,
-} from "./theme-embed.server";
-import { withShopifyTimeout, rethrowAuthRedirect } from "./shopify-timeout.server";
 import {
   updateAuditArrays,
   updateAuditFieldToggle,
@@ -27,13 +13,7 @@ import {
   staticDeferColumn,
   unionTemplateLists,
 } from "./template-script-config";
-import {
-  safeUpdateConfig,
-  safeSyncConfig,
-  safeLogActivity,
-  disableAppBecauseEmbedOff,
-} from "./dashboard-helpers.server.js";
-import { stopAuditForShop } from "./audit-watchdog.server";
+import { safeLogActivity } from "./dashboard-helpers.server.js";
 import {
   applyScopedTokenAction,
   storePatchFromTemplateLists,

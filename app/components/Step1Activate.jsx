@@ -256,7 +256,18 @@ export default function Step1Activate({
   // control is the "Re-run audit" affordance and must stay available. Only an
   // in-flight run (or the app being off) disables it.
   const canRunAudit = appEnabled && !running && !auditStarting;
-  const auditStartError = auditFetcher.data?.ok === false ? auditFetcher.data.error : null;
+  const auditStartErrorRaw =
+    auditFetcher.data?.ok === false && auditFetcher.state === "idle"
+      ? auditFetcher.data.error
+      : null;
+  // Sticky fetcher errors survive revalidation; hide when the server says idle.
+  const auditStartError =
+    auditStartErrorRaw === "already_running" &&
+    !running &&
+    !auditStarting &&
+    auditStatus?.running !== true
+      ? null
+      : auditStartErrorRaw;
   const auditStartErrorText =
     auditStartError === "extension_required"
       ? "The theme app embed must be on before the audit can run."
@@ -286,8 +297,15 @@ export default function Step1Activate({
       ? 92
       : phase === "auditing"
         ? 10 + (totalPages > 0 ? (donePages / totalPages) * 75 : 0)
-        : 5;
+        : phase === "queued"
+          ? 2
+          : 5;
   const auditSteps = [
+    {
+      key: "queued",
+      label:
+        "Waiting — another store is scanning on this server (one audit at a time)",
+    },
     {
       key: "discovering",
       label:

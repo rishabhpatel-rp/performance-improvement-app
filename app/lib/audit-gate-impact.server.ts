@@ -10,7 +10,6 @@ export async function measureGateImpactOnHome(
   browser: Browser,
   homeUrl: string,
   password?: string,
-  deferTokens: string[] = [],
   hideSelectors: string[] = [],
   beforeVitals?: LabVitalsEntry,
 ): Promise<GateImpactEntry | null> {

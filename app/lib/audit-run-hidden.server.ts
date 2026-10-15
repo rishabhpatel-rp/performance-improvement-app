@@ -417,7 +417,6 @@ export async function runHiddenAudit({
         browser,
         homeUrl,
         password,
-        mergedDefer,
         emittedHideSelectors,
         labVitalsByPath[homePath],
       );

@@ -30,7 +30,8 @@ export function labVitalsToLighthouseView(
       tbtMs: undefined,
       speedIndexSec: undefined,
     },
-    note: "PagePulse lab audit (mobile profile)",
+    note:
+      "PagePulse lab metrics only — Performance / SEO rings and TBT / SI need PageSpeed Insights (runs after scan).",
   };
 }
 

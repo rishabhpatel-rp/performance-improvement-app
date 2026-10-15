@@ -28,6 +28,31 @@ export default function Step3AuditResults({
 
   const auditReportSummary = reportFetcher.data?.auditReportSummary ?? null;
 
+  const mobilePsi = auditReportSummary?.pageSpeedViews?.[0]?.mobile;
+  const psiPending = Boolean(
+    !passwordProtected &&
+      auditReportSummary?.pageSpeedViews?.length &&
+      !(mobilePsi?.source === "psi" && mobilePsi?.categories?.performance != null),
+  );
+
+  // Poll while Overview shows lab-only metrics. Depend on the boolean, not the
+  // summary object: each load replaces that object and was resetting the cap,
+  // so Step 3 refetched the report (and kicked another PSI job) forever.
+  useEffect(() => {
+    if (!psiPending) return;
+    let ticks = 0;
+    const timer = setInterval(() => {
+      ticks += 1;
+      if (ticks > 10) {
+        clearInterval(timer);
+        return;
+      }
+      reportFetcher.load(reportUrl);
+    }, 25_000);
+    return () => clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- poll until PSI scores land
+  }, [psiPending, reportUrl]);
+
   return (
     <s-section heading="Step 3: Audit results">
       {reportLoading && !auditReportSummary && (
