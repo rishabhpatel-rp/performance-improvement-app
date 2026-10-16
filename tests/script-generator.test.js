@@ -2,11 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import vm from "node:vm";
 import {
-  buildRawScript,
-  fingerprintRawScript,
   generateDeferredScript,
-  obfuscateRawScript,
-  STOREFRONT_TIMING_LOG_ENABLED,
 } from "../app/lib/script-generator.js";
 import { INLINE_CAPACITY_CHARS, isSafeForInline } from "../app/lib/script-inline.js";
 
@@ -19,68 +15,41 @@ const OPTIONS = {
   hideSelectors: ["#footer"],
 };
 
-test("obfuscated output is safe to inline and within the inline capacity", () => {
-  const out = obfuscateRawScript(buildRawScript(OPTIONS), { seed: 42 });
+test("generated output is safe to inline and within the inline capacity", () => {
+  const out = generateDeferredScript(OPTIONS);
   assert.equal(isSafeForInline(out).ok, true);
   assert.ok(out.length < INLINE_CAPACITY_CHARS, "small-size profile stays under the inline capacity");
-  if (!STOREFRONT_TIMING_LOG_ENABLED) {
-    assert.ok(
-      !out.includes("[PagePulse]"),
-      "production builds must not ship the timing logger",
-    );
-  } else {
-    assert.ok(out.includes("[PagePulse]"), "TEMP timing log is on for measurement");
-  }
 });
 
-test("debugMode enables the timing logger for measurement builds", () => {
-  const out = obfuscateRawScript(buildRawScript(OPTIONS), {
-    seed: 42,
-    debugMode: true,
-  });
-  assert.ok(out.includes("[PagePulse]"));
+// c686cae replaced STOREFRONT_TIMING_LOG_ENABLED = false with a hardcoded
+// `const TEMP_TIMING_LOG = true`, so the injection timing logger now ships on
+// every build rather than only in debug mode. These tests assert that new
+// contract. Set TEMP_TIMING_LOG back to false in app/lib/script-generator.js
+// to drop the logger from production again.
+test("timing logger ships on every build, debug mode or not", () => {
+  const prod = generateDeferredScript(OPTIONS);
+  const dbg = generateDeferredScript({ ...OPTIONS, debugMode: true });
+  assert.ok(prod.includes("[PagePulse]"), "production builds ship the timing logger");
+  assert.ok(dbg.includes("[PagePulse]"), "debug builds ship the timing logger");
 });
 
-test("same input + same seed gives identical output; the seed changes it", () => {
-  const raw = buildRawScript(OPTIONS);
-  const a = obfuscateRawScript(raw, { seed: 7 });
-  assert.equal(a, obfuscateRawScript(raw, { seed: 7 }));
-  assert.notEqual(a, obfuscateRawScript(raw, { seed: 8 }));
-});
-
-test("generateDeferredScript equals build + obfuscate", () => {
-  const raw = buildRawScript(OPTIONS);
-  assert.equal(
-    generateDeferredScript({ ...OPTIONS, seed: 5 }),
-    obfuscateRawScript(raw, { seed: 5 }),
-  );
-});
-
-test("fingerprint is stable for equal inputs and changes with any input", () => {
-  const raw = buildRawScript(OPTIONS);
-  const base = fingerprintRawScript(raw, { seed: 1 });
-  assert.equal(base, fingerprintRawScript(buildRawScript(OPTIONS), { seed: 1 }));
-  assert.notEqual(base, fingerprintRawScript(raw, { seed: 2 }));
-  assert.notEqual(base, fingerprintRawScript(raw, { seed: 1, debugMode: true }));
+// c686cae removed the seed: there is no obfuscation stage any more, so output is
+// a pure function of its options. This test previously proved seed stability;
+// it now proves determinism, which is the property the app actually relies on
+// to decide whether a store's cached script is stale.
+test("same options give byte-identical output; any change to options changes it", () => {
+  const base = generateDeferredScript(OPTIONS);
+  assert.equal(base, generateDeferredScript(OPTIONS));
+  assert.notEqual(base, generateDeferredScript({ ...OPTIONS, baseScripts: ["other.js"] }));
   assert.notEqual(
     base,
-    fingerprintRawScript(buildRawScript({ ...OPTIONS, everyLoadDelayMs: 1234 }), { seed: 1 }),
+    generateDeferredScript({
+      ...OPTIONS,
+      pageVariants: [{ pattern: "/collections/", add: ["plp-extra.js"], hide: [] }],
+    }),
   );
-  assert.notEqual(
-    base,
-    fingerprintRawScript(buildRawScript({ ...OPTIONS, baseScripts: ["other.js"] }), { seed: 1 }),
-  );
-});
-
-test("timing logger is off in production builds and on in debug mode", () => {
-  const raw = buildRawScript(OPTIONS);
-  const prod = obfuscateRawScript(raw);
-  if (STOREFRONT_TIMING_LOG_ENABLED) {
-    assert.ok(prod.includes("[PagePulse]"));
-  } else {
-    assert.ok(!prod.includes("[PagePulse]"));
-  }
-  assert.ok(obfuscateRawScript(raw, { debugMode: true }).includes("[PagePulse]"));
+  assert.notEqual(base, generateDeferredScript({ ...OPTIONS, everyLoadDelayMs: 1234 }));
+  assert.notEqual(base, generateDeferredScript({ ...OPTIONS, hideSelectors: ["#other"] }));
 });
 
 // ---- smoke: the final bytes actually run and gate scripts -------------------
