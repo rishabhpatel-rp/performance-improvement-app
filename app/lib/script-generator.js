@@ -85,6 +85,20 @@ export function generateDeferredScript({
   firstVisitDelayMs = 12000,
   everyLoadDelayMs = 6000,
   hideSelectors = [],
+  // Obfuscator seed. c686cae dropped the seeded `obfuscateRawScript()` API and
+  // this left `generateDeferredScript()` non-deterministic: javascript-obfuscator
+  // picks fresh hexadecimal identifiers per call, so two runs over identical
+  // options produced different bytes (22857 vs 23052). That matters because
+  // rebuildPerformanceScript() hashes the output into `scriptHash`
+  // (performance-script.server.ts) and planMetafieldSync() compares that against
+  // the stored metafield hash to decide whether to rewrite the shop metafield.
+  // Non-deterministic output therefore rewrote the metafield and changed the
+  // storefront script bytes on every rebuild, busting the merchant's browser
+  // cache for no reason. `seed` is the obfuscator's own determinism switch; any
+  // stable non-zero value works, and identical options give byte-identical
+  // output. It must not be 0 — javascript-obfuscator treats 0 as "unset" and
+  // falls back to a random seed, which is the bug this option exists to close.
+  seed = 1,
   // Mirrors the Settings "Debug mode" toggle ("Adds console logging to
   // injected scripts"). Previously the flag was stored in the metaobject and
   // StoreConfig but never reached this function, so the toggle did nothing.
@@ -421,6 +435,12 @@ export function generateDeferredScript({
           )
         : null;
 
+      // No first-visit scripts configured: return before overriding
+      // HTMLScriptElement.prototype.src, registering nine interaction listeners
+      // and arming a ${firstVisitDelayMs}ms timer. Without this guard every page
+      // load paid that cost to delay nothing.
+      if (!fudRe) return;
+
       var hold = [];
       var released = false;
       var srcDesc = Object.getOwnPropertyDescriptor(
@@ -520,6 +540,10 @@ export function generateDeferredScript({
           )
         : null;
 
+      // Same guard as the first-visit block above: no every-load scripts means
+      // no src/setAttribute overrides, no listeners and no release timer.
+      if (!etRe) return;
+
       var heldET = [];
       var etReleased = false;
 
@@ -598,6 +622,10 @@ export function generateDeferredScript({
     identifierNamesGenerator: "hexadecimal",
     renameGlobals: false,
     selfDefending: false,
+    // javascript-obfuscator >=5 takes a top-level numeric `seed` that makes the
+    // whole run deterministic (verified against 5.7.0: without it, two calls
+    // over identical source emit different hexadecimal identifiers).
+    seed,
     stringArray: true,
     stringArrayEncoding: ["base64"],
     stringArrayThreshold: 0.75,

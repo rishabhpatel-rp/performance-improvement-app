@@ -98,8 +98,17 @@ async function audit(path, { exitIntent = false } = {}) {
 const visible = (page, sel) =>
   page.evaluate((s) => !!document.querySelector(s)?.getClientRects().length, sel);
 
+// c686cae removed the popup audit block from AUDIT_SCRIPT: the POPUP_AUDIT_JS
+// import, the ${POPUP_AUDIT_JS} interpolation, popStart/popPersist/popScan/
+// popFlush/popupSafeOnPage and the popup lines in outputFinal() are all gone.
+// The storefront therefore scans scripts only. These three assertions describe
+// detection and hide-CSS behaviour that no longer exists, so they are skipped
+// rather than deleted — re-enable them if the popup block comes back.
+const POPUP_SCAN_REMOVED = "popup detection removed from AUDIT_SCRIPT in c686cae";
+
 test("finds popups that are open, timed, already closed, native <dialog>, or exit-intent", async (t) => {
   if (skipReason) return t.skip(skipReason);
+  if (POPUP_SCAN_REMOVED) return t.skip(POPUP_SCAN_REMOVED);
   const { ctx, popups } = await audit("/popups", { exitIntent: true });
   for (const want of [".cc-banner", "#promo-dialog", "#quickview-modal", ".newsletter-popup", ".xyz-box", ".exit-offer-modal"]) {
     assert.ok(popups.includes(want), `missing ${want}; got ${JSON.stringify(popups)}`);
@@ -119,6 +128,7 @@ test("never flags ordinary fixed UI: header, sticky add-to-cart, chat launcher, 
 
 test("hide CSS removes every popup until interaction and nothing else; they return afterwards", async (t) => {
   if (skipReason) return t.skip(skipReason);
+  if (POPUP_SCAN_REMOVED) return t.skip(POPUP_SCAN_REMOVED);
   const { ctx, page, popups } = await audit("/popups", { exitIntent: true });
   await page.evaluate((sels) => {
     const st = document.createElement("style");
@@ -138,6 +148,7 @@ test("hide CSS removes every popup until interaction and nothing else; they retu
 
 test("a popup selector that matches ordinary content on another page is rejected", async (t) => {
   if (skipReason) return t.skip(skipReason);
+  if (POPUP_SCAN_REMOVED) return t.skip(POPUP_SCAN_REMOVED);
   const a = await audit("/popups");
   assert.ok(a.popups.includes(".newsletter-popup"));
   const b = await audit("/static");

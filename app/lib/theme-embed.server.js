@@ -198,3 +198,36 @@ export function embedEnabledInSettings(content, handle = APP_EMBED_HANDLE) {
   if (disabled && disabled[1] === "true") return false;
   return true;
 }
+
+const EMBED_STATUS_CACHE_MS = 3 * 60 * 1000;
+/** @type {Map<string, { value: boolean | null, at: number }>} */
+const embedStatusCache = new Map();
+
+/**
+ * Cached embed check per shop + theme (avoids settings_data.json on every dashboard load).
+ * @param {any} admin
+ * @param {string} shopDomain
+ * @param {string | null} [themeId]
+ * @param {{ force?: boolean }} [options]
+ */
+export async function resolveAppEmbedEnabled(
+  admin,
+  shopDomain,
+  themeId = null,
+  { force = false } = {},
+) {
+  const key = `${shopDomain}:${themeId || "main"}`;
+  const hit = embedStatusCache.get(key);
+  if (!force && hit && Date.now() - hit.at < EMBED_STATUS_CACHE_MS) {
+    return hit.value;
+  }
+  const value = await isAppEmbedEnabled(admin, APP_EMBED_HANDLE, themeId);
+  embedStatusCache.set(key, { value, at: Date.now() });
+  return value;
+}
+
+export function clearEmbedStatusCacheForShop(shopDomain) {
+  for (const key of embedStatusCache.keys()) {
+    if (key.startsWith(`${shopDomain}:`)) embedStatusCache.delete(key);
+  }
+}
