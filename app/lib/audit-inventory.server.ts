@@ -15,6 +15,7 @@ type ResourceRow = {
   url: string;
   transferSize?: number;
   encodedBodySize?: number;
+  decodedBodySize?: number;
   duration?: number;
   pathname: string;
   requestOrder?: number;
@@ -27,7 +28,16 @@ function isHomePath(pathname: string) {
 
 function tokensFromUrl(rawUrl: string, pageUrl: string): string[] {
   const b = urlToCandidates(rawUrl, pageUrl);
-  return [...new Set([...b.kept, ...b.neverDefer])];
+  return [...new Set([...b.kept, ...b.neverDefer, ...b.noise, ...b.self])];
+}
+
+function hostOf(rawUrl: string): string | undefined {
+  try {
+    const host = new URL(rawUrl).hostname;
+    return host || undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function applyResourceToEntry(
@@ -36,17 +46,33 @@ function applyResourceToEntry(
   pathname: string,
 ) {
   if (!entry.pages.includes(pathname)) entry.pages.push(pathname);
-  const bytes = row.transferSize ?? row.encodedBodySize ?? 0;
-  entry.bytes = Math.max(entry.bytes ?? 0, bytes);
-  entry.encodedBytes = Math.max(entry.encodedBytes ?? 0, row.encodedBodySize ?? 0);
-  entry.durationMs = Math.max(entry.durationMs ?? 0, row.duration ?? 0);
-  if (isHomePath(pathname) && row.requestOrder != null) {
-    if (
-      entry.homeRequestOrder == null ||
-      row.requestOrder < entry.homeRequestOrder
-    ) {
+  const sizes = [row.transferSize, row.encodedBodySize, row.decodedBodySize];
+  const rawBytes = sizes.reduce(
+    (max, n) => (typeof n === "number" && n > max ? n : max),
+    0,
+  );
+  if (rawBytes > 0) entry.bytes = Math.max(entry.bytes ?? 0, rawBytes);
+  if (typeof row.encodedBodySize === "number" && row.encodedBodySize > 0) {
+    entry.encodedBytes = Math.max(entry.encodedBytes ?? 0, row.encodedBodySize);
+  }
+  if (typeof row.duration === "number" && row.duration > 0) {
+    entry.durationMs = Math.max(entry.durationMs ?? 0, row.duration);
+  }
+  const host = hostOf(row.url);
+  if (host && !entry.domain) entry.domain = host;
+  if (row.requestOrder != null) {
+    const onHome = isHomePath(pathname);
+    if (onHome) {
+      if (
+        entry.homeRequestOrder == null ||
+        row.requestOrder < entry.homeRequestOrder
+      ) {
+        entry.homeRequestOrder = row.requestOrder;
+        if (row.startTime != null) entry.homeStartMs = row.startTime;
+      }
+    } else if (entry.homeRequestOrder == null) {
       entry.homeRequestOrder = row.requestOrder;
-      entry.homeStartMs = row.startTime;
+      if (row.startTime != null) entry.homeStartMs = row.startTime;
     }
   }
 }

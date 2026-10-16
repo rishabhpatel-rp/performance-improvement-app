@@ -1,7 +1,6 @@
 import { authenticate } from "../shopify.server";
 import prisma from "../db.server";
 import { readAuditPages } from "../lib/store-sync.server";
-import { auditProgressFlags } from "../lib/audit-lifecycle.ts";
 
 export async function loader({ request }) {
   const { session } = await authenticate.admin(request);
@@ -18,11 +17,10 @@ export async function loader({ request }) {
   const progress =
     totalPages > 0 ? Math.round((pageIndex / totalPages) * 100) : 0;
 
-  const flags = auditProgressFlags(config);
   return {
-    running: flags.running,
-    complete: flags.complete,
-    failed: flags.failed,
+    running: config?.auditRunning ?? false,
+    complete: config?.auditComplete ?? false,
+    failed: config?.auditFailed ?? false,
     error: config?.auditError ?? null,
     pageIndex,
     totalPages,

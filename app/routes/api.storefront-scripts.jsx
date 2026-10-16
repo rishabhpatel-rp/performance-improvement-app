@@ -13,12 +13,6 @@ import {
 // The script is obfuscated once, when its inputs change
 // (rebuildPerformanceScript), and stored in PerformanceScript.deferScript.
 // This route only reads it, so it must stay cheap: it blocks HTML parsing.
-//
-// FALLBACK PATH: the primary delivery is now INLINE. rebuildPerformanceScript
-// mirrors the same stored string into an app-owned shop metafield, and the theme
-// app embed renders it directly in <head> (no request at all). This route is only
-// hit when that metafield is blank: app off, script over the inline size cap,
-// not synced yet, or cleared for rollback. Keep it working and unchanged.
 
 const OFF_SCRIPT = "/* pp:off */";
 
@@ -101,24 +95,10 @@ export const loader = async ({ request }) => {
     // canonicalised differently, no configured secret) falls through to the
     // authenticated path, which is slower but authoritative. A canonicalisation
     // change at Shopify can therefore cost latency, never correctness.
-    let shopDomain = verifyAppProxyShop(
-      request,
+    const shopDomain =
       // eslint-disable-next-line no-undef
-      process.env.SHOPIFY_API_SECRET,
-    );
-    if (!shopDomain) {
-      try {
-        shopDomain = resolveVerifiedProxyShop(
-          await authenticate.public.appProxy(request),
-        );
-      } catch (error) {
-        // The library throws a bare 400 Response when the App Proxy HMAC is
-        // missing or invalid. That is an UNVERIFIED request, not a server
-        // failure: it gets the no-op script below, exactly like a declined
-        // fast path. Any other failure still surfaces as pp:error above.
-        if (!(error instanceof Response && error.status === 400)) throw error;
-      }
-    }
+      verifyAppProxyShop(request, process.env.SHOPIFY_API_SECRET) ??
+      resolveVerifiedProxyShop(await authenticate.public.appProxy(request));
 
     // SECURITY: never fall back to an unsigned `shop` query param.
     // `shop` is only trusted once the App Proxy signature over it has been

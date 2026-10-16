@@ -6,14 +6,6 @@ import {
 
 import type { AuditPageInfo } from "./audit.server";
 
-export {
-  saveAuditReport,
-  updateAuditArrays,
-  updateAuditFieldToggle,
-  type AuditReport,
-  type AuditArrayPatch,
-} from "./store-sync-audit.server";
-
 export { readStringArray };
 
 /**
@@ -424,3 +416,366 @@ export async function logActivity(
   });
 }
 
+// ============================================================
+// FUNCTION 7: Get a store with all relations
+// ============================================================
+
+export async function getStoreWithDetails(shopDomain: string) {
+  return prisma.store.findUnique({
+    where: { shopDomain },
+    include: {
+      configs: true,
+      activities: {
+        orderBy: { createdAt: "desc" },
+        take: 100,
+      },
+    },
+  });
+}
+
+// ============================================================
+// FUNCTION 8: Get all stores (for admin panel list)
+// ============================================================
+
+export async function getAllStores(options?: {
+  isActive?: boolean;
+  search?: string;
+  limit?: number;
+  offset?: number;
+}) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const where: any = {};
+
+  if (options?.isActive !== undefined) {
+    where.isActive = options.isActive;
+  }
+
+  if (options?.search) {
+    where.OR = [
+      { shopName: { contains: options.search, mode: "insensitive" } },
+      { shopDomain: { contains: options.search, mode: "insensitive" } },
+      { email: { contains: options.search, mode: "insensitive" } },
+    ];
+  }
+
+  const [stores, total] = await Promise.all([
+    prisma.store.findMany({
+      where,
+      include: { configs: true },
+      orderBy: { installedAt: "desc" },
+      take: options?.limit || 50,
+      skip: options?.offset || 0,
+    }),
+    prisma.store.count({ where }),
+  ]);
+
+  return { stores, total };
+}
+
+// ============================================================
+// FUNCTION 9: Get dashboard stats
+// ============================================================
+
+export async function getDashboardStats() {
+  const [totalStores, activeStores, inactiveStores, recentInstalls, recentActivity] =
+    await Promise.all([
+      prisma.store.count(),
+      prisma.store.count({ where: { isActive: true } }),
+      prisma.store.count({ where: { isActive: false } }),
+      prisma.store.findMany({
+        orderBy: { installedAt: "desc" },
+        take: 10,
+        select: {
+          id: true,
+          shopName: true,
+          shopDomain: true,
+          installedAt: true,
+          isActive: true,
+        },
+      }),
+      prisma.storeActivity.findMany({
+        orderBy: { createdAt: "desc" },
+        take: 20,
+        include: {
+          store: {
+            select: { shopName: true, shopDomain: true },
+          },
+        },
+      }),
+    ]);
+
+  return {
+    totalStores,
+    activeStores,
+    inactiveStores,
+    recentInstalls,
+    recentActivity,
+  };
+}
+
+// ============================================================
+// FUNCTION 10: Save a completed audit report + audit-log trail
+// ============================================================
+
+export interface AuditReport {
+  deferArray: string[];
+  hideSelectors: string[];
+  pagesAudited: string[];
+  completedAt: string;
+}
+
+export async function saveAuditReport(
+  shopDomain: string,
+  report: AuditReport,
+  status = "completed",
+  details?: string,
+) {
+  const store = await prisma.store.findUnique({
+    where: { shopDomain },
+  });
+
+  if (!store) {
+    console.warn(`[saveAuditReport] No store found for ${shopDomain}. Skipped.`);
+    return null;
+  }
+
+  const completed = status === "completed";
+
+  const current = await prisma.storeConfig.findUnique({
+    where: { storeId: store.id },
+  });
+  const deferOn = current?.auditDeferArrayEnabled ?? true;
+  const hideOn = current?.auditHideSelectorsEnabled ?? true;
+  const activeDefer = deferOn ? report.deferArray : [];
+  const activeHide = hideOn ? report.hideSelectors : [];
+
+  // On success the audit stays "running" here: the flag flips to complete only
+  // after the storefront script has been rebuilt and stored (below), so the
+  // dashboard never reaches Step 2 before the script exists.
+  const runState = completed
+    ? {
+        auditComplete: false,
+        auditRunning: true,
+        auditFailed: false,
+        auditError: null,
+      }
+    : {
+        auditComplete: false,
+        auditRunning: false,
+        auditFailed: true,
+        auditError: details ?? null,
+      };
+
+  await prisma.storeConfig.upsert({
+    where: { storeId: store.id },
+    create: {
+      storeId: store.id,
+      appEnabled: false,
+      script1Enabled: false,
+      script2Enabled: false,
+      script3Enabled: false,
+      debugMode: false,
+      scriptTitles: [],
+      ...runState,
+      lastAuditAt: new Date(),
+      auditDeferArray: activeDefer,
+      auditHideSelectors: activeHide,
+      auditDeferArrayPreserved: deferOn ? [] : report.deferArray,
+      auditHideSelectorsPreserved: hideOn ? [] : report.hideSelectors,
+      staticDeferDefaults: DEFAULT_STATIC_DEFER,
+    },
+    update: {
+      ...runState,
+      lastAuditAt: new Date(),
+      auditDeferArray: activeDefer,
+      auditHideSelectors: activeHide,
+      auditDeferArrayPreserved: deferOn ? undefined : report.deferArray,
+      auditHideSelectorsPreserved: hideOn ? undefined : report.hideSelectors,
+    },
+  });
+
+  await prisma.auditLog.create({
+    data: {
+      domain: shopDomain,
+      audit_type: "auto-audit",
+      audit_data: report,
+      status,
+      details,
+    },
+  });
+
+  await rebuildPerformanceScript(shopDomain);
+
+  if (completed) {
+    await prisma.storeConfig.update({
+      where: { storeId: store.id },
+      data: { auditComplete: true, auditRunning: false, auditPhase: null },
+    });
+  }
+
+  return { ok: true };
+}
+
+export interface AuditArrayPatch {
+  auditDeferArray?: string[];
+  auditHideSelectors?: string[];
+  staticDeferDefaults?: string[];
+  firstUserDelayScripts?: string[];
+  firstUserDelayMs?: number;
+  everyTimeDelayMs?: number;
+}
+
+/**
+ * DB-only writer for the three Step-3 audit/static arrays. This deliberately
+ * bypasses the metaobject — these fields are DB-authoritative. Only the keys
+ * actually provided are written (omitted keys keep their existing DB value),
+ * so a single-field Save never clobbers the others. Creates the StoreConfig
+ * row if missing, seeding the static defaults.
+ */
+export async function updateAuditArrays(
+  shopDomain: string,
+  patch: AuditArrayPatch,
+) {
+  const store = await prisma.store.findUnique({
+    where: { shopDomain },
+  });
+  if (!store) {
+    console.warn(
+      `[updateAuditArrays] No store found for ${shopDomain}. Skipped.`,
+    );
+    return null;
+  }
+
+  const createData: AuditArrayPatch &
+    Pick<AuditArrayPatch, "staticDeferDefaults"> = {
+    auditDeferArray: patch.auditDeferArray ?? [],
+    auditHideSelectors: patch.auditHideSelectors ?? [],
+    staticDeferDefaults: patch.staticDeferDefaults ?? DEFAULT_STATIC_DEFER,
+    firstUserDelayScripts: patch.firstUserDelayScripts ?? ["wpm","gtm"],
+    firstUserDelayMs: patch.firstUserDelayMs ?? 12000,
+    everyTimeDelayMs: patch.everyTimeDelayMs ?? 6000,
+  };
+
+  const result = await prisma.storeConfig.upsert({
+    where: { storeId: store.id },
+    create: {
+      storeId: store.id,
+      appEnabled: false,
+      script1Enabled: false,
+      script2Enabled: false,
+      script3Enabled: false,
+      debugMode: false,
+      scriptTitles: [],
+      ...createData,
+    },
+    update: {
+      ...(patch.auditDeferArray !== undefined
+        ? { auditDeferArray: patch.auditDeferArray }
+        : {}),
+      ...(patch.auditHideSelectors !== undefined
+        ? { auditHideSelectors: patch.auditHideSelectors }
+        : {}),
+      ...(patch.staticDeferDefaults !== undefined
+        ? { staticDeferDefaults: patch.staticDeferDefaults }
+        : {}),
+      ...(patch.firstUserDelayScripts !== undefined
+        ? { firstUserDelayScripts: patch.firstUserDelayScripts }
+        : {}),
+      ...(patch.firstUserDelayMs !== undefined
+        ? { firstUserDelayMs: patch.firstUserDelayMs }
+        : {}),
+      ...(patch.everyTimeDelayMs !== undefined
+        ? { everyTimeDelayMs: patch.everyTimeDelayMs }
+        : {}),
+    },
+  });
+
+  await rebuildPerformanceScript(shopDomain);
+  return result;
+}
+
+type AuditField = "auditDeferArray" | "auditHideSelectors" | "staticDeferDefaults" | "firstUserDelayScripts";
+
+const TOGGLE_FIELD_MAP: Record<
+  AuditField,
+  {
+    enabledKey: "auditDeferArrayEnabled" | "auditHideSelectorsEnabled" | "staticDeferDefaultsEnabled" | "firstUserDelayScriptsEnabled";
+    preservedKey: "auditDeferArrayPreserved" | "auditHideSelectorsPreserved" | "staticDeferDefaultsPreserved" | "firstUserDelayScriptsPreserved";
+  }
+> = {
+  auditDeferArray: {
+    enabledKey: "auditDeferArrayEnabled",
+    preservedKey: "auditDeferArrayPreserved",
+  },
+  auditHideSelectors: {
+    enabledKey: "auditHideSelectorsEnabled",
+    preservedKey: "auditHideSelectorsPreserved",
+  },
+  staticDeferDefaults: {
+    enabledKey: "staticDeferDefaultsEnabled",
+    preservedKey: "staticDeferDefaultsPreserved",
+  },
+  firstUserDelayScripts: {
+    enabledKey: "firstUserDelayScriptsEnabled",
+    preservedKey: "firstUserDelayScriptsPreserved",
+  },
+};
+
+/**
+ * Toggle a Step-3 audit field ON/OFF, preserving its data.
+ *
+ * - OFF: the current active value is snapshotted into the preserved column
+ *        and the active column becomes `[]` (storefront receives nothing).
+ * - ON:  the preserved value (if any) is restored into the active column.
+ * Data is never deleted — it moves between the active and preserved columns.
+ * DB-only; the metaobject is NOT touched.
+ */
+export async function updateAuditFieldToggle(
+  shopDomain: string,
+  field: AuditField,
+  enabled: boolean,
+) {
+  const store = await prisma.store.findUnique({ where: { shopDomain } });
+  if (!store) return null;
+
+  const current = await prisma.storeConfig.findUnique({
+    where: { storeId: store.id },
+  });
+
+  const { enabledKey, preservedKey } = TOGGLE_FIELD_MAP[field];
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const active = readStringArray(current ? (current as any)[field] : undefined);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const preserved = readStringArray(current ? (current as any)[preservedKey] : undefined);
+
+  const nextActive = enabled ? (preserved.length > 0 ? preserved : active) : [];
+  const nextPreserved = enabled ? preserved : active;
+
+  const seed = {
+    storeId: store.id,
+    appEnabled: false,
+    script1Enabled: false,
+    script2Enabled: false,
+    script3Enabled: false,
+    debugMode: false,
+    scriptTitles: [],
+  } as const;
+
+  const result = await prisma.storeConfig.upsert({
+    where: { storeId: store.id },
+    create: {
+      ...seed,
+      [field]: nextActive,
+      [enabledKey]: enabled,
+      [preservedKey]: nextPreserved,
+    },
+    update: {
+      [field]: nextActive,
+      [enabledKey]: enabled,
+      [preservedKey]: nextPreserved,
+    },
+  });
+
+  await rebuildPerformanceScript(shopDomain);
+  return result;
+}

@@ -5,9 +5,6 @@ import {
   inferScriptActionFromLists,
   scriptListStateForScope,
 } from "../lib/audit-script-actions";
-import PpPillButton from "./PpPillButton";
-
-const MAIN_TABS = ["Overview", "Scripts"];
 
 const SCRIPT_ACTION_OPTIONS = [
   { value: "defer", label: "Defer until interaction" },
@@ -18,15 +15,23 @@ const SCRIPT_ACTION_OPTIONS = [
 
 const SCRIPT_TABLE_COLUMNS = [
   { id: "name", label: "Name" },
+  { id: "domain", label: "Domain" },
   { id: "type", label: "Type" },
   { id: "req", label: "Req #" },
   { id: "timeline", label: "Timeline" },
   { id: "size", label: "Size" },
   { id: "time", label: "Time" },
-  { id: "pages", label: "Pages" },
   { id: "status", label: "Status" },
   { id: "action", label: "Action" },
 ];
+
+function formatScriptSize(row) {
+  const bytes = row.bytes > 0 ? row.bytes : row.kb > 0 ? row.kb * 1024 : 0;
+  if (!bytes) return "—";
+  if (bytes < 1024) return `${bytes} B`;
+  const kb = bytes / 1024;
+  return kb >= 100 ? `${Math.round(kb)} kB` : `${kb.toFixed(1)} kB`;
+}
 
 function scriptActionSelectValue(row, lists) {
   const inferred = inferScriptActionFromLists(lists, row.token, row.status);
@@ -46,6 +51,10 @@ function compareScriptRows(a, b, colId, lists) {
       va = str(a.token);
       vb = str(b.token);
       break;
+    case "domain":
+      va = str(a.domain);
+      vb = str(b.domain);
+      break;
     case "type":
       va = "script";
       vb = "script";
@@ -59,16 +68,12 @@ function compareScriptRows(a, b, colId, lists) {
       vb = num(b.homeStartMs);
       break;
     case "size":
-      va = num(a.kb);
-      vb = num(b.kb);
+      va = num(a.bytes > 0 ? a.bytes : a.kb);
+      vb = num(b.bytes > 0 ? b.bytes : b.kb);
       break;
     case "time":
       va = num(a.durationMs);
       vb = num(b.durationMs);
-      break;
-    case "pages":
-      va = str(a.pages?.join(", "));
-      vb = str(b.pages?.join(", "));
       break;
     case "status":
       va = str(a.status);
@@ -354,24 +359,12 @@ export default function AuditReportPanel({
   summary,
   auditStatus,
   appEnabled,
-  passwordProtected = false,
   templateConfig = null,
 }) {
   const actionFetcher = useFetcher();
   const revalidator = useRevalidator();
-  const [tab, setTab] = useState(passwordProtected ? "Scripts" : "Overview");
-  const [pageIndex, setPageIndex] = useState(0);
-  const [device, setDevice] = useState("mobile");
   const [pendingToken, setPendingToken] = useState(null);
   const [scriptSort, setScriptSort] = useState({ col: "size", dir: "desc" });
-  const [scriptScope, setScriptScope] = useState("global");
-
-  const SCRIPT_SCOPE_TABS = [
-    { id: "global", label: "Global" },
-    { id: "home", label: "Home" },
-    { id: "collection", label: "Collection" },
-    { id: "product", label: "Product" },
-  ];
 
   useEffect(() => {
     if (actionFetcher.state === "idle" && actionFetcher.data?.ok) {
@@ -380,50 +373,26 @@ export default function AuditReportPanel({
     }
   }, [actionFetcher.state, actionFetcher.data, revalidator]);
 
-  useEffect(() => {
-    if (passwordProtected) setTab("Scripts");
-  }, [passwordProtected]);
-
-  const visibleTabs = passwordProtected ? ["Scripts"] : MAIN_TABS;
-
-  const pageViews = summary?.pageSpeedViews?.length
-    ? summary.pageSpeedViews
-    : (summary?.pages ?? []).map((p) => ({ label: p.label, path: p.path }));
-
-  const activePage = pageViews[pageIndex] ?? pageViews[0];
-  const lhView =
-    device === "mobile" ? activePage?.mobile : activePage?.desktop ?? activePage?.mobile;
-
   const scriptLists = useMemo(
-    () => scriptListStateForScope(templateConfig, scriptScope),
-    [templateConfig, scriptScope],
+    () => scriptListStateForScope(templateConfig, "global"),
+    [templateConfig],
   );
 
   const sortedScripts = useMemo(() => {
-    const roles = summary?.pageRoles || {};
-    const pathsForRole = (role) =>
-      Object.entries(roles)
-        .filter(([, r]) => r === role)
-        .map(([p]) => p);
-
-    let rows = [...(summary?.topScripts || [])];
-    if (scriptScope !== "global") {
-      const rolePaths = new Set(pathsForRole(scriptScope));
-      rows = rows.filter((r) => r.pages?.some((p) => rolePaths.has(p)));
-    }
+    const rows = [...(summary?.topScripts || [])];
     const { col, dir } = scriptSort;
     rows.sort((a, b) => {
       const c = compareScriptRows(a, b, col, scriptLists);
       return dir === "asc" ? c : -c;
     });
     return rows;
-  }, [summary?.topScripts, summary?.pageRoles, scriptSort, scriptLists, scriptScope]);
+  }, [summary?.topScripts, scriptSort, scriptLists]);
 
   const toggleScriptSort = (colId) => {
     setScriptSort((prev) =>
       prev.col === colId
         ? { col: colId, dir: prev.dir === "asc" ? "desc" : "asc" }
-        : { col: colId, dir: colId === "name" || colId === "pages" || colId === "status" ? "asc" : "desc" },
+        : { col: colId, dir: colId === "name" || colId === "domain" || colId === "status" ? "asc" : "desc" },
     );
   };
 
@@ -450,7 +419,7 @@ export default function AuditReportPanel({
   const { foldAssertionOk, foldViolations } = summary;
 
   return (
-    <div style={{ marginBottom: 24, maxWidth: 960, margin: "0 auto 24px" }}>
+    <div style={{ marginBottom: 24, maxWidth: 960, margin: "30px auto 24px" }}>
       <div style={{ marginBottom: 16, textAlign: "center" }}>
         <div style={{ fontSize: 17, fontWeight: 700, color: "#111827" }}>Scan summary</div>
         <div style={{ fontSize: 13, color: "#6B7177", marginTop: 6 }}>
@@ -461,7 +430,7 @@ export default function AuditReportPanel({
 
       {summary.staleScanWarning && (
         <s-banner tone="warning" style={{ marginBottom: 12 }}>
-          This scan is over 30 days old — run a new scan from Step 1 for fresh scores.
+          This scan is over 30 days old. Turn the app off and on to scan again.
         </s-banner>
       )}
 
@@ -472,101 +441,7 @@ export default function AuditReportPanel({
         </s-banner>
       )}
 
-      {passwordProtected && (
-        <s-banner tone="info" style={{ marginBottom: 12 }}>
-          PageSpeed Overview is hidden while your storefront is password-protected. Script
-          results below still come from the PagePulse audit.
-        </s-banner>
-      )}
-
-      {!passwordProtected && summary.psiSkipNote && (
-        <s-banner
-          tone={summary.psiSkipNote.includes("password") ? "info" : "warning"}
-          style={{ marginBottom: 12 }}
-        >
-          {summary.psiSkipNote}
-        </s-banner>
-      )}
-
-      {visibleTabs.length > 1 && (
-        <div
-          style={{
-            display: "flex",
-            justifyContent: "center",
-            gap: 8,
-            marginBottom: 20,
-          }}
-        >
-          {visibleTabs.map((name) => (
-            <PpPillButton key={name} active={tab === name} onClick={() => setTab(name)}>
-              {name}
-            </PpPillButton>
-          ))}
-        </div>
-      )}
-
-      {tab === "Overview" && (
-        <div>
-          <div
-            style={{
-              display: "flex",
-              justifyContent: "space-between",
-              alignItems: "center",
-              flexWrap: "wrap",
-              gap: 12,
-              marginBottom: 16,
-            }}
-          >
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-              {pageViews.map((p, i) => (
-                <PpPillButton
-                  key={p.path}
-                  active={pageIndex === i}
-                  onClick={() => setPageIndex(i)}
-                >
-                  {p.label}
-                </PpPillButton>
-              ))}
-            </div>
-            <div style={{ display: "flex", gap: 8 }}>
-              {["mobile", "desktop"].map((d) => (
-                <PpPillButton key={d} active={device === d} onClick={() => setDevice(d)}>
-                  {d === "mobile" ? "Mobile" : "Desktop"}
-                </PpPillButton>
-              ))}
-            </div>
-          </div>
-          {lhView ? (
-            <OverviewLighthouse view={lhView} pageLabel={activePage?.label ?? "Page"} />
-          ) : (
-            <s-banner tone="info">
-              Scores are loading from PageSpeed Insights. Refresh in a minute after audit.
-            </s-banner>
-          )}
-        </div>
-      )}
-
-      {tab === "Scripts" && (
-        <div>
-          <div
-            style={{
-              display: "flex",
-              justifyContent: "center",
-              gap: 8,
-              flexWrap: "wrap",
-              marginBottom: 12,
-            }}
-          >
-            {SCRIPT_SCOPE_TABS.map(({ id, label }) => (
-              <PpPillButton
-                key={id}
-                active={scriptScope === id}
-                onClick={() => setScriptScope(id)}
-              >
-                {label}
-              </PpPillButton>
-            ))}
-          </div>
+      <div>
           <div
             style={{
               fontSize: 13,
@@ -575,10 +450,7 @@ export default function AuditReportPanel({
               textAlign: "right",
             }}
           >
-            {sortedScripts.length} script{sortedScripts.length === 1 ? "" : "s"}
-            {scriptScope === "global"
-              ? " (all audited pages)"
-              : ` (${SCRIPT_SCOPE_TABS.find((t) => t.id === scriptScope)?.label} template)`}
+            {sortedScripts.length} script{sortedScripts.length === 1 ? "" : "s"} on this store
           </div>
           <div
             style={{
@@ -596,7 +468,7 @@ export default function AuditReportPanel({
                   {SCRIPT_TABLE_COLUMNS.map(({ id, label }) => {
                     const active = scriptSort.col === id;
                     const arrow = active ? (scriptSort.dir === "asc" ? " ↑" : " ↓") : "";
-                    const sortable = true;
+                    const pinned = id === "action";
                     return (
                       <th
                         key={id}
@@ -607,15 +479,17 @@ export default function AuditReportPanel({
                           color: "#374151",
                           position: "sticky",
                           top: 0,
+                          right: pinned ? 0 : undefined,
                           background: "#F9FAFB",
-                          zIndex: 1,
-                          cursor: sortable ? "pointer" : "default",
+                          zIndex: pinned ? 3 : 1,
+                          cursor: "pointer",
                           userSelect: "none",
                           whiteSpace: "nowrap",
+                          boxShadow: pinned ? "-8px 0 8px -8px rgba(0,0,0,0.15)" : undefined,
                         }}
-                        onClick={sortable ? () => toggleScriptSort(id) : undefined}
+                        onClick={() => toggleScriptSort(id)}
                         aria-sort={
-                          sortable && active
+                          active
                             ? scriptSort.dir === "asc"
                               ? "ascending"
                               : "descending"
@@ -623,7 +497,7 @@ export default function AuditReportPanel({
                         }
                       >
                         {label}
-                        {sortable ? arrow : ""}
+                        {arrow}
                       </th>
                     );
                   })}
@@ -654,27 +528,40 @@ export default function AuditReportPanel({
                     >
                       {row.token}
                     </td>
+                    <td style={{ padding: "10px 12px", color: "#374151" }}>
+                      {row.domain || "—"}
+                    </td>
                     <td style={{ padding: "10px 12px", color: "#6B7280" }}>script</td>
                     <td style={{ padding: "10px 12px", textAlign: "right" }}>
                       {row.homeRequestOrder != null ? row.homeRequestOrder : "—"}
                     </td>
                     <td
-                      style={{ padding: "10px 12px", textAlign: "right" }}
+                      style={{ padding: "10px 12px", textAlign: "right", whiteSpace: "nowrap" }}
                       title={
                         row.homeStartMs != null
-                          ? "Ms from navigation start on home"
+                          ? "Milliseconds after navigation start"
                           : undefined
                       }
                     >
                       {row.homeStartMs != null ? `${Math.round(row.homeStartMs)} ms` : "—"}
                     </td>
-                    <td style={{ padding: "10px 12px" }}>{row.kb != null ? `${row.kb} kB` : "—"}</td>
+                    <td style={{ padding: "10px 12px", whiteSpace: "nowrap" }}>
+                      {formatScriptSize(row)}
+                    </td>
                     <td style={{ padding: "10px 12px" }}>
                       {row.durationMs != null ? `${Math.round(row.durationMs)} ms` : "—"}
                     </td>
-                    <td style={{ padding: "10px 12px", color: "#6B7280" }}>{row.pages.join(", ")}</td>
                     <td style={{ padding: "10px 12px" }}>{row.status}</td>
-                    <td style={{ padding: "10px 12px" }}>
+                    <td
+                      style={{
+                        padding: "10px 12px",
+                        position: "sticky",
+                        right: 0,
+                        background: idx % 2 === 0 ? "#fff" : "#FAFAFA",
+                        zIndex: 1,
+                        boxShadow: "-8px 0 8px -8px rgba(0,0,0,0.12)",
+                      }}
+                    >
                       <select
                         value={actionValue}
                         disabled={saving}
@@ -687,7 +574,7 @@ export default function AuditReportPanel({
                               intent: "script-token-action",
                               token: actionKey,
                               action,
-                              scope: scriptScope,
+                              scope: "global",
                             },
                             { method: "POST" },
                           );
@@ -717,7 +604,6 @@ export default function AuditReportPanel({
           </table>
           </div>
         </div>
-      )}
     </div>
   );
 }

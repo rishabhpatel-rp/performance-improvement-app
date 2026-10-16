@@ -7,14 +7,17 @@ import {
 } from "./audit.server";
 import { saveAuditReport } from "./store-sync.server";
 import { listThemes, numericThemeId } from "./theme-embed.server";
-import { logAuditPageDone } from "./audit-logging.server";
-import { touchAuditJobHeartbeat, prepareStoreForNewAudit } from "./audit-queue-reconcile.server";
-import { AUDIT_HEARTBEAT_INTERVAL_MS } from "./audit-lifecycle";
-import { maybeSweepStaleAuditStateForShop } from "./audit-watchdog.server";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AdminClient = any;
 
+const auditRunGenerations = new Map<string, number>();
+
+/**
+ * `preview_theme_id` for the audit, or undefined when it is not needed.
+ * The live (MAIN) theme is audited without the param (no Shopify preview bar
+ * on the live pages); any other selected theme is previewed by its numeric id.
+ */
 async function resolvePreviewThemeId(
   admin: AdminClient,
   selectedThemeId: string | null | undefined,
@@ -39,21 +42,30 @@ async function resolvePreviewThemeId(
   }
 }
 
+/**
+ * Starts the hidden headless-browser audit for a shop and returns as soon as
+ * the run is registered in the DB (auditRunning=true). The audit itself runs
+ * in the background; the dashboard polls /api/audit/status.
+ *
+ * Writes, in order: run reset -> discovered pages (`auditPages`,
+ * `auditTotalPages`, before Chromium launches, so the UI knows the real page
+ * count immediately) -> per-page progress (`auditPageIndex`,
+ * `auditPageStartedAt`) -> completion / failure.
+ */
 export async function startAuditForStore(
   admin: AdminClient,
   shopDomain: string,
   { enableOnCreate = false }: { enableOnCreate?: boolean } = {},
-): Promise<{ started: boolean; reason?: string }> {
-  await maybeSweepStaleAuditStateForShop(shopDomain, { force: true }).catch(
-    () => undefined,
-  );
-
-  const prepared = await prepareStoreForNewAudit(shopDomain);
-  if (!prepared) {
+): Promise<{ started: boolean }> {
+  const store = await prisma.store.findUnique({ where: { shopDomain } });
+  if (!store) {
     console.warn(`[Audit] SKIPPED — no Store row for ${shopDomain}.`);
-    return { started: false, reason: "store_not_found" };
+    return { started: false };
   }
-  const storeId = prepared.storeId;
+  const storeId = store.id;
+  const runGeneration = (auditRunGenerations.get(shopDomain) ?? 0) + 1;
+  auditRunGenerations.set(shopDomain, runGeneration);
+  const isCurrentRun = () => auditRunGenerations.get(shopDomain) === runGeneration;
 
   await prisma.storeConfig.upsert({
     where: { storeId },
@@ -69,7 +81,6 @@ export async function startAuditForStore(
       auditRunning: true,
       auditFailed: false,
       auditError: null,
-      auditPageStartedAt: new Date(),
     },
     update: {
       auditRunning: true,
@@ -79,209 +90,162 @@ export async function startAuditForStore(
       auditPageIndex: 0,
       auditTotalPages: 0,
       auditPages: [],
-      auditPageStartedAt: new Date(),
+      auditPageStartedAt: null,
       auditPhase: "discovering",
     },
   });
+  console.log(`[Audit] STARTED for ${shopDomain} (auditRunning=true)`);
 
-  const { enqueueAuditJob } = await import("./audit-queue.server");
-  const result = await enqueueAuditJob(shopDomain, storeId, { enableOnCreate });
-  if (!result.enqueued) {
-    await prisma.storeConfig.update({
-      where: { storeId },
-      data: {
-        auditRunning: false,
-        auditPhase: null,
-        activeAuditJobId: null,
-      },
-    });
-    return { started: false, reason: result.reason };
-  }
+  // eslint-disable-next-line @typescript-eslint/no-floating-promises
+  (async () => {
+    try {
+      if (!isCurrentRun()) return;
+      // Storefront password (Step 1, password-protected stores), custom PLP/PDP
+      // URLs and the theme the merchant chose for the extension.
+      const config = await prisma.storeConfig.findUnique({
+        where: { storeId },
+      });
+      const password = config?.storefrontPassword || "";
+      const themeId = await resolvePreviewThemeId(
+        admin,
+        config?.selectedThemeId,
+      );
+      const customUrls = {
+        plp: config?.customPlpUrl || undefined,
+        pdp: config?.customPdpUrl || undefined,
+        // Extra pages from the "+" button. They have no PLP/PDP semantics, so
+        // they are audited as generic pages and only feed the union.
+        extras: Array.isArray(config?.customPageUrls)
+          ? (config.customPageUrls as unknown[]).filter(
+              (u): u is string => typeof u === "string" && u.trim() !== "",
+            )
+          : [],
+      };
 
-  console.log(`[Audit] QUEUED for ${shopDomain}`);
-  return { started: true };
-}
+      const pages = await discoverPages(
+        admin,
+        shopDomain,
+        password || undefined,
+        themeId,
+        customUrls,
+      );
+      const described = describePages(pages);
+      // Log paths only — the real URLs may carry the storefront password.
+      console.log(
+        `[Audit] Pages discovered for ${shopDomain}: ${described
+          .map((p) => `${p.label} ${p.path}`)
+          .join(", ")}${themeId ? ` (preview_theme_id=${themeId})` : ""}`,
+      );
 
-/** Runs one full audit (discover → measure → save). Invoked by the job queue. */
-export async function executeAuditJob(
-  admin: AdminClient,
-  shopDomain: string,
-  { jobId }: { jobId: string },
-): Promise<void> {
-  const store = await prisma.store.findUnique({ where: { shopDomain } });
-  if (!store) throw new Error(`No store for ${shopDomain}`);
-  const storeId = store.id;
+      // Publish the real page list + count now, before Chromium launches.
+      if (!isCurrentRun()) return;
+      await prisma.storeConfig.update({
+        where: { storeId },
+        data: {
+          auditPages: described,
+          auditTotalPages: described.length,
+          auditPageIndex: 0,
+          auditPhase: "auditing",
+        },
+      });
 
-  const isCurrentRun = async () => {
-    const job = await prisma.auditJob.findUnique({
-      where: { id: jobId },
-      select: { status: true, stopRequested: true },
-    });
-    if (!job || job.stopRequested) return false;
-    return job.status === "running";
-  };
+      // Mutated in place as each page finishes, so `auditPages` in the DB
+      // (and therefore the Step 1 chips) can show per-page done/pending state
+      // even though the pages run in parallel and can finish in any order.
+      const pagesState: typeof described = described.map((p) => ({ ...p }));
 
-  const bumpStoreLife = () =>
-    prisma.storeConfig
-      .updateMany({
-        where: { storeId, activeAuditJobId: jobId },
-        data: { auditPageStartedAt: new Date() },
-      })
-      .catch(() => {});
-
-  const heartbeatTimer = setInterval(() => {
-    void (async () => {
-      if (!(await isCurrentRun())) {
-        clearInterval(heartbeatTimer);
-        return;
-      }
-      await touchAuditJobHeartbeat(jobId);
-      await bumpStoreLife();
-    })();
-  }, AUDIT_HEARTBEAT_INTERVAL_MS);
-
-  try {
-    await touchAuditJobHeartbeat(jobId);
-    if (!(await isCurrentRun())) return;
-
-    await prisma.storeConfig.updateMany({
-      where: { storeId, activeAuditJobId: jobId },
-      data: {
-        auditPhase: "discovering",
-        auditPageStartedAt: new Date(),
-      },
-    });
-
-    const config = await prisma.storeConfig.findUnique({ where: { storeId } });
-    const password = config?.storefrontPassword || "";
-    const themeId = await resolvePreviewThemeId(admin, config?.selectedThemeId);
-    const customUrls = {
-      plp: config?.customPlpUrl || undefined,
-      pdp: config?.customPdpUrl || undefined,
-      extras: Array.isArray(config?.customPageUrls)
-        ? (config.customPageUrls as unknown[]).filter(
-            (u): u is string => typeof u === "string" && u.trim() !== "",
-          )
-        : [],
-    };
-
-    const pages = await discoverPages(
-      admin,
-      shopDomain,
-      password || undefined,
-      themeId,
-      customUrls,
-    );
-    const described = describePages(pages);
-    console.log(
-      `[Audit] Pages discovered for ${shopDomain}: ${described
-        .map((p) => `${p.label} ${p.path}`)
-        .join(", ")}`,
-    );
-
-    if (!(await isCurrentRun())) return;
-    await prisma.storeConfig.updateMany({
-      where: { storeId, activeAuditJobId: jobId },
-      data: {
-        auditPages: described,
-        auditTotalPages: described.length,
-        auditPageIndex: 0,
-        auditPhase: "auditing",
-        auditPageStartedAt: new Date(),
-      },
-    });
-
-    const pagesState = described.map((p) => ({ ...p }));
-
-    const report = await runHiddenAudit({
-      pages,
-      password: password || undefined,
-      shopDomain,
-      onProgress: async ({ done, total, path, pass, waitMs, scripts, emitted, foldOk }) => {
-        if (!(await isCurrentRun())) return;
-        await touchAuditJobHeartbeat(jobId);
-        if (path) {
-          logAuditPageDone({
-            shop: shopDomain,
-            path,
-            pass: pass ?? 0,
-            waitMs: waitMs ?? 0,
-            scripts: scripts ?? 0,
-            emitted: emitted ?? 0,
-            foldOk: foldOk ?? true,
-          });
-        }
-        try {
-          if (path) {
-            const page = pagesState.find((p) => p.path === path && !p.done);
-            if (page) page.done = true;
+      const report = await runHiddenAudit({
+        pages,
+        password: password || undefined,
+        // Lets the audit pool the previous run's defer tokens, so a build hash
+        // that changed since the last run is unified instead of silently
+        // ceasing to match the storefront.
+        shopDomain,
+        // Pages are audited in parallel: `done` counts finished pages.
+        onProgress: async ({ done, total, path }) => {
+          if (!isCurrentRun()) return;
+          try {
+            if (path) {
+              const page = pagesState.find((p) => p.path === path && !p.done);
+              if (page) page.done = true;
+            }
+            await prisma.storeConfig.update({
+              where: { storeId },
+              data: {
+                auditPageIndex: done,
+                auditTotalPages: total,
+                auditPages: pagesState,
+              },
+            });
+          } catch (err) {
+            console.warn(
+              "[Audit] Failed to record progress:",
+              err instanceof Error ? err.message : err,
+            );
           }
-          await prisma.storeConfig.updateMany({
-            where: { storeId, activeAuditJobId: jobId },
-            data: {
-              auditPageIndex: done,
-              auditTotalPages: total,
-              auditPages: pagesState,
-            },
-          });
-        } catch (err) {
-          console.warn(
-            "[Audit] Failed to record progress:",
-            err instanceof Error ? err.message : err,
-          );
-        }
-      },
-    });
+        },
+      });
 
-    if (!(await isCurrentRun())) return;
-    await prisma.storeConfig.updateMany({
-      where: { storeId, activeAuditJobId: jobId },
-      data: { auditPhase: "building" },
-    });
-    await saveAuditReport(shopDomain, report, "completed", undefined, jobId);
-    if (!(await isCurrentRun())) return;
-    await prisma.storeConfig.updateMany({
-      where: { storeId, activeAuditJobId: jobId },
-      data: {
-        auditRunning: false,
-        auditComplete: true,
-        auditFailed: false,
-        auditError: null,
-        auditPageIndex: described.length,
-        auditTotalPages: described.length,
-        auditPhase: null,
-      },
-    });
-    console.log(`[Audit] COMPLETED for ${shopDomain}`);
-  } catch (err) {
-    if (!(await isCurrentRun())) return;
-    const msg = err instanceof Error ? err.message : String(err);
-    console.error(`[Audit] FAILED for ${shopDomain}:`, msg);
-    const auditError = err instanceof AuditBlockedError ? err.code : msg;
-    await prisma.storeConfig
-      .updateMany({
-        where: { storeId, activeAuditJobId: jobId },
+      if (!isCurrentRun()) return;
+      // Building the storefront script happens inside saveAuditReport; it
+      // flips auditComplete only once the script is stored.
+      await prisma.storeConfig.update({
+        where: { storeId },
+        data: { auditPhase: "building" },
+      });
+      await saveAuditReport(shopDomain, report);
+      if (!isCurrentRun()) return;
+      await prisma.storeConfig.update({
+        where: { storeId },
         data: {
           auditRunning: false,
-          auditFailed: true,
-          auditError,
-          auditComplete: false,
+          auditComplete: true,
+          auditFailed: false,
+          auditError: null,
+          auditPageIndex: described.length,
+          auditTotalPages: described.length,
           auditPhase: null,
         },
-      })
-      .catch(() => {});
-    await prisma.auditLog
-      .create({
-        data: {
-          domain: shopDomain,
-          audit_type: "auto-audit",
-          status: "failed",
-          details: msg,
-        },
-      })
-      .catch(() => {});
-    throw err;
-  } finally {
-    clearInterval(heartbeatTimer);
-  }
+      });
+      console.log(
+        `[Audit] COMPLETED for ${shopDomain}: defer=${JSON.stringify(report.deferArray)} hide=${JSON.stringify(report.hideSelectors)}`,
+      );
+    } catch (err) {
+      if (!isCurrentRun()) return;
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`[Audit] FAILED for ${shopDomain}:`, msg);
+      // A password-page failure stores its code (PASSWORD_REQUIRED /
+      // PASSWORD_INCORRECT) so the Step 1 UI can show the right message and
+      // reveal the password box; anything else keeps the raw message.
+      const auditError = err instanceof AuditBlockedError ? err.code : msg;
+      await prisma.storeConfig
+        .update({
+          where: { storeId },
+          data: {
+            auditRunning: false,
+            auditFailed: true,
+            auditError,
+            auditComplete: false,
+            auditPhase: null,
+          },
+        })
+        .catch(() => {});
+      await prisma.auditLog
+        .create({
+          data: {
+            domain: shopDomain,
+            audit_type: "auto-audit",
+            status: "failed",
+            details: msg,
+          },
+        })
+        .catch(() => {
+          // ignore audit-log write failures on the error path
+        });
+    } finally {
+      if (isCurrentRun()) auditRunGenerations.delete(shopDomain);
+    }
+  })();
+
+  return { started: true };
 }

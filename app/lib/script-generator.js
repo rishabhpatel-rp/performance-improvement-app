@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import JavaScriptObfuscator from "javascript-obfuscator";
 
 export function parseToArray(input) {
@@ -35,12 +34,7 @@ export function buildHiddenCss(selectors) {
 }
 
 /**
- * Builds the RAW (un-obfuscated) storefront script source for one store.
- *
- * Cheap (string templating only). Obfuscation is the expensive step and lives
- * in `obfuscateRawScript`; `generateDeferredScript` runs both. Splitting them
- * lets the caller fingerprint the raw source and skip obfuscation entirely when
- * nothing changed.
+ * Builds the obfuscated storefront script for one store.
  *
  * Every list holds URL fragments; a <script src> whose URL contains one of
  * them is matched (as a regex-escaped alternation).
@@ -77,10 +71,12 @@ export function buildHiddenCss(selectors) {
  * @param {number}   options.everyLoadDelayMs         Timeout for the every-load list.
  * @param {string[]} options.hideSelectors            Fallback hide list when no
  *   variant matches. Source: auditHideSelectors.
-
- * @returns {string} Raw (un-obfuscated) JavaScript source.
+   * @param {boolean}  options.debugMode                Settings "Debug mode": keep
+   *   console logging in the bundle and run the timing logger. Source:
+   *   StoreConfig.debugMode.
+ * @returns {string} Obfuscated JavaScript.
  */
-export function buildRawScript({
+export function generateDeferredScript({
   baseScripts = [],
   pageVariants = [],
   interactionGatedScripts = [],
@@ -89,6 +85,10 @@ export function buildRawScript({
   firstVisitDelayMs = 12000,
   everyLoadDelayMs = 6000,
   hideSelectors = [],
+  // Mirrors the Settings "Debug mode" toggle ("Adds console logging to
+  // injected scripts"). Previously the flag was stored in the metaobject and
+  // StoreConfig but never reached this function, so the toggle did nothing.
+  debugMode = false,
 } = {}) {
   // Intern identical selector lists. They are small, but a store whose pages
   // share the same below-fold sections would otherwise repeat them per variant.
@@ -104,10 +104,6 @@ export function buildRawScript({
     pattern: v.pattern,
     add: v.add || [],
     hideIndex: internHide(v.hide || []),
-    firstUserAdd: v.firstUserAdd || [],
-    everyAdd: v.everyAdd || [],
-    firstUserDelayMs: v.firstUserDelayMs,
-    everyLoadDelayMs: v.everyLoadDelayMs,
   }));
   const fallbackHideIndex = internHide(hideSelectors);
 
@@ -415,16 +411,8 @@ export function buildRawScript({
 
       if (alreadyRan) return;
 
-      var GLOBAL_FIRST_VISIT_DELAYED = ${firstVisitDelayedJson};
-      var GLOBAL_FIRST_VISIT_DELAY_MS = ${firstVisitDelayMs};
-      var _firstAdd = PAGE && PAGE.firstUserAdd ? PAGE.firstUserAdd : [];
-      var FIRST_VISIT_DELAYED_SCRIPTS = GLOBAL_FIRST_VISIT_DELAYED.concat(_firstAdd);
-      // Empty list still used to wrap src/setAttribute for the whole page.
-      if (!FIRST_VISIT_DELAYED_SCRIPTS.length) return;
-      var _delay =
-        PAGE && PAGE.firstUserDelayMs != null
-          ? PAGE.firstUserDelayMs
-          : GLOBAL_FIRST_VISIT_DELAY_MS;
+      var FIRST_VISIT_DELAYED_SCRIPTS = ${firstVisitDelayedJson};
+      var _delay = ${firstVisitDelayMs};
       var fudRe = FIRST_VISIT_DELAYED_SCRIPTS.length
         ? new RegExp(
             FIRST_VISIT_DELAYED_SCRIPTS.map(function (p) {
@@ -522,15 +510,7 @@ export function buildRawScript({
     })();
 
     (function () {
-      var GLOBAL_EVERY_LOAD_DELAYED = ${everyLoadDelayedJson};
-      var GLOBAL_EVERY_LOAD_DELAY_MS = ${everyLoadDelayMs};
-      var _everyAdd = PAGE && PAGE.everyAdd ? PAGE.everyAdd : [];
-      var EVERY_LOAD_DELAYED_SCRIPTS = GLOBAL_EVERY_LOAD_DELAYED.concat(_everyAdd);
-      if (!EVERY_LOAD_DELAYED_SCRIPTS.length) return;
-      var _etDelay =
-        PAGE && PAGE.everyLoadDelayMs != null
-          ? PAGE.everyLoadDelayMs
-          : GLOBAL_EVERY_LOAD_DELAY_MS;
+      var EVERY_LOAD_DELAYED_SCRIPTS = ${everyLoadDelayedJson};
 
       var etRe = EVERY_LOAD_DELAYED_SCRIPTS.length
         ? new RegExp(
@@ -597,118 +577,34 @@ export function buildRawScript({
       setTimeout(function () {
         etReleased = true;
         releaseHeldET();
-      }, _etDelay);
+      }, ${everyLoadDelayMs});
     })();
   })();
   `;
 
-  return rawScript;
-}
-
-/**
- * Bump when something outside the raw source / profile changes the final bytes
- * (e.g. a javascript-obfuscator upgrade) and every store should be rebuilt.
- */
-export const SCRIPT_BUILD_REVISION = "1";
-
-/**
- * Obfuscation profile. The script is rendered INLINE in the <head> of every
- * storefront page (via a shop metafield), so size is paid on every HTML
- * response: this is the small-size profile (~19 KB raw / ~7 KB gzip).
- *
- * To make it stronger later, change it here only. Anything that ends up above
- * INLINE_CAPACITY_CHARS (script-inline.js) is not inlined (there is no proxy
- * fallback any more, so nothing is printed). Changing this object changes the
- * build fingerprint, so every store is rebuilt the next time it is saved or
- * reconciled.
- *
- * `disableConsoleOutput` and `seed` are applied per build (debug mode / shop).
- */
-export const OBFUSCATION_PROFILE = Object.freeze({
-  compact: true,
-  controlFlowFlattening: true,
-  controlFlowFlatteningThreshold: 0.3,
-  deadCodeInjection: false,
-  debugProtection: false,
-  identifierNamesGenerator: "hexadecimal",
-  renameGlobals: false,
-  selfDefending: false,
-  stringArray: true,
-  stringArrayEncoding: ["base64"],
-  stringArrayThreshold: 0.75,
-});
-
-/**
- * Fingerprint of everything that determines the final bytes: the raw source
- * (which already contains every list/delay/selector), the profile, the build
- * revision, debug mode, the seed and the timing-log wrapper. Equal fingerprint
- * means an identical script, so the stored one can be reused as-is.
- *
- * @param {string} rawScript
- * @param {{debugMode?: boolean, seed?: number}} [opts]
- * @returns {string}
- */
-export function fingerprintRawScript(rawScript, { debugMode = false, seed = 0 } = {}) {
-  // Every wrapper that will be added to the stored bytes has to be part of the
-  // fingerprint, otherwise flipping TEMP_TIMING_LOG / TEMP_TIMING_PROBE would
-  // produce identical hashes and the store would keep serving the old script.
-  const wrappers = [];
-  if (TEMP_TIMING_LOG || debugMode) wrappers.push(withTimingLog.toString());
-  if (TEMP_TIMING_PROBE) wrappers.push(withTimingProbe.toString());
-  return createHash("sha256")
-    .update(
-      JSON.stringify({
-        rawScript,
-        profile: OBFUSCATION_PROFILE,
-        revision: SCRIPT_BUILD_REVISION,
-        debugMode: Boolean(debugMode),
-        seed: seed || 0,
-        timing: wrappers.length ? wrappers.join("\n") : null,
-      }),
-    )
-    .digest("hex");
-}
-
-/**
- * Server-side obfuscation of a raw script. CPU-heavy, so callers run it once
- * per input change and store the result; it is never run per request, and the
- * stored string is what gets mirrored into the shop metafield as-is.
- *
- * @param {string} rawScript
- * @param {{debugMode?: boolean, seed?: number}} [opts]
- * @returns {string} Obfuscated JavaScript.
- */
-export function obfuscateRawScript(rawScript, { debugMode = false, seed = 0 } = {}) {
-  const keepConsoleOutput = Boolean(debugMode || TEMP_TIMING_LOG);
+  // Server-side obfuscation. This file is a blocking <script> on every storefront
+  // page, so size matters as much as strength. Measured on this template: the old
+  // profile (control-flow flattening 1.0 + dead-code injection + rc4 + split
+  // strings) produced ~197 KB (54 KB gzip) in ~660 ms; this one gives ~19 KB
+  // (~7 KB gzip) in ~80 ms while still renaming identifiers, flattening part of
+  // the control flow and moving strings into an encoded array.
   const obfuscatedResult = JavaScriptObfuscator.obfuscate(rawScript, {
-    ...OBFUSCATION_PROFILE,
-    // Keep console timing output when the uploader is intentionally in debug or
-    // timing-measurement mode; otherwise it is still stripped from the bundle.
-    disableConsoleOutput: !keepConsoleOutput,
-    // A stable seed makes identical input produce identical output.
-    ...(seed ? { seed } : {}),
+    compact: true,
+    controlFlowFlattening: true,
+    controlFlowFlatteningThreshold: 0.3,
+    deadCodeInjection: false,
+    debugProtection: false,
+    disableConsoleOutput: !debugMode,  // debug mode is the only way to keep console output
+    identifierNamesGenerator: "hexadecimal",
+    renameGlobals: false,
+    selfDefending: false,
+    stringArray: true,
+    stringArrayEncoding: ["base64"],
+    stringArrayThreshold: 0.75,
   });
 
   const obfuscated = obfuscatedResult.getObfuscatedCode();
-  let out = obfuscated;
-  // Probe outermost so its `exec` timestamp is taken before anything the logger
-  // adds, and `ready` after everything.
-  if (TEMP_TIMING_PROBE) out = withTimingProbe(out);
-  if (TEMP_TIMING_LOG || debugMode) out = withTimingLog(out);
-  return out;
-}
-
-/**
- * Build + obfuscate in one call (kept for callers that do not need the
- * fingerprint/skip logic). `seed` and `debugMode` are consumed by obfuscation;
- * everything else is forwarded to `buildRawScript`.
- *
- * @param {Parameters<typeof buildRawScript>[0] & {debugMode?: boolean, seed?: number}} [options]
- * @returns {string} Obfuscated JavaScript.
- */
-export function generateDeferredScript(options = {}) {
-  const { debugMode = false, seed = 0, ...rest } = options;
-  return obfuscateRawScript(buildRawScript(rest), { debugMode, seed });
+  return TEMP_TIMING_LOG || debugMode ? withTimingLog(obfuscated) : obfuscated;
 }
 
 // ---------------------------------------------------------------------------
@@ -720,83 +616,13 @@ export function generateDeferredScript(options = {}) {
 // disableConsoleOutput replaces console.log with a no-op for everything that
 // runs after it, so the logger captures a bound console.log first.
 // ---------------------------------------------------------------------------
-// The injection-timing log costs bytes and keeps console output in a script
-// that blocks rendering on every storefront page load. Off unless the store's
-// debug mode is on (that path still wraps with withTimingLog).
-export const STOREFRONT_TIMING_LOG_ENABLED = false;
-const TEMP_TIMING_LOG = STOREFRONT_TIMING_LOG_ENABLED;
-
-// TEST-ONLY. Set to true, save any Step 2 field (or toggle the app off/on) to
-// force a rebuild, then read the numbers in DevTools with:
-//
-//   __ppTiming
-//
-// Unlike `withTimingLog` this publishes to a plain object on `window` instead of
-// `console.log`, for two reasons:
-//
-//   1. It survives the obfuscator. With `disableConsoleOutput` on (every
-//      non-debug build) javascript-obfuscator rewrites `console.*` into no-ops,
-//      so a console-based probe would print nothing at all. A plain object
-//      assignment is untouched.
-//   2. It needs no per-request interaction, so it can be read after the fact
-//      rather than watched for while the page loads.
-//
-// The two flags are independent and can be combined; the probe is outermost.
-//
-// All times are `performance.now()`, i.e. milliseconds since navigation start:
-//   exec        script began executing        <- proves the inline path costs 0 RTT
-//   ready       gate fully installed          <- "ready to use"
-//   installMs   ready - exec, the install cost itself
-//   dcl         DOMContentLoaded
-//   load        window load
-//   fcp         first-contentful-paint
-//   ttfb        navigation responseStart (HTML first byte)
-//   htmlEnd     navigation responseEnd
-//   scriptsBefore <script> tags parsed ahead of this one (0-ish => near top of head)
-//   readyState  document.readyState when the script ran
-//
-// Flip back to false when done: these are un-obfuscated bytes added to a script
-// that blocks rendering on every page load.
-const TEMP_TIMING_PROBE = false;
-
-function withTimingProbe(obfuscated) {
-  const before = `
-  var P = (window.__ppTiming = window.__ppTiming || {});
-  try {
-    P.exec = performance.now();
-    P.readyState = document.readyState;
-    P.scriptsBefore = document.getElementsByTagName("script").length - 1;
-    var nav = performance.getEntriesByType("navigation")[0];
-    if (nav) {
-      P.ttfb = Math.round(nav.responseStart);
-      P.htmlEnd = Math.round(nav.responseEnd);
-      P.htmlBytes = nav.encodedBodySize;
-      P.htmlFromCache = nav.transferSize === 0 && nav.encodedBodySize > 0;
-    }
-  } catch (e) {}
-  `;
-  const after = `
-  try {
-    var P2 = window.__ppTiming;
-    if (P2 && typeof P2.exec === "number") {
-      P2.ready = performance.now();
-      P2.installMs = Math.round((P2.ready - P2.exec) * 100) / 100;
-    }
-  } catch (e) {}
-  document.addEventListener("DOMContentLoaded", function () {
-    try { window.__ppTiming.dcl = performance.now(); } catch (e) {}
-  });
-  window.addEventListener("load", function () {
-    try {
-      var P3 = window.__ppTiming;
-      var fcp = performance.getEntriesByName("first-contentful-paint")[0];
-      P3.load = performance.now();
-      P3.fcp = fcp ? fcp.startTime : null;
-    } catch (e) {}
-  });
-  `;
-  return "(function () {" + before + "\n" + obfuscated + "\n;" + after + "})();";
-}
+// The injection-timing log has served its purpose (it produced the
+  // "gate installs at ~1s, before first paint" numbers that confirmed the gate
+  // lands early enough) and it costs bytes in a script that blocks rendering on
+  // every storefront page load. Off by default; flip to true to re-measure.
+// Re-enabled 2026-09-30 to re-measure gate install time. REMEMBER TO SET BACK
+// TO false once you have the numbers.
+const TEMP_TIMING_LOG = true;
 
 function withTimingLog(obfuscated) {
   const before = `

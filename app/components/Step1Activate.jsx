@@ -1,11 +1,26 @@
 /* eslint-disable react/prop-types */
 import { useState, useEffect } from "react";
 import { useFetcher } from "react-router";
-import {
-  ROLE_LABEL,
-  PASSWORD_BLOCK_MESSAGE,
-} from "./step1/step1-shared.js";
-import Step1AuditRunning from "./step1/Step1AuditRunning.jsx";
+
+// The audit script waits this long on every page it visits.
+
+const ROLE_LABEL = { MAIN: "Live", UNPUBLISHED: "Unpublished", DEMO: "Demo" };
+
+// Audit error codes (StoreConfig.auditError) that mean "the storefront password
+// page blocked the scan". They reveal the password box even if detection missed it.
+const PASSWORD_BLOCK_MESSAGE = {
+  PASSWORD_REQUIRED:
+    "Your store is password protected. Enter the storefront password below and we'll scan again.",
+  PASSWORD_INCORRECT:
+    "The saved password didn't work. Update it below and we'll scan again.",
+};
+
+// "/collections/a-very-long-handle-name-here" -> "/collections/a-v…ere"
+function shortPath(path, max = 40) {
+  if (!path || path.length <= max) return path || "";
+  const half = Math.floor((max - 1) / 2);
+  return `${path.slice(0, half)}…${path.slice(-half)}`;
+}
 
 /**
  * Step 1 — single toggle: "Enable Performance Improvement App" (app_enabled).
@@ -25,11 +40,8 @@ export default function Step1Activate({
   selectedThemeId = null,
   passwordProtected = null, // true / false once confirmed, null = still checking
   onAuditRestarted = null,
-  onAuditStopped = null,
 }) {
   const fetcher = useFetcher();
-  const auditFetcher = useFetcher();
-  const stopAuditFetcher = useFetcher();
   const pwFetcher = useFetcher();
   const urlFetcher = useFetcher();
   const validationFetcher = useFetcher();
@@ -96,12 +108,11 @@ export default function Step1Activate({
   // the in-flight request, including on late/slow responses.
   const validating = validationFetcher.state !== "idle";
 
-  // Password is write-only: loader never sends the secret back to the browser.
-  const [pwDraft, setPwDraft] = useState("");
-  const [hasSavedPassword, setHasSavedPassword] = useState(
-    () => config?.hasStorefrontPassword === true,
-  );
-  const pwDirty = pwDraft.length > 0;
+  // Local draft for the storefront password, seeded from the saved value.
+  const [pwDraft, setPwDraft] = useState(config.storefrontPassword || "");
+  const savedPassword =
+    pwFetcher.data?.storefrontPassword ?? (config.storefrontPassword || "");
+  const pwDirty = pwDraft !== savedPassword;
 
   // The password box is hidden until protection is confirmed (background
   // check) or an audit was stopped by the password page.
@@ -116,18 +127,15 @@ export default function Step1Activate({
   const blockedAtToggle =
     validationFetcher.data?.blockReason === "password_required" ||
     fetcher.data?.error === "password_required";
-  const isPasswordProtectedStore = passwordProtected === true;
   const showPasswordBox =
-    isPasswordProtectedStore || passwordBlockCode !== null || blockedAtToggle;
-  const checkingPasswordProtection =
-    passwordProtected === null && !passwordBlockCode && !blockedAtToggle;
+    passwordProtected === true || passwordBlockCode !== null || blockedAtToggle;
 
   // Password is required if store is protected AND no password saved yet
   const passwordRequired =
     (passwordProtected === true ||
       passwordBlockCode === "PASSWORD_REQUIRED" ||
       blockedAtToggle) &&
-    !hasSavedPassword;
+    !savedPassword;
 
   // Main toggle is blocked if password is required but not saved, or if there
   // is no usable theme to install the extension in.
@@ -177,18 +185,9 @@ export default function Step1Activate({
 
   useEffect(() => {
     if (!pwFetcher.data?.ok) return;
-    if (pwFetcher.data.hasStorefrontPassword) {
-      setHasSavedPassword(true);
-      setPwDraft("");
-    }
+    setPwDraft(pwFetcher.data.storefrontPassword || "");
     if (pwFetcher.data.auditRestarted === true) onAuditRestarted?.();
   }, [pwFetcher.data, onAuditRestarted]);
-
-  useEffect(() => {
-    if (config?.hasStorefrontPassword === true) {
-      setHasSavedPassword(true);
-    }
-  }, [config?.hasStorefrontPassword]);
 
   const addExtraRow = () => setExtraDrafts((prev) => [...prev, ""]);
   const removeExtraRow = (index) =>
@@ -245,67 +244,26 @@ export default function Step1Activate({
   const donePages = Math.min(Math.max(0, auditStatus?.pageIndex ?? 0), totalPages);
   const phase = auditStatus?.phase || "discovering";
 
-  // --- Manual audit control -----------------------------------------------
-  // The audit is expensive (three pages through a headless browser), so the
-  // merchant starts it explicitly and re-runs it only when they choose. Its
-  // results survive every ON/OFF toggle, so this is "Run" on a fresh store and
-  // "Re-run" afterwards.
-  const auditStarting = auditFetcher.state !== "idle";
-  const auditComplete = appEnabled && auditStatus?.complete === true;
-  // Deliberately does NOT exclude `auditComplete`: once a run has finished this
-  // control is the "Re-run audit" affordance and must stay available. Only an
-  // in-flight run (or the app being off) disables it.
-  const canRunAudit = appEnabled && !running && !auditStarting;
-  const auditStartErrorRaw =
-    auditFetcher.data?.ok === false && auditFetcher.state === "idle"
-      ? auditFetcher.data.error
-      : null;
-  // Sticky fetcher errors survive revalidation; hide when the server says idle.
-  const auditStartError =
-    auditStartErrorRaw === "already_running" &&
+  // Turning the app ON starts the audit on the server. Show a loader from the
+  // click itself — validation and the toggle request both finish before
+  // auditStatus.running flips — so the merchant sees that a scan is coming.
+  const toggleTurningOn =
+    validating ||
+    (fetcher.state !== "idle" && fetcher.formData?.get("appEnabled") === "true");
+  const waitingForAudit =
+    appEnabled &&
+    fetcher.data?.auditStarted === true &&
     !running &&
-    !auditStarting &&
-    auditStatus?.running !== true
-      ? null
-      : auditStartErrorRaw;
-  const auditStartErrorText =
-    auditStartError === "extension_required"
-      ? "The theme app embed must be on before the audit can run."
-      : auditStartError === "already_running"
-        ? "An audit is already running for this store."
-        : auditStartError === "busy"
-          ? "The audit queue is full. Try again in a few minutes."
-          : auditStartError === "app_disabled"
-            ? "Turn the app on before running the audit."
-            : auditStartError || "";
-
-  const startAudit = () => {
-    auditFetcher.submit({ intent: "start-audit" }, { method: "POST" });
-  };
-  const stopAudit = () => {
-    stopAuditFetcher.submit({ intent: "stop-audit" }, { method: "POST" });
-  };
-  const stoppingAudit = stopAuditFetcher.state !== "idle";
-
-  useEffect(() => {
-    if (stopAuditFetcher.data?.auditStopped === true) {
-      onAuditStopped?.();
-    }
-  }, [stopAuditFetcher.data, onAuditStopped]);
+    !failed &&
+    auditStatus?.complete !== true;
+  const showStartLoader = toggleTurningOn || waitingForAudit;
   const progressPct =
     phase === "building"
       ? 92
       : phase === "auditing"
         ? 10 + (totalPages > 0 ? (donePages / totalPages) * 75 : 0)
-        : phase === "queued"
-          ? 2
-          : 5;
+        : 5;
   const auditSteps = [
-    {
-      key: "queued",
-      label:
-        "Waiting — another store is scanning on this server (one audit at a time)",
-    },
     {
       key: "discovering",
       label:
@@ -447,7 +405,7 @@ export default function Step1Activate({
               width: 24,
               height: 24,
               borderRadius: "50%",
-              backgroundColor: "#000",
+              backgroundColor: "#00C853",
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
@@ -598,9 +556,8 @@ export default function Step1Activate({
           conversions — just turn this ON 👇
         </div>
 
-        {/* Toggle switch + audit control in one row. The audit control sits
-            beside the toggle because that is where merchants reach for it, and
-            the long explanation it used to carry only made the card taller. */}
+        {/* Toggle. A loader sits beside it from the moment it is turned on,
+            before the audit status poll reports a running scan. */}
         <div
           style={{
             display: "flex",
@@ -618,37 +575,21 @@ export default function Step1Activate({
             onChange={(e) => handleToggle(e.target.checked)}
           />
 
-          {/* Same availability rule as before: only when the app is ON and no
-              run is in flight, so it doubles as the "Re-run" affordance. */}
-          {appEnabled && !running && (
-            <s-button
-              variant={auditComplete ? "secondary" : "primary"}
-              onClick={startAudit}
-              disabled={!canRunAudit}
-            >
-              {auditStarting
-                ? "Starting…"
-                : auditComplete
-                  ? "Re-run audit"
-                  : "Run audit"}
-            </s-button>
-          )}
-        </div>
-
-          {/* Validating: live-checking app embed + password status (<3s) */}
-          {validating && (
-            <div
+          {(showStartLoader || running) && (
+            <span
               style={{
-                display: "flex",
+                display: "inline-flex",
                 alignItems: "center",
-                justifyContent: "center",
                 gap: 8,
+                fontSize: 13,
+                color: "#4A5568",
               }}
             >
               <s-spinner size="small" />
-              <s-text tone="subdued">Checking store setup…</s-text>
-            </div>
+              {running ? "Audit in progress" : "Audit will start soon"}
+            </span>
           )}
+        </div>
 
           {/* Show message if blocked due to password (stale loader data) */}
           {passwordRequired && !validating && (
@@ -688,21 +629,7 @@ export default function Step1Activate({
             margin: "0 0 16px 0",
           }}
         >
-          {checkingPasswordProtection && (
-            <div
-              style={{
-                flex: "1 1 280px",
-                backgroundColor: "#f5f5f5",
-                borderRadius: 8,
-                padding: 16,
-                minWidth: 260,
-              }}
-            >
-              <s-text tone="subdued">Checking whether your storefront is password-protected…</s-text>
-            </div>
-          )}
-
-          {/* Storefront password (+ optional PSI preview link) — only when protected or audit blocked */}
+          {/* Hidden until password protection is confirmed (or an audit hit the password page) */}
           {showPasswordBox && (
             <div
               style={{
@@ -733,15 +660,13 @@ export default function Step1Activate({
               <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <s-text-field
-                    type="password"
-                    name="storefrontPassword"
+                    type="text"
                     label="Storefront password"
                     labelAccessibilityVisibility="exclusive"
                     placeholder="Enter storefront password (required)"
                     value={pwDraft}
                     onChange={(e) => setPwDraft(e.target.value)}
                     required
-                    autocomplete="current-password"
                   />
                 </div>
                 <s-button
@@ -752,7 +677,7 @@ export default function Step1Activate({
                   {pwFetcher.state !== "idle" ? "Saving…" : "Save"}
                 </s-button>
               </div>
-              {!pwDirty && hasSavedPassword && (
+              {!pwDirty && savedPassword && (
                 <s-text tone="success">Password saved</s-text>
               )}
             </div>
@@ -877,27 +802,134 @@ export default function Step1Activate({
           </div>
         </div>
 
-          {/* Start errors stay here so a refused run is still explained, even
-              though the button itself now lives beside the toggle. */}
-          {auditStartErrorText && (
-            <div style={{ textAlign: "center" }}>
-              <s-text tone="critical">{auditStartErrorText}</s-text>
-            </div>
-          )}
-
         {/* Hidden backend audit feedback (below the toggle) */}
         {running && (
-          <Step1AuditRunning
-            auditSteps={auditSteps}
-            activeStepIndex={activeStepIndex}
-            progressPct={progressPct}
-            auditPages={auditPages}
-            phase={phase}
-            missingPlp={missingPlp}
-            missingPdp={missingPdp}
-            stoppingAudit={stoppingAudit}
-            onStop={stopAudit}
-          />
+          <div
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "center",
+              gap: 10,
+              padding: "12px 0",
+              color: "#4A5568",
+              fontSize: 14,
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <s-spinner />
+              <span>{auditSteps[Math.max(activeStepIndex, 0)].label}…</span>
+            </div>
+
+            <div style={{ width: "100%", maxWidth: 360 }}>
+              <div
+                style={{
+                  height: 10,
+                  borderRadius: 6,
+                  backgroundColor: "#E2E7EC",
+                  overflow: "hidden",
+                }}
+              >
+                <div
+                  style={{
+                    height: "100%",
+                    width: `${progressPct}%`,
+                    backgroundColor: "#00B856",
+                    borderRadius: 6,
+                    transition: "width 400ms ease",
+                  }}
+                />
+              </div>
+            </div>
+
+            <div
+              style={{
+                display: "flex",
+                flexDirection: "column",
+                gap: 4,
+                fontSize: 13,
+                color: "#6B7177",
+              }}
+            >
+              {auditSteps.map((st, i) => {
+                const state =
+                  i < activeStepIndex
+                    ? "done"
+                    : i === activeStepIndex
+                      ? "current"
+                      : "pending";
+                return (
+                  <div
+                    key={st.key}
+                    style={{
+                      fontWeight: state === "current" ? 600 : 400,
+                      color: state === "pending" ? "#8A9099" : "#1E3A2B",
+                    }}
+                  >
+                    {state === "done" ? "✓" : state === "current" ? "●" : "○"}{" "}
+                    {st.label}
+                  </div>
+                );
+              })}
+            </div>
+
+            {auditPages.length > 0 && (
+              <div
+                style={{
+                  display: "flex",
+                  gap: 8,
+                  flexWrap: "wrap",
+                  justifyContent: "center",
+                }}
+              >
+                {auditPages.map((p, i) => {
+                  // Pages audit in parallel and can finish in any order, so
+                  // each chip shows its own done/pending state rather than a
+                  // single "current page" indicator.
+                  const isDone = phase === "building" || p.done === true;
+                  return (
+                    <span
+                      key={`${p.label}-${i}`}
+                      title={p.path}
+                      style={{
+                        display: "inline-flex",
+                        alignItems: "center",
+                        gap: 4,
+                        padding: "2px 10px",
+                        borderRadius: 12,
+                        fontSize: 12,
+                        backgroundColor: isDone ? "#E6F4EA" : "#F1F3F5",
+                        color: "#1E3A2B",
+                      }}
+                    >
+                      <span aria-hidden="true">{isDone ? "✓" : "○"}</span>
+                      {p.label} · {shortPath(p.path)}
+                    </span>
+                  );
+                })}
+              </div>
+            )}
+
+            {auditPages.length > 0 &&
+                (missingPlp || missingPdp) && (
+              <div
+                style={{
+                  fontSize: 12,
+                  color: "#6B7177",
+                  textAlign: "center",
+                  maxWidth: 420,
+                }}
+              >
+                No{" "}
+                {missingPlp && missingPdp
+                  ? "collection or product"
+                  : missingPlp
+                    ? "collection"
+                    : "product"}{" "}
+                page was found on your store. Add the URL below for a fuller
+                audit.
+              </div>
+            )}
+          </div>
         )}
         {failed && !passwordBlockCode && (
           <div

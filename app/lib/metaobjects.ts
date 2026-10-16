@@ -379,3 +379,24 @@ export async function ensureAppEndpoint(
   }
 }
 
+/**
+ * Reset the audit state so a fresh one-time audit can run on the next
+ * OFF->ON cycle. Sets audit_complete=false and clears both audit arrays.
+ * Non-fatal — swaps any failure, so it never breaks the dashboard toggle.
+ */
+export async function resetAudit(
+  requestOrAdmin: RequestOrAdmin,
+): Promise<AppConfig> {
+  const admin = await resolveAdmin(requestOrAdmin);
+  try {
+    return await updateConfig(admin, {
+      auditDeferArray: [],
+      auditHideSelectors: [],
+      auditComplete: false,
+    });
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.warn("[resetAudit] Could not reset audit state:", message);
+    return defaultAppConfig();
+  }
+}

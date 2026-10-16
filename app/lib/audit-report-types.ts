@@ -8,6 +8,8 @@ export interface ScriptInventoryEntry {
   encodedBytes?: number;
   durationMs?: number;
   pages: string[];
+  /** Hostname the script was requested from. */
+  domain?: string;
   /** Script request index on home only (Chrome Network order, 1-based). */
   homeRequestOrder?: number;
   /** performance.resource `startTime` on home (ms from navigation start). */

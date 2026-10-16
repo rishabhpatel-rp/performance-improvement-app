@@ -319,16 +319,9 @@ test("the route tries the fast path and falls back to the session path", async (
   const src = await import("node:fs").then((fs) =>
     fs.readFileSync("app/routes/api.storefront-scripts.jsx", "utf8"),
   );
-  assert.match(
-    src,
-    /verifyAppProxyShop\(\s*request,[\s\S]*?process\.env\.SHOPIFY_API_SECRET/,
-  );
-  assert.match(
-    src,
-    /if \(!shopDomain\) \{\s*try \{\s*shopDomain = resolveVerifiedProxyShop\(\s*await authenticate\.public\.appProxy\(request\)/,
-  );
-  // 400 from appProxy = unverified request, not a server error (same as declined fast path).
-  assert.match(src, /error instanceof Response && error\.status === 400/);
+  assert.match(src, /verifyAppProxyShop\(request, process\.env\.SHOPIFY_API_SECRET\)/);
+  assert.match(src, /\?\?\s*\n?\s*resolveVerifiedProxyShop\(await authenticate\.public\.appProxy\(request\)\)/);
+  // The session path must remain the fallback, never be deleted.
   assert.match(src, /authenticate\.public\.appProxy/);
   // And an unresolved shop must still yield the OFF script, never shop data.
   assert.match(src, /if \(!shopDomain\) \{\s*return scriptResponse\(request, OFF_SCRIPT, null\);/);

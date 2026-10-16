@@ -1,66 +1,47 @@
 /* eslint-disable react/prop-types */
-import { useMemo, useState, useEffect } from "react";
+import { useState, useEffect } from "react";
 import { useFetcher } from "react-router";
-import PpPillButton from "./PpPillButton";
-import {
-  TEMPLATE_SCOPES,
-  TEMPLATE_SCOPE_LABELS,
-  auditDeferColumn,
-  auditHideColumn,
-  firstUserDelayColumn,
-  staticDeferColumn,
-  firstUserDelayMsColumn,
-  everyTimeDelayMsColumn,
-} from "../lib/template-script-config";
 
-function fieldsForScope(scope) {
-  return [
-    {
-      scope,
-      key: auditDeferColumn(scope),
-      enabledKey: "auditDeferArrayEnabled",
-      preservedKey: "auditDeferArrayPreserved",
-      delayKey: null,
-      label: "Defer Heavy Scripts",
-      hint: "Scripts deferred until interaction on this template scope.",
-      placeholder: '["jquery.min.js","cdn.clarity"]',
-    },
-    {
-      scope,
-      key: auditHideColumn(scope),
-      enabledKey: "auditHideSelectorsEnabled",
-      preservedKey: "auditHideSelectorsPreserved",
-      delayKey: null,
-      label: "Hide Lastfold Classes",
-      hint: "Selectors hidden until interaction on this template scope.",
-      placeholder: '["#footer-links",".product-grid > :nth-child(n+5)"]',
-    },
-    {
-      scope,
-      key: firstUserDelayColumn(scope),
-      enabledKey: "firstUserDelayScriptsEnabled",
-      preservedKey: "firstUserDelayScriptsPreserved",
-      delayKey: firstUserDelayMsColumn(scope),
-      delayDefault: 12000,
-      label: "Delay Scripts for First User",
-      hint: "First-visit delay list for this template scope.",
-      placeholder: '["wpm","gtm"]',
-    },
-    {
-      scope,
-      key: staticDeferColumn(scope),
-      enabledKey: "staticDeferDefaultsEnabled",
-      preservedKey: "staticDeferDefaultsPreserved",
-      delayKey: everyTimeDelayMsColumn(scope),
-      delayDefault: 6000,
-      label: "Delay Scripts",
-      hint: "Every-visit delay list for this template scope.",
-      placeholder: '["wpm","gtm"]',
-    },
-  ];
-}
-
-const ALL_FIELDS = TEMPLATE_SCOPES.flatMap((scope) => fieldsForScope(scope));
+const FIELDS = [
+  {
+    key: "auditDeferArray",
+    enabledKey: "auditDeferArrayEnabled",
+    preservedKey: "auditDeferArrayPreserved",
+    delayKey: null,
+    label: "Defer Heavy Scripts",
+    hint: "Add the script names you want to defer till interaction.",
+    placeholder: '["jquery.min.js","cdn.clarity"]',
+  },
+  {
+    key: "auditHideSelectors",
+    enabledKey: "auditHideSelectorsEnabled",
+    preservedKey: "auditHideSelectorsPreserved",
+    delayKey: null,
+    label: "Hide Lastfold Classes",
+    hint: "Add the class names you want to hide till interaction.",
+    placeholder: '["#footer-links",".product-grid > :nth-child(n+5)"]',
+  },
+  {
+    key: "firstUserDelayScripts",
+    enabledKey: "firstUserDelayScriptsEnabled",
+    preservedKey: "firstUserDelayScriptsPreserved",
+    delayKey: "firstUserDelayMs",
+    delayDefault: 12000,
+    label: "Delay Scripts for First User",
+    hint: "Add the script names you want to delay for first-time visitors.",
+    placeholder: '["wpm","gtm"]',
+  },
+  {
+    key: "staticDeferDefaults",
+    enabledKey: "staticDeferDefaultsEnabled",
+    preservedKey: "staticDeferDefaultsPreserved",
+    delayKey: "everyTimeDelayMs",
+    delayDefault: 6000,
+    label: "Delay Scripts",
+    hint: "Add the script names you want to delay on every page load.",
+    placeholder: '["wpm","gtm"]',
+  },
+];
 
 // Serialize a string array as a pretty JSON array, wrapping each element on
 // its own line for readability in the textarea.
@@ -97,11 +78,6 @@ function validateArray(text) {
 export default function Step3Titles({ config }) {
   const fetcher = useFetcher();
   const saveData = fetcher.data;
-  const [scopeTab, setScopeTab] = useState("global");
-  const visibleFields = useMemo(
-    () => ALL_FIELDS.filter((f) => f.scope === scopeTab),
-    [scopeTab],
-  );
 
   // drafts[key] = current editable text; originals[key] = last-saved text.
   const [drafts, setDrafts] = useState({});
@@ -138,7 +114,7 @@ export default function Step3Titles({ config }) {
   useEffect(() => {
     const nextDelayDrafts = {};
     const nextDelayOriginals = {};
-    ALL_FIELDS.forEach(({ delayKey, delayDefault }) => {
+    FIELDS.forEach(({ delayKey, delayDefault }) => {
       if (delayKey) {
         // Convert milliseconds to seconds for display
         const ms = config?.[delayKey] ?? delayDefault;
@@ -163,18 +139,26 @@ export default function Step3Titles({ config }) {
     return delayDrafts[delayKey] !== delayOriginals[delayKey];
   };
 
-  // Update delay originals after successful save (omit originals from deps).
+  // Update delay originals after successful save
   useEffect(() => {
     if (!saveData?.ok) return;
 
-    ALL_FIELDS.forEach(({ delayKey }) => {
+    const nextDelayOriginals = { ...delayOriginals };
+    let changed = false;
+
+    FIELDS.forEach(({ delayKey }) => {
       if (delayKey && saveData[delayKey] !== undefined) {
         const seconds = Math.floor(saveData[delayKey] / 1000);
+        nextDelayOriginals[delayKey] = seconds;
         setDelayDrafts((prev) => ({ ...prev, [delayKey]: seconds }));
-        setDelayOriginals((prev) => ({ ...prev, [delayKey]: seconds }));
+        changed = true;
       }
     });
-  }, [saveData]);
+
+    if (changed) {
+      setDelayOriginals(nextDelayOriginals);
+    }
+  }, [saveData, delayOriginals]);
 
   const isEnabled = (field) => toggles[field.key] ?? config?.[field.enabledKey] ?? true;
 
@@ -194,7 +178,7 @@ export default function Step3Titles({ config }) {
   useEffect(() => {
     const nextDrafts = {};
     const nextOriginals = {};
-    ALL_FIELDS.forEach(({ key }) => {
+    FIELDS.forEach(({ key }) => {
       const text = toEditable(config?.[key] ?? []);
       nextDrafts[key] = text;
       nextOriginals[key] = text;
@@ -237,7 +221,7 @@ export default function Step3Titles({ config }) {
     const nextOriginals = { ...originals };
     const nextDrafts = { ...drafts };
     let changed = false;
-    ALL_FIELDS.forEach(({ key }) => {
+    FIELDS.forEach(({ key }) => {
       if (saveData[key] !== undefined) {
         const text = toEditable(saveData[key]);
         nextOriginals[key] = text;
@@ -310,14 +294,14 @@ export default function Step3Titles({ config }) {
                   "max-width 240ms cubic-bezier(0.22, 1, 0.36, 1), opacity 180ms ease, transform 240ms cubic-bezier(0.22, 1, 0.36, 1)",
               }}
             >
-              <PpPillButton
-                variant="primary"
+              <s-button
+                variant="secondary"
+                size="small"
                 disabled={!showSave || isSaving}
                 onClick={() => handleSave(field)}
-                style={{ padding: "6px 14px", fontSize: 12 }}
               >
                 {isSaving ? "Saving…" : "Save"}
-              </PpPillButton>
+              </s-button>
             </div>
             <s-switch
               label=""
@@ -526,32 +510,21 @@ export default function Step3Titles({ config }) {
           margin-top: 16px;
         }
       `}</style>
-      <div className="pp-audit-fields" style={{ marginTop: 8 }}>
+      <div className="pp-audit-fields">
+        {/* <s-text> is display:contents (no box), so offsets must go on a real
+            element. Shifts only the text up 20px; the cards below stay put. */}
+        <div style={{ position: "relative", top: -20 }}>
+          <s-text tone="subdued">
+            These arrays feed your storefront optimization. Add or remove
+            script names (and selectors) in any list below.
+          </s-text>
+        </div>
+
         {saveData && !saveData.ok && (
           <s-banner tone="critical" style={{ marginBottom: 16 }}>
             Save failed: {saveData.error || "Unknown error"}
           </s-banner>
         )}
-
-        <div
-          style={{
-            display: "flex",
-            justifyContent: "center",
-            gap: 8,
-            flexWrap: "wrap",
-            marginBottom: 16,
-          }}
-        >
-          {TEMPLATE_SCOPES.map((scope) => (
-            <PpPillButton
-              key={scope}
-              active={scopeTab === scope}
-              onClick={() => setScopeTab(scope)}
-            >
-              {TEMPLATE_SCOPE_LABELS[scope]}
-            </PpPillButton>
-          ))}
-        </div>
 
         <div
           className="pp-audit-grid"
@@ -561,7 +534,7 @@ export default function Step3Titles({ config }) {
             gap: 16,
           }}
         >
-          {visibleFields.slice(0, 2).map(renderFieldCard)}
+          {FIELDS.slice(0, 2).map(renderFieldCard)}
         </div>
         <div
           className="pp-audit-grid"
@@ -572,7 +545,7 @@ export default function Step3Titles({ config }) {
             marginTop: 16,
           }}
         >
-          {visibleFields.slice(2).map(renderFieldCard)}
+          {FIELDS.slice(2).map(renderFieldCard)}
         </div>
       </div>
     </>

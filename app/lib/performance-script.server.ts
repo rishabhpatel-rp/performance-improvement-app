@@ -1,73 +1,11 @@
+import { createHash } from "node:crypto";
 import prisma from "../db.server";
 import {
   MIN_PER_PAGE_DELTA,
   orderPagePatterns,
   selectPerPageVariants,
 } from "./per-page";
-import { templateDeferToPageVariants } from "./audit-template-buckets";
-import {
-  auditDeferColumn,
-  auditHideColumn,
-  everyTimeDelayMsColumn,
-  firstUserDelayColumn,
-  firstUserDelayMsColumn,
-  readBucketsFromRow,
-  staticDeferColumn,
-  type TemplateScope,
-  unionTemplateLists,
-  TEMPLATE_SCOPES,
-} from "./template-script-config";
-import {
-  buildHiddenCss,
-  buildRawScript,
-  fingerprintRawScript,
-  obfuscateRawScript,
-} from "./script-generator";
-import { hashScript, seedFromShop } from "./script-inline";
-import { syncScriptMetafield } from "./script-metafield.server";
-
-function patternScope(pattern: string): TemplateScope {
-  if (pattern === "/products/") return "product";
-  if (pattern === "/collections/") return "collection";
-  return "home";
-}
-
-function readTemplatePayloadFromConfig(config: Record<string, unknown>) {
-  const deferBuckets = readBucketsFromRow(config, auditDeferColumn, "auditDeferArray");
-  const hideBuckets = readBucketsFromRow(config, auditHideColumn, "auditHideSelectors");
-  const firstBuckets = readBucketsFromRow(
-    config,
-    firstUserDelayColumn,
-    "firstUserDelayScripts",
-  );
-  const staticBuckets = readBucketsFromRow(
-    config,
-    staticDeferColumn,
-    "staticDeferDefaults",
-  );
-  const hasTemplate = TEMPLATE_SCOPES.some((s) => deferBuckets[s].length > 0);
-  if (!hasTemplate) return null;
-
-  const variants = selectPerPageVariants(
-    templateDeferToPageVariants(deferBuckets, hideBuckets).map((v) => {
-      const scope = patternScope(v.pattern);
-      return {
-        pattern: v.pattern,
-        add: v.add,
-        hide: v.hide,
-        firstUserAdd: firstBuckets[scope],
-        everyAdd: staticBuckets[scope],
-        firstUserDelayMs:
-          (config[firstUserDelayMsColumn(scope)] as number | undefined) ??
-          (config.firstUserDelayMs as number | undefined),
-        everyLoadDelayMs:
-          (config[everyTimeDelayMsColumn(scope)] as number | undefined) ??
-          (config.everyTimeDelayMs as number | undefined),
-      };
-    }),
-  );
-  return { baseScripts: deferBuckets.global, variants, deferBuckets, firstBuckets };
-}
+import { buildHiddenCss, generateDeferredScript } from "./script-generator";
 
 /**
  * Per-page data from the most recent completed audit.
@@ -97,34 +35,10 @@ async function readPerPageAuditData(
           deferArrayAddByPage?: unknown;
           hideSelectorsByPage?: unknown;
           pagePatterns?: unknown;
-          templateBuckets?: {
-            defer?: {
-              global?: unknown;
-              home?: unknown;
-              collection?: unknown;
-              product?: unknown;
-            };
-          };
         }
       | null
       | undefined;
     if (!data) return null;
-
-    const templateDefer = data.templateBuckets?.defer;
-    if (templateDefer) {
-      const buckets = {
-        global: readStringArray(templateDefer.global),
-        home: readStringArray(templateDefer.home),
-        collection: readStringArray(templateDefer.collection),
-        product: readStringArray(templateDefer.product),
-      };
-      const variants = selectPerPageVariants(
-        templateDeferToPageVariants(buckets).map((v) => ({ ...v, hide: [] })),
-      );
-      if (buckets.global.length || variants.length) {
-        return { baseScripts: buckets.global, variants };
-      }
-    }
 
     const baseScripts = readStringArray(data.deferArrayBase);
     const adds = data.deferArrayAddByPage;
@@ -218,23 +132,10 @@ export interface BuiltPerformanceScript {
   scriptBuiltAt: Date;
 }
 
-/** `inputsHash` stored while the app is off (no script is built at all). */
-const OFF_FINGERPRINT = "off";
-
 /**
  * Obfuscation is CPU-heavy (~0.7 s), so it runs here — once, whenever the
  * inputs change — and the result is stored in `PerformanceScript.deferScript`.
- *
- * "Inputs changed" is decided by a fingerprint of the RAW script source plus the
- * obfuscation profile, debug flag and seed (`fingerprintRawScript`). The raw
- * source already contains every list, delay and selector, so an unchanged
- * fingerprint means the stored obfuscated script is exactly what a rebuild would
- * produce, and obfuscation is skipped. Saving an unchanged config therefore
- * costs a string template, not an obfuscation run.
- *
- * After storing, the script is mirrored into the shop metafield that the theme
- * app embed renders inline (`syncScriptMetafield`). The proxy route
- * (`api.storefront-scripts`) only reads the DB column and remains the fallback.
+ * The storefront proxy route only reads that column.
  *
  * Inputs mirror the Step 2 cards: each list only counts while its own
  * `*Enabled` toggle is ON. Returns the row, or null when the store is unknown
@@ -248,124 +149,68 @@ export async function rebuildPerformanceScript(
   try {
     const store = await prisma.store.findUnique({
       where: { shopDomain },
-      include: {
-        configs: { orderBy: { updatedAt: "desc" }, take: 1 },
-        performanceScript: {
-          select: {
-            inputsHash: true,
-            deferScript: true,
-            hiddenCss: true,
-            scriptHash: true,
-            scriptBuiltAt: true,
-          },
-        },
-      },
+      include: { configs: { orderBy: { updatedAt: "desc" }, take: 1 } },
     });
     if (!store) return null;
 
     const config = store.configs[0];
-    const existing = store.performanceScript;
     const active = store.isActive && Boolean(config?.appEnabled);
 
     let deferScript = "";
     let hiddenCss = "";
-    let inputsHash = OFF_FINGERPRINT;
-    let reused = false;
 
     if (active && config) {
 
       // The toggle must win over per-page data: when deferral is switched off
       // nothing may be gated, so per-page lists are only read when it is on.
       const deferEnabled = config.auditDeferArrayEnabled !== false;
-      const templatePayload = readTemplatePayloadFromConfig(
-        config as Record<string, unknown>,
-      );
-      const perPage =
-        deferEnabled && templatePayload
-          ? templatePayload
-          : deferEnabled
-            ? await readPerPageAuditData(shopDomain)
-            : null;
+      const perPage = deferEnabled ? await readPerPageAuditData(shopDomain) : null;
       const hideEnabled = config.auditHideSelectorsEnabled;
-      const debugMode = config.debugMode === true;
-      const seed = seedFromShop(shopDomain);
 
-      const deferUnion = templatePayload
-        ? unionTemplateLists(templatePayload.deferBuckets)
-        : readStringArray(config.auditDeferArray);
-
-      const rawScript = buildRawScript({
+      deferScript = generateDeferredScript({
+        // `baseScripts` is what every audited page loads and is only consulted
+        // when a page variant matches; `interactionGatedScripts` is the union
+        // used for an un-audited page (a blog post, a search result). With no
+        // per-page data the variant list is empty, so every page uses the union
+        // — the pre-existing behaviour.
         baseScripts: perPage?.baseScripts ?? [],
         pageVariants: perPage?.variants ?? [],
-        interactionGatedScripts: deferEnabled ? deferUnion : [],
-        firstVisitDelayedScripts:
-          config.firstUserDelayScriptsEnabled !== false
-            ? (templatePayload?.firstBuckets.global ??
-              readStringArray(config.firstUserDelayScripts))
-            : [],
-        everyLoadDelayedScripts:
-          config.staticDeferDefaultsEnabled !== false
-            ? readBucketsFromRow(
-                config as Record<string, unknown>,
-                staticDeferColumn,
-                "staticDeferDefaults",
-              ).global
-            : [],
-        firstVisitDelayMs:
-          config.firstUserDelayMsGlobal ??
-          config.firstUserDelayMs ??
-          12000,
-        everyLoadDelayMs:
-          config.everyTimeDelayMsGlobal ??
-          config.everyTimeDelayMs ??
-          6000,
+        interactionGatedScripts: deferEnabled
+          ? readStringArray(config.auditDeferArray)
+          : [],
+        firstVisitDelayedScripts: config.firstUserDelayScriptsEnabled
+          ? readStringArray(config.firstUserDelayScripts)
+          : [],
+        everyLoadDelayedScripts: config.staticDeferDefaultsEnabled
+          ? readStringArray(config.staticDeferDefaults)
+          : [],
+        firstVisitDelayMs: config.firstUserDelayMs ?? 12000,
+        everyLoadDelayMs: config.everyTimeDelayMs ?? 6000,
         hideSelectors: hideEnabled ? readStringArray(config.auditHideSelectors) : [],
-      });
-
-      inputsHash = fingerprintRawScript(rawScript, { debugMode, seed });
-
-      if (existing?.deferScript && existing.inputsHash === inputsHash) {
-        // Identical script: keep the stored obfuscated bytes (no CPU work).
-        deferScript = existing.deferScript;
-        reused = true;
-        console.log(
-          `[perf] ${shopDomain}: script inputs unchanged, skipped obfuscation`,
-        );
-      } else {
         // Settings "Debug mode": keep console logging in the storefront bundle.
-        deferScript = obfuscateRawScript(rawScript, { debugMode, seed });
-      }
+        debugMode: config.debugMode === true,
+      });
 
       hiddenCss = hideEnabled ? buildHiddenCss(readStringArray(config.auditHideSelectors)) : "";
-    } else if (existing && existing.inputsHash === OFF_FINGERPRINT) {
-      reused = true; // already stored as "off"; nothing to rebuild
     }
 
-    const built: BuiltPerformanceScript = reused && existing
-      ? {
-          deferScript,
-          hiddenCss,
-          scriptHash: existing.scriptHash ?? hashScript(deferScript),
-          scriptBuiltAt: existing.scriptBuiltAt ?? new Date(),
-        }
-      : {
-          deferScript,
-          hiddenCss,
-          scriptHash: hashScript(deferScript),
-          scriptBuiltAt: new Date(),
-        };
+    const built: BuiltPerformanceScript = {
+      deferScript,
+      hiddenCss,
+      scriptHash: createHash("sha256").update(deferScript).digest("hex"),
+      scriptBuiltAt: new Date(),
+    };
 
-    if (!reused) {
-      await prisma.performanceScript.upsert({
-        where: { storeId: store.id },
-        create: { storeId: store.id, ...built, inputsHash },
-        update: { ...built, inputsHash },
-      });
-    }
+    await prisma.performanceScript.upsert({
+      where: { storeId: store.id },
+      create: { storeId: store.id, ...built },
+      update: built,
+    });
 
-    // Mirror into the shop metafield (write / clear / no-op as needed). Never
-    // throws; a failure is healed by reconcileScriptMetafield.
-    await syncScriptMetafield(shopDomain);
+    // Mirror deferScript to shop metafields for the inline theme embed (same bytes as the app proxy).
+    void import("./script-metafield.server").then(({ syncScriptMetafield }) =>
+      syncScriptMetafield(shopDomain),
+    );
 
     return built;
   } catch (err) {

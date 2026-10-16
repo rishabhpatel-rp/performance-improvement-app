@@ -1,9 +1,6 @@
 // This is your Prisma schema file,
 // learn more about it in the docs: https://pris.ly/d/prisma-schema
 //
-// Source of truth for migrations: `../../prisma/schema.prisma` (root app).
-// After root schema changes, mirror shared models here and run `prisma generate` only.
-//
 // DECISION NEEDED (REMEDIATION_PROMPT.md / Task 4): this schema was
 // one-time caught up to match `../../prisma/schema.prisma` for the models
 // both apps share (Session, Store, StoreConfig, StoreActivity, AdminUser,
@@ -135,22 +132,9 @@ model StoreConfig {
 
   // Script data (stored as JSON arrays)
   scriptTitles       Json     @default("[]") // ["Title1","Title2","Title3"]
-  auditDeferArray    Json @default("[]") // Union fallback (all template defer scopes)
-  auditHideSelectors Json @default("[]") // Union fallback (all template hide scopes)
-  staticDeferDefaults Json @default("[\"wpm\",\"gtm\"]") // Union fallback for every-visit delay scripts
-
-  auditDeferGlobal      Json @default("[]")
-  auditDeferHome        Json @default("[]")
-  auditDeferCollection  Json @default("[]")
-  auditDeferProduct     Json @default("[]")
-  auditHideGlobal       Json @default("[]")
-  auditHideHome         Json @default("[]")
-  auditHideCollection   Json @default("[]")
-  auditHideProduct      Json @default("[]")
-  staticDeferDefaultsGlobal      Json @default("[\"wpm\",\"gtm\"]")
-  staticDeferDefaultsHome        Json @default("[]")
-  staticDeferDefaultsCollection  Json @default("[]")
-  staticDeferDefaultsProduct     Json @default("[]")
+  auditDeferArray    Json     @default("[]") // Defer/blocklist entries
+  auditHideSelectors Json     @default("[]") // CSS selectors to hide
+  staticDeferDefaults Json    @default("[\"wpm\",\"gtm\"]") // Static always-defer defaults e.g. ["wpm","gtm"]
 
   // Audit field toggle states (on/off) — Step 3 "Audit Results" textareas
   auditDeferArrayEnabled      Boolean @default(true)
@@ -184,28 +168,16 @@ model StoreConfig {
   // First User Delay Scripts (maps to FIRST_USER_DELAY_SCRIPTS in script)
   // Only runs for first-time visitors (localStorage check)
   // ============================================================
-  firstUserDelayScripts          Json @default("[\"wpm\",\"gtm\"]") // Union fallback
+  firstUserDelayScripts          Json    @default("[\"wpm\",\"gtm\"]")
   firstUserDelayScriptsEnabled   Boolean @default(true)
-  firstUserDelayScriptsPreserved Json @default("[]")
-  firstUserDelayMs               Int @default(12000) // Legacy; mirrors Global
-
-  firstUserDelayScriptsGlobal      Json @default("[\"wpm\",\"gtm\"]")
-  firstUserDelayScriptsHome        Json @default("[]")
-  firstUserDelayScriptsCollection  Json @default("[]")
-  firstUserDelayScriptsProduct     Json @default("[]")
-  firstUserDelayMsGlobal      Int @default(12000)
-  firstUserDelayMsHome        Int @default(12000)
-  firstUserDelayMsCollection  Int @default(12000)
-  firstUserDelayMsProduct     Int @default(12000)
+  firstUserDelayScriptsPreserved Json    @default("[]")
+  firstUserDelayMs               Int     @default(12000) // 12 seconds in milliseconds
 
   // ============================================================
   // Delay time for "Delay Scripts" box (EVERY_TIME_DELAY_SCRIPTS)
+  // This is the timeout at line 400 in script-generator.js
   // ============================================================
-  everyTimeDelayMs               Int @default(6000) // Legacy; mirrors Global
-  everyTimeDelayMsGlobal      Int @default(6000)
-  everyTimeDelayMsHome        Int @default(6000)
-  everyTimeDelayMsCollection  Int @default(6000)
-  everyTimeDelayMsProduct     Int @default(6000)
+  everyTimeDelayMs               Int     @default(6000) // 6 seconds in milliseconds
 
   // Audit status (hidden backend audit lifecycle)
   auditRunning Boolean @default(false)
@@ -217,10 +189,21 @@ model StoreConfig {
   auditPages         Json?      // [{ label, path, done }] pages discovered for the current/last audit
   auditPageStartedAt DateTime?  // when the page currently being audited started (countdown survives refresh)
   auditPhase         String?    // "discovering" | "auditing" | "building" while auditRunning; null otherwise.
-  activeAuditJobId   String?
+  activeAuditJobId   String?    // AuditJob.id while auditRunning; cleared when job ends
 
   // Theme the app extension (theme app embed) is installed in. null = live (MAIN) theme.
   selectedThemeId String? // e.g. "gid://shopify/OnlineStoreTheme/123"
+
+  // Automated layout/theme.liquid head injection (themeFilesUpsert)
+  themeHeadInjectStatus       String?
+  themeHeadInjectAttemptedAt  DateTime?
+  themeHeadInjectError        String?
+
+  // PageSpeed Insights field layer (columns already added by migration)
+  psiFieldVitals    Json?
+  psiLastFetchedAt  DateTime?
+  psiBackoffUntil   DateTime?
+  psiPreviewBypassParams Json?
 
   // Timestamps
   createdAt          DateTime @default(now())
@@ -285,12 +268,6 @@ model PerformanceScript {
   hiddenCss   String?  @map("hidden_css")
   scriptHash    String?   @map("script_hash")
   scriptBuiltAt DateTime? @map("script_built_at")
-  // Fingerprint of the raw script + obfuscation profile/seed/debug flag. When it is
-  // unchanged, rebuildPerformanceScript() reuses deferScript instead of obfuscating
-  // again ("off" while the app is disabled).
-  inputsHash        String?   @map("inputs_hash")
-  // scriptHash currently live in the shop metafield rendered inline by the theme
-  // app embed (null = no inline script; storefront falls back to the app proxy).
   metafieldHash     String?   @map("metafield_hash")
   metafieldSyncedAt DateTime? @map("metafield_synced_at")
   createdAt   DateTime @default(now()) @map("created_at")

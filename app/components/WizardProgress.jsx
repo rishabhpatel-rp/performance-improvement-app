@@ -1,11 +1,13 @@
 /* eslint-disable react/prop-types */
-const STEP_LABELS = ["Start", "Configure", "Results"];
+const STEP_LABELS = ["Start", "Scripts"];
 
 /**
- * Step 1 = activate + audit, Step 2 = script toggles, Step 3 = audit results.
- * Steps 2–3 unlock when the app is enabled and the hidden audit completes.
+ * 2-circle stepper matching the merged wizard (Step 1 = Activate + audit,
+ * Step 2 = Scripts + Audit Results). Active/completed = filled green circle,
+ * inactive = grey, connected by a thin line. Step 2 stays locked until the
+ * app is enabled AND the hidden audit completes.
  */
-export default function WizardProgress({ currentStep, maxStep = 3, onStepClick }) {
+export default function WizardProgress({ currentStep, maxStep = 2, onStepClick }) {
   return (
     <div style={{ display: "flex", alignItems: "center", padding: "8px 0 20px" }}>
       {STEP_LABELS.map((label, index) => {

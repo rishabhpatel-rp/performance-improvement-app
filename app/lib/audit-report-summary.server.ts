@@ -1,4 +1,5 @@
 import type { HiddenAuditResult } from "./audit.server";
+import { buildScriptInventoryFromClassified } from "./audit-classified-inventory.ts";
 import type {
   AuditReportSummary,
   FieldVitalsSummary,
@@ -66,14 +67,18 @@ export function buildAuditReportSummary(
   const candidates = funnel.reduce((s, f) => s + (f.candidates || 0), 0);
   const emitted = funnel.reduce((s, f) => s + (f.emitted || 0), 0);
 
-  const inv = report.scriptInventory;
+  const inv = report.scriptInventory?.byToken?.length
+    ? report.scriptInventory
+    : buildScriptInventoryFromClassified(report);
   const topScripts = (inv?.byToken || []).map((e) => ({
       token: e.token,
       kb: e.bytes != null ? Math.round(e.bytes / 1024) : null,
+      bytes: e.bytes != null && e.bytes > 0 ? e.bytes : null,
       durationMs: e.durationMs ?? null,
       status: e.status,
       reasons: e.reasons ?? [],
       pages: e.pages,
+      domain: e.domain ?? null,
       homeRequestOrder: e.homeRequestOrder ?? null,
       homeStartMs: e.homeStartMs ?? null,
     }));

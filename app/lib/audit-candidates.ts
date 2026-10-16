@@ -194,10 +194,6 @@ export function urlToCandidates(rawUrl: string, pageUrl: string): CandidateBucke
 
   u.hash = "";
   u.search = "";
-  if (u.pathname.includes("/checkout-web/")) {
-    const checkoutToken = tokenForPath(u.pathname);
-    if (checkoutToken) emit(checkoutToken, "never-defer");
-  }
   const token = tokenForPath(u.pathname);
   if (token) emit(token, classifyCandidate(token));
 

@@ -48,3 +48,28 @@ test("topScripts includes home request order and timeline from inventory", () =>
   assert.equal(s.topScripts[0].homeRequestOrder, 1);
   assert.equal(s.topScripts[0].homeStartMs, 55.2);
 });
+
+test("topScripts lists classified tokens when the audit stored no inventory", () => {
+  const report = {
+    deferArray: ["clarity"],
+    neverDefer: ["jquery"],
+    noiseDropped: ["pixel"],
+    selfExcluded: [],
+    foldReasons: {},
+    deferArrayByPage: { "/": ["clarity"] },
+    hideSelectors: [],
+    popupSelectors: [],
+    pagesAudited: ["/"],
+    completedAt: "2026-10-16T00:00:00.000Z",
+    foldAssertion: { ok: true, violations: [], pagesChecked: 1 },
+    funnel: [],
+  };
+  const s = buildAuditReportSummary(report);
+  const byToken = Object.fromEntries(s.topScripts.map((r) => [r.token, r.status]));
+  assert.deepEqual(byToken, {
+    clarity: "deferred",
+    jquery: "never",
+    pixel: "noise",
+  });
+  assert.deepEqual(s.topScripts.find((r) => r.token === "clarity").pages, ["/"]);
+});
