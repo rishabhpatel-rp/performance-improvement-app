@@ -21,15 +21,12 @@ test("generated output is safe to inline and within the inline capacity", () => 
   assert.ok(out.length < INLINE_CAPACITY_CHARS, "small-size profile stays under the inline capacity");
 });
 
-// c686cae replaced STOREFRONT_TIMING_LOG_ENABLED = false with a hardcoded
-// `const TEMP_TIMING_LOG = true`, so the injection timing logger now ships on
-// every build rather than only in debug mode. These tests assert that new
-// contract. Set TEMP_TIMING_LOG back to false in app/lib/script-generator.js
-// to drop the logger from production again.
-test("timing logger ships on every build, debug mode or not", () => {
+// Timing logs stay off unless Settings debug mode is on. TEMP_TIMING_LOG
+// was a temporary measurement flag and must stay false in production.
+test("timing logger is only in debug builds", () => {
   const prod = generateDeferredScript(OPTIONS);
   const dbg = generateDeferredScript({ ...OPTIONS, debugMode: true });
-  assert.ok(prod.includes("[PagePulse]"), "production builds ship the timing logger");
+  assert.equal(prod.includes("[PagePulse]"), false);
   assert.ok(dbg.includes("[PagePulse]"), "debug builds ship the timing logger");
 });
 

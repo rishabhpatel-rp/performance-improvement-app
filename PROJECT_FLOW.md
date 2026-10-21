@@ -6,6 +6,20 @@
 > Do not restore older names (`performance_scripts.liquid`,
 > `/apps/my-first-custom-app`, dummy `api.script.jsx` as the storefront path).
 
+**Verification (2026-10-19):** Re-read against the tree; **do not delete** prior prose unless Appendix A marks it wholly wrong — add corrections beside it instead. When updating, **merge and correct in place**; keep superseded wording in place with a dated correction note (see §16.6, §28) rather than removing paragraphs.
+Server-load / capacity: [`docs/server-load-reduce.md`](docs/server-load-reduce.md).
+
+**Phase 3 pass 2 (GAP PROMPT_2, 2026-10-19):** Dead-code inventory §17.3; Appendix B `wc -l` regen; symbol tables §8.8.1, §9.5.5, §10.3.1, §10.4.1, §11.7.1, §12.2, §20.8.1, §25.1.
+
+**Build state (re-run this session):**
+| Check | Result |
+|---|---|
+| `npm test` | **113 pass, 6 skipped, 0 fail** (re-run this session) |
+| `npm run lint` | **0 errors** — `node:process` in `theme-head-inject-utils.js`; `OverviewLighthouse` eslint waiver |
+| `npm run typecheck` | **Fails** — see §17.4 (`HiddenAuditResult` drift, `.ts` import extensions) |
+
+**Policy:** Trivial lint fixes were applied so `npm run lint` is trustworthy; TypeScript drift is tracked in §17.4 until a code pass aligns `HiddenAuditResult` / import extensions.
+
 ---
 
 ## 0. What this checkout is (read first)
@@ -51,13 +65,14 @@ in a different Partner org and cannot install the Brainvire PagePulse
    invent a second procedure.
 3. Read **§1–§3** (what the code does, two apps, two TOML configs).
 4. Before changing a feature, jump to **§18** (“where do I change X”).
-5. Before claiming storefront behavior, read **§10** (wired proxy path)
-   and **§17** (leftover files that look wired but are not).
+5. Before claiming storefront behavior, read **§10** (wired proxy path +
+   inline metafields **§10.1**) and **§17** (leftover files that look wired
+   but are not). Older notes that say “JSON fetch” are retained in **§16.6**
+   with corrections — do not delete them.
 6. Dashboard open-speed work is **already in this code**. Read **§7.0**
    before touching the loader. Do not re-serialize Shopify calls.
 7. On a new destore, assume first install until a `Store` row exists.
-8. Constants: **§22**. GraphQL list: **§23**. Leftover files: **§17** +
-   **§24**. Admin-panel route/API map: **§20**.
+8. Constants: **§22**. GraphQL: **§23**. Tests: **§26**. Ops: **§27**. Leftovers: **§17** (incl. §17.1–§17.2) + **§24**. PSI: **§25**. Corrections: **§28**. Admin-panel route/API map: **§20**.
 
 ---
 
@@ -149,7 +164,7 @@ PagePulse-Performance/
 │   └── shopify.extension.toml             # name "Script Injector"
 ├── prisma/
 │   ├── schema.prisma             # Shopify-app schema (source of truth for DB)
-│   └── migrations/               # 8 SQL migrations (see §14)
+│   └── migrations/               # 25 SQL migrations (see §14.2)
 ├── admin-panel/                  # Separate Next.js 15 app
 │   ├── src/app/                  # App Router pages + /api/*
 │   ├── src/lib/                  # auth, queries, dummy-data, prisma
@@ -161,8 +176,11 @@ PagePulse-Performance/
 ├── docker-compose.yml            # postgres:16-alpine, db performance_app
 ├── Dockerfile                    # Node 20 Alpine + system Chromium
 ├── .cursor/skills/install-performance-app/SKILL.md
+├── .playwright-mcp/              # Playwright MCP page snapshots (gitignored — §3, Appendix B)
 └── PROJECT_FLOW.md               # ← this file
 ```
+
+`.gitignore` line 40 lists `.playwright-mcp/` — not application source; safe to delete locally.
 
 **There is no `performance_scripts.liquid`.** The wired block filename in
 this repo is `performance-loader.liquid`. Handle in theme
@@ -271,7 +289,9 @@ run the destore.
 
 ## 5. Routing map (every file under `app/routes/`)
 
-Flat routes: `api.audit.start.jsx` → `/api/audit/start`.
+Flat routes use React Router FS naming (`api.foo.jsx` → `/api/foo`). Older
+docs used the example `api.audit.start.jsx` → `/api/audit/start` — that
+file is **gone** from this tree (table below + §5.1).
 
 | File | URL | Auth | Purpose |
 |---|---|---|---|
@@ -283,15 +303,28 @@ Flat routes: `api.audit.start.jsx` → `/api/audit/start`.
 | `app._index.jsx` | `/app` | `authenticate.admin` again | **Wizard.** Loader + all dashboard `intent`s. See §7–§8 |
 | `app.extension.jsx` | `/app/extension` | admin | Embed on/off + theme-editor deep link. `?from=toggle` auto-opens editor |
 | `app.settings.jsx` | `/app/settings` | admin | Debug toggle, link to `/app/extension`, “Reset all data” |
-| `api.audit.start.jsx` | `/api/audit/start` POST | admin | Manual re-audit (skips if already complete and not running) |
 | `api.audit.status.jsx` | `/api/audit/status` GET | admin | `{running,complete,failed,error,pageIndex,totalPages,progress}` from `StoreConfig` |
-| `api.storefront-scripts.jsx` | `/api/storefront-scripts` GET+POST | **App Proxy** | **Wired storefront JSON** (what Liquid fetches). See §10 |
-| `api.script.jsx` | `/api/script` GET | App Proxy | **Leftover.** Dummy JS bundle. Liquid in this repo does not call this |
-| `api.step-3.jsx` | `/api/step-3` POST | admin | Returns `PREDEFINED_SCRIPTS` (empty array today) |
-| `api.save-performance-scripts.jsx` | `/api/save-performance-scripts` POST | admin | Upserts `PerformanceScript` raw text. **Not used by the wired proxy** |
+| `api.dashboard-report.jsx` | `/api/dashboard-report` GET | admin | Step 3 audit summary (`loadDashboardAuditReportSummary`) |
+| `api.embed-status.jsx` | `/api/embed-status` GET | admin | Embed status without full dashboard reload |
+| `api.password-status.jsx` | `/api/password-status` GET | admin | Tri-state password protection for Step 1 |
+| `api.storefront-scripts.jsx` | `/api/storefront-scripts` GET+POST | **App Proxy** | Prebuilt `PerformanceScript.deferScript` (`application/javascript`). See **§10.2** + §10.6 |
+| `api.themes.jsx` | `/api/themes` GET | admin | Theme list for Step 1 picker |
+| `api.toggle-validate.jsx` | `/api/toggle-validate` POST | admin | Pre-flight embed + password before toggle ON |
 | `webhooks.app.uninstalled.jsx` | `/webhooks/app/uninstalled` | webhook HMAC | Soft-delete store, log, best-effort metaobject + Session delete |
 | `webhooks.app.scopes_update.jsx` | `/webhooks/app/scopes_update` | webhook | Session.scope + `Store.currentScope` + activity |
 | `webhooks.compliance.jsx` | `/webhooks/compliance` | webhook | GDPR: data_request/redact no-op; `shop/redact` → `eraseShopData` |
+
+### 5.1 Removed route files (keep for old grep — not in tree today)
+
+These rows are **preserved from earlier PROJECT_FLOW versions** so searches
+for filenames still land here. See **§28 Appendix A** for removal evidence.
+
+| File | URL | Auth | Purpose |
+|---|---|---|---|
+| `api.audit.start.jsx` | `/api/audit/start` POST | admin | Manual re-audit (skips if already complete and not running) |
+| `api.script.jsx` | `/api/script` GET | App Proxy | **Leftover.** Dummy JS bundle. Liquid in this repo does not call this |
+| `api.step-3.jsx` | `/api/step-3` POST | admin | Returns `PREDEFINED_SCRIPTS` (empty array today) |
+| `api.save-performance-scripts.jsx` | `/api/save-performance-scripts` POST | admin | Upserts `PerformanceScript` raw text. **Not used by the wired proxy** |
 
 There is **no** `/audit-submit` route in `app/routes/`. Dashboard still
 writes `SHOPIFY_APP_URL/audit-submit` onto metaobject `app_endpoint`
@@ -309,7 +342,8 @@ writes `SHOPIFY_APP_URL/audit-submit` onto metaobject `app_endpoint`
 | `storefrontPassword`, `customPlpUrl`, `customPdpUrl` | **Postgres only** | dashboard intents | Never on the metaobject |
 | Audit lifecycle (`auditRunning/Failed/Error/PageIndex/TotalPages/lastAuditAt`) | **Postgres only** | `startHiddenAudit` / status poller | |
 | Shop identity (name, address, plan, product count, …) | Shopify Admin, mirrored to `Store` | `fetchShopDetailsFromShopify` + `upsertStore` | For admin-panel / local DB only, **not** painted on the wizard |
-| Compiled storefront JS/CSS | Generated **on each proxy request** from DB arrays | `generateDeferredScript` + `buildHiddenCss` | Not read from `PerformanceScript` |
+| Compiled storefront JS/CSS | **`PerformanceScript.deferScript`** (rebuild when inputs change) | `rebuildPerformanceScript` → `syncScriptMetafield` | Obfuscated once; proxy reads stored bytes (**§10.1**). *Older note below still describes the compile inputs, not per-request proxy compile.* |
+| *(historical wording)* | *Generated on each proxy request* | *`generateDeferredScript`* | *Superseded for proxy path — kept so prior readers recognize the phrase; see §28 Appendix A* |
 
 `syncConfigToDatabase` **mirrors flags** into Postgres on dashboard load.
 On **update** it deliberately does **not** write `auditComplete` or the
@@ -318,6 +352,20 @@ empty metaobject lists.
 
 Loader overlay: if DB arrays are non-empty they **win** over the
 metaobject copy. Toggles and preserved snapshots always come from DB.
+
+---
+
+
+### 6.1 Sync mechanics (Postgres ↔ metaobject) — supplement to §6
+
+| Function | File | Reads | Writes | Tie-break |
+|---|---|---|---|---|
+| `ensureConfig` / `getConfig` / `updateConfig` | `metaobjects.ts` | Shopify metaobject | Metaobject fields | Metaobject wins for flags on successful Admin read |
+| `syncConfigToDatabase` | `store-sync.server.ts` 299–385 | `SyncConfigInput` from loader | `StoreConfig` flags/toggles; **update omits** audit arrays + `auditComplete` (353–357) | DB arrays/toggles win over empty metaobject mirror |
+| `saveAuditReport` | `store-sync-audit.server.ts` | Audit result | Arrays, `AuditLog`, template buckets | Audit run overwrites lists unless field toggled OFF → preserved |
+| `updateAuditArrays` / `updateAuditFieldToggle` | `store-sync.server.ts` 635+ | Merchant edits | DB only | DB authoritative |
+| `safeSyncConfig` | `app/routes/app._index.jsx` 96–104 | Inline wrapper after metaobject write | Calls `syncConfigToDatabase` | Live toggle intents (§17.3 — not the dead helper module) |
+| `rebuildPerformanceScript` | `performance-script.server.ts` 146+ | `StoreConfig` + optional `AuditLog` per-page | `PerformanceScript` + async metafield sync | Storefront bytes from DB inputs, not metaobject |
 
 ---
 
@@ -519,6 +567,7 @@ timeout. It still does `getConfig` + `syncConfigToDatabase` serially.
 
 ### 8.1 Step 1 — `Step1Activate.jsx`
 
+
 - Master switch → `intent: "toggle-app"`, `appEnabled: "true"|"false"`.
 - If merchant tries ON while embed is off: **does not POST**. Opens
   `/app/extension?...&from=toggle` in a new tab.
@@ -545,7 +594,8 @@ timeout. It still does `getConfig` + `syncConfigToDatabase` serially.
 - Progress UI: assumes 30s/page, default 3 pages. Bar caps at 99% until
   poll says complete. Failed shows `auditStatus.error`.
 
-### 8.2 Toggle-ON server path (`intent: "toggle-app"`, true)
+### 8.2 Toggle-ON server path (`intent: "toggle-app"`, true) — historical steps
+
 
 1. Re-check `isAppEmbedEnabled`. If `false`, return
    `{ ok:false, error:"extension_required", embedEnabled:false, … }`
@@ -557,7 +607,8 @@ timeout. It still does `getConfig` + `syncConfigToDatabase` serially.
 5. `safeSyncConfig` + `logActivity("config_changed")`.
 6. Return `{ ok:true, config, auditRunning:true }`.
 
-### 8.3 Toggle-OFF
+### 8.3 Toggle-OFF — historical steps
+
 
 `updateConfig({ appEnabled:false })` — does **not** clear individual
 script flags. Then `resetAudit`, then DB upsert clearing
@@ -565,6 +616,7 @@ script flags. Then `resetAudit`, then DB upsert clearing
 Activity logged.
 
 ### 8.4 Step 2 — `Step2Configure.jsx` + nested `Step3Titles.jsx`
+
 
 `PREDEFINED_SCRIPTS` is `[]`, so **zero script-slot rows render**.
 `script1/2/3Enabled` still exist on the metaobject and in `toggle-script`.
@@ -593,7 +645,8 @@ Dead intents still in the action (no current UI caller):
 `save-titles`, `save-audit-defer`, `save-audit-hide` (these **do** write
 the metaobject).
 
-### 8.4a Dashboard `action` intents (complete)
+### 8.5 Dashboard `action` intents (complete)
+
 
 | `intent` | Form fields | Writes | Used by |
 |---|---|---|---|
@@ -615,7 +668,58 @@ Settings page intents (not on the wizard): POST without `intent` toggles
 `https://www.brainvire.com/terms-of-use/`,
 `mailto:shopify@brainvire.com`. Label still says “PERFORMANCE APP”.
 
-### 8.5 `startHiddenAudit` (also mirrored in `api.audit.start.jsx`)
+### 8.6 Toggle paths as implemented today (`app._index.jsx`)
+
+
+The numbered steps in **§8.2–8.3 above** describe an earlier automatic-audit shape. The **current** server code:
+
+- **`toggle-app` ON:** embed + password guards; enables scripts; `rebuildPerformanceScript`; does **not** call `resetAudit` on every ON. **OFF→ON only:** `startAuditForStore` (fire-and-forget). Re-enabling when already ON does not spawn another run (`app._index.jsx` ~685–698).
+- **`toggle-app` OFF:** master switch only; audit arrays and lifecycle are **not** wiped (`app._index.jsx` ~665–672).
+- **`start-audit`:** explicit re-run when app on, embed on, not already `auditRunning` (~716–784).
+- **`POST /api/toggle-validate`:** client pre-check (`api.toggle-validate.jsx`).
+
+Additional intents: `select-theme`, `script-token-action` (scoped defer/delay edits in Step 3).
+
+### 8.7 Dashboard server modules (`app/lib/dashboard-*.server.js`)
+
+Reachability (2026-10-19 import graph): **`app/routes/app._index.jsx` imports zero `dashboard-*` modules.** Only `dashboard-report-loader.server.js` is live (via `api.dashboard-report.jsx`). Everything else in this table is **unreachable** or **transitively dead** — see §17.3.
+
+| Module | Exports / entry | Reachability | Fast vs slow path (if ever wired) |
+|---|---|---|---|
+| `dashboard-loader.server.js` | `loader` (`33`) | **Unreachable** — no importers | Would call `reconcileScriptMetafield`, `maybeSweepStaleAuditStateForShop`, `healStoreIfReinstalled` |
+| `dashboard-helpers.server.js` | `STORE_CONFIG_SELECT`, `configFromDbRow`, `safeUpdateConfig`, `safeSyncConfig`, … (`8–199`) | **Transitively dead** — only imported by dead dashboard modules | N/A today |
+| `dashboard-actions.server.js` | `action` router (`21`) | **Unreachable** | Intent router |
+| `dashboard-actions-audit.server.js` | `handleToggleApp`, `handleStopAudit`, `handleStartAudit` | **Transitively dead** | Slow (audit start) |
+| `dashboard-actions-theme.server.js` | `handleSelectTheme`, `handleRetryHeadInject` | **Transitively dead** | Slow (theme / inject) |
+| `dashboard-actions-step3.server.js` | `handleToggleAuditField`, `handleSaveAuditArrays`, `handleScriptTokenAction` | **Transitively dead** | DB writes |
+| `dashboard-actions-settings.server.js` | `handleSaveStorefrontPassword`, `handleSaveCustomPageUrls` | **Transitively dead** | DB + optional audit restart |
+| `dashboard-report-loader.server.js` | `loadDashboardAuditReportSummary` (`5`) | **Live** — `api.dashboard-report.jsx` `6–8` | On-demand report fetch |
+
+### 8.8 Audit report UI (Step 3)
+
+
+- `Step3AuditResults.jsx` — lazy `useFetcher` → `/api/dashboard-report`.
+- `AuditReportPanel.jsx` — sortable inventory; statuses from `audit-classified-inventory.ts`.
+- `Step3Titles.jsx`, `PpPillButton.jsx`, `step1/Step1AuditRunning.jsx` (stop UI **not wired** to any route yet).
+
+### 8.8.1 `AuditReportPanel.jsx` — symbol table
+
+| Name | File:line | Purpose |
+|---|---|---|
+| `formatScriptSize` | `AuditReportPanel.jsx:28` | Human-readable byte size for script rows |
+| `scriptActionSelectValue` | `36` | Maps row + template lists → defer/hide select value |
+| `compareScriptRows` | `44` | Sort comparator for script table columns |
+| `scoreColor` / `metricColor` / `barPercent` | `112–131` | Lighthouse-style metric coloring |
+| `useInView` | `139` | Intersection observer for bar animations |
+| `AnimatedBar` / `CircularScoreGauge` / `MetricRow` | `157–249` | Scan summary visuals |
+| `OverviewLighthouse` | `292` | PSI overview block — **defined, not rendered** (lint waiver) |
+| `AuditReportPanel` (default) | `358` | Sortable inventory; `useFetcher` for `script-token-action` |
+| `SCRIPT_TABLE_COLUMNS` | `~70` | Column ids for sortable script table |
+
+Data: `summary` from `/api/dashboard-report`; statuses align with `buildScriptInventoryFromClassified` (§9.5.5).
+
+### 8.9 `startHiddenAudit` entry (see also `audit-runner.server.ts`)
+
 
 Requires a `Store` row (created by dashboard shop sync). If missing, logs
 `SKIPPED — no Store row` and returns.
@@ -631,6 +735,38 @@ fetched when a password exists (`getActiveThemeId` = most recently
 `api.audit.start` extra: if `auditComplete && !auditRunning`, returns
 `{ complete:true }` without re-running. Dashboard OFF→ON always resets
 first, so it re-runs.
+
+---
+
+
+
+### 8.10 Complete dashboard `action` intent table (`app._index.jsx`)
+
+| Intent | Validates | Writes | `StoreActivity` | Client return | UI source |
+|---|---|---|---|---|---|
+| `toggle-app` | Embed, password if protected (`575–648`) | Metaobject via `safeUpdateConfig`; `rebuildPerformanceScript` (`677`) | `config_changed` App on/off (`678–683`) | `{ ok, config, auditStarted }` | Step 1 switch |
+| `start-audit` | `appEnabled`, not running, embed (`716–760`) | `startAuditForStore` | `config_changed` Audit started manually (`768–773`) | `{ ok, auditStarted }` | Step 1 Run audit |
+| `select-theme` | Theme in list (`787–798`) | `selectedThemeId` upsert | — | `{ ok, themeId, embedEnabled }` | Step 1 theme picker |
+| `toggle-script` | Index 0–2 | Metaobject script N | — | `{ ok, config }` | Step 2 (no rows today) |
+| `toggle-audit-field` | Allowed field name | `updateAuditFieldToggle` | — | `{ ok, field, enabled }` | Step 3 toggles |
+| `save-audit-arrays` | JSON arrays / delay ms | `updateAuditArrays` | — | `{ ok, …patch }` | Step 3 Save |
+| `save-storefront-password` | Non-empty when required | `storefrontPassword` | May restart audit on password errors | `{ ok, auditRestarted? }` | Step 1 password card |
+| `save-custom-page-urls` | URL normalize | PLP/PDP + `customPageUrls` | — | `{ ok, warnings }` | Step 1 URLs |
+| `script-token-action` | `token`, `action` ∈ defer/delay_first/delay_every/protected (`1115–1165`) | `updateAuditArrays` via `buildArrayPatchForTokenAction` | `config_changed` with token metadata | `{ ok, token, action, …patch }` | `AuditReportPanel` / Step 3 |
+
+`POST /api/toggle-validate` (`api.toggle-validate.jsx` 31+) is **not** an `intent` on `app._index` — Step 1 calls it via `validationFetcher` (`Step1Activate.jsx` 327).
+
+---
+
+### 8.11 Step 1 / Step 3 UI state (`Step1Activate.jsx`, `Step3Titles.jsx`)
+
+**Step 1 fetchers** (`Step1Activate.jsx` 44–49): `fetcher` toggle-app; `pwFetcher` password; `urlFetcher` custom URLs; `validationFetcher` → `/api/toggle-validate`; `themesFetcher` → `/api/themes`; `selectFetcher` select-theme.
+
+**Audit polling:** Parent `app._index.jsx` polls `/api/audit/status` every 1s when `expectingAudit` or `auditStatus.running` (see §7.8). `usePasswordStatus` polls `/api/password-status` while tri-state NULL.
+
+**Step 1 states (merchant-visible):** app off + embed off → extension redirect; app off + embed on → can validate toggle; app on + audit running → progress; audit failed → error string from `auditStatus.error`; password card when `passwordProtected === true`.
+
+**Step 3:** `Step3Titles.jsx` — per-scope JSON editors; `script-token-action` from report table; toggles use `toggle-audit-field`.
 
 ---
 
@@ -701,7 +837,167 @@ as script patterns). The wired proxy uses `StoreConfig` arrays only.
 
 ---
 
+### 9.5 Engine decomposition supplement (2026-10-19)
+
+### 9.5.1 Module map
+
+| Symbol | File | Role |
+|---|---|---|
+| `startAuditForStore` | `audit-runner.server.ts` | Entry: DB progress, slot semaphore, calls `runHiddenAudit` |
+| `discoverPages`, `runHiddenAudit` | `audit.server.ts` | **Live** scan implementation (largest module ~2261 lines) |
+| `runHiddenAudit` (copy) | §17.3 duplicate | **Unreachable** — drift risk; live code in `audit.server.ts` |
+| `withBrowser`, types | `audit-core.server.ts` | Shared browser lifecycle |
+| `measurePage`, passes | `audit-run-page-measure.server.ts` | Per-page measure + interaction |
+| Timings | `audit-run-page-timing.ts` | Exported constants (also duplicated in `audit.server.ts`) |
+| `buildScriptInventory` | `audit-inventory.server.ts` | Network inventory assembly |
+| `buildScriptInventoryFromClassified` | `audit-classified-inventory.ts` | deferred/protected/never/noise/self/candidate |
+| `saveAuditReport` | `store-sync-audit.server.ts` | Persist arrays + template buckets |
+| Popup selectors | `popup-audit.js` | MutationObserver cap 30, cross-page veto |
+| Fold policy | `audit-fold-policy.server.ts` | Above-fold hide safety |
+| Gate impact | `audit-gate-impact.server.ts` | Home defer impact measurement |
+| Metrics throttle | `audit-metrics.server.ts` | Lab vitals (`AUDIT_LAB_THROTTLE`) |
+
+### 9.5.2 Phases inside `runHiddenAudit` (`audit.server.ts`)
+
+1. **Discover** URLs — home, PLP, PDP, up to `MAX_EXTRA_PAGES = 8` extras (`audit.server.ts` 742).
+2. **Three passes** — `AUDIT_REPEAT_PASSES = 3` (742–744): pass 1 full measure; later passes harvest tokens with lighter work.
+3. **Parallel pages** — `Promise.all` over URL list (see `docs/server-load-reduce.md` §3 for RAM implications).
+4. **Settle** — `SETTLE_MIN_MS = 5000`, probes `SETTLE_PROBE_GAP_MS = 900`, `SETTLE_STABLE_CHECKS = 2`, cap `SETTLE_SAFETY_NET_MS = 40000` (`audit-run-page-timing.ts`).
+5. **Fold band** — `FOLD_HEIGHT_PX = 1100` — hide candidates must not overlap fold (`audit-fold-policy.server.ts`).
+6. **Classification** — tokens → defer vs never vs noise vs self vs protected vs candidate (`audit-classified-inventory.ts`).
+
+### 9.5.3 Concurrency and queue (important)
+
+| Mechanism | Status |
+|---|---|
+| `audit-runner.server.ts` `MAX_CONCURRENT_AUDITS = 1` | **Live** — in-process semaphore |
+| `audit-queue.server.ts` `enqueueAuditJob` / `drainAuditQueue` | **Implemented, not called** from `startAuditForStore` (used by `scripts/audit-soak.ts`) |
+| `AuditJob` + heartbeat `lockedAt` | Wired in queue/watchdog modules; runner does not yet `touchAuditJobHeartbeat` |
+| `audit-watchdog.server.ts` | `maybeSweepStaleAuditStateForShop` — **only caller is §17.3 dead loader**; live `app._index.jsx` loader does not sweep |
+| `AUDIT_STOPPED_BY_USER` | `audit-lifecycle.ts` 11 — `stopAuditForShop` in watchdog; UI `Step1AuditRunning` **not mounted**; `stop-audit` intent only in §17.3 dead action router |
+
+### 9.5.4 Password / preview
+
+- Store password: `appendPasswordBypass` / audit navigation (`audit.server.ts`).
+- PSI on password stores: `psiPreviewBypassParams` (`_bt`, `key`, `preview_theme_id`) from theme share link (`psi-preview-url.server.ts`).
+
+---
+
+
+### 9.6 `audit.server.ts` — exports and `runHiddenAudit` walkthrough
+
+| Export | Line (approx) | Role |
+|---|---|---|
+| `DiscoveredPages`, `HiddenAuditResult`, `PageFunnel`, `FoldAssertion` | 40–105 | Report shapes |
+| `AuditBlockedError`, `AuditBlockCode` | 123–125 | Password gate errors |
+| `withBrowser` | 194 | Shared Chromium lifecycle |
+| `appendPreviewParams`, `describePages`, `pickPagesFromDiscovery` | 233–312 | URL helpers |
+| `isPasswordPageHtml`, `isPasswordPage`, `unlockPasswordPage`, `returnToRequestedUrl` | 367–438 | Password form handling |
+| `discoverPages` | 557 | Home/PLP/PDP/extras discovery |
+| `AuditPhase`, `AuditProgress` | 678–680 | Progress callbacks |
+| `runHiddenAudit` | 1859 | **Live scan orchestrator** |
+
+**`runHiddenAudit` phases** (`audit.server.ts` 1875–1974+):
+
+1. Build URL list (home, plp, pdp, extras) — 1878–1880.
+2. `withBrowser` → loop `AUDIT_REPEAT_PASSES` (3) — 1896.
+3. Per pass: `Promise.allSettled` → `measurePage(browser, url, password, harvestOnly)` — 1898–1899 (`audit-run-page-measure.server.ts`).
+4. Progress via `onProgress` — 1917–1920.
+5. Password block → `AuditBlockedError` — 1938–1941.
+6. Merge tokens across passes into sets; fold/coverage/nevere/noise classification — 1949+.
+
+**Not extracted (still in `audit.server.ts`)**: `measurePage` import path, pass loop, and set merging stayed monolithic; the §17.3 duplicate scan file is **unreachable**. Decomposition lives in `audit-run-page-measure.server.ts`, `audit-core.server.ts`, `audit-inventory.server.ts` — called from live `runHiddenAudit`.
+
+### 9.5.5 `audit-classified-inventory.ts` — symbol table
+
+| Name | File:line | Purpose |
+|---|---|---|
+| `ClassifiedInventoryEntry` | `audit-classified-inventory.ts:6` | One inventory row: token, status, reasons, pages, optional domain |
+| `buildScriptInventoryFromClassified` | `31` | Maps audit report sets → `byToken` + `totals` for UI / `topScripts` |
+| `domainFromToken` | `14` | Heuristic third-party domain from bare hostname token |
+| `tokenSeenOnPage` | `21` | Prefix/substring match for per-page defer lists |
+
+Statuses: `deferred`, `protected`, `never`, `noise`, `self`, `candidate` (`4`). No runtime imports besides tests and report builders.
+
+---
+
 ## 10. Storefront delivery (wired path in this codebase)
+
+### 10.1 Primary — inline metafield + theme embed
+
+```mermaid
+flowchart LR
+  A[rebuildPerformanceScript] --> B[(PerformanceScript.deferScript)]
+  B --> C[syncScriptMetafield / script-inline.js]
+  C --> D[Shop metafields $app:pagepulse script..script_6]
+  D --> E[performance-loader.liquid compliance_head]
+  E --> F[pagepulse-inline.liquid json concat + eval]
+```
+
+| Piece | Location | Behavior |
+|---|---|---|
+| Namespace | `script-inline.js` `METAFIELD_NAMESPACE = "$app:pagepulse"` | App-reserved shop metafields |
+| Chunking | `MAX_CHUNKS = 6`, `CHUNK_CHARS = 60_000` | `script_parts` integer + `script`…`script_6` |
+| Liquid | `snippets/pagepulse-inline.liquid` | `{{ value \| json }}` per chunk — **fixes HTML-escape breakage** for obfuscated JS |
+| Embed target | `blocks/performance-loader.liquid` | `target: "compliance_head"` — earliest head slot |
+| Double-run guard | `unless app.metafields.pagepulse.theme_head_active` | Skips embed when theme.liquid injection active |
+| Missing metafield | — | **No `<script src>` fallback** — embed prints nothing (`script-inline.js` 7–8) |
+
+`reconcileScriptMetafield` is implemented in `script-metafield.server.ts` (`183+`) with a 60s per-shop cooldown, but **only the §17.3 dead loader** calls it on load. Live `app._index.jsx` heals metafields via `rebuildPerformanceScript` → `syncScriptMetafield` on toggle/save paths, not on every paint.
+
+### 10.2 Secondary — App Proxy JavaScript
+
+`GET /apps/performance-scripts` → `api.storefront-scripts.jsx`:
+
+- Auth: `authenticate.public.appProxy` + `verifyAppProxyShop` (`proxy-shop.js`).
+- Returns **prebuilt** `deferScript` with `ETag: scriptHash`, `Cache-Control: public, max-age=300, stale-while-revalidate=86400`.
+- If row empty, one-shot `rebuildPerformanceScript` then serve.
+- App off → body `/* pp:off */`.
+
+Used when theme uses **head injection** (`theme-head-inject.server.ts`) to insert a blocking `<script src="/apps/performance-scripts?...">` — see `theme_head_active` metafield.
+
+### 10.3 Theme.liquid head injection (optional)
+
+`attemptThemeHeadInject` (`theme-head-inject-status.server.ts`) patches `layout/theme.liquid` via `themeFilesUpsert` when `PAGEPULSE_THEME_HEAD_INJECT !== "false"`. Status stored on `StoreConfig.themeHeadInjectStatus`. Idempotent patch helpers in `theme-head-patch.js` / `theme-head-inject-utils.js`.
+
+### 10.3.1 `theme-head-inject.server.ts` — symbol table & status machine
+
+| Name | File:line | Purpose |
+|---|---|---|
+| `ensureThemeHeadInlineScript` | `theme-head-inject.server.ts:196` | Read/patch `layout/theme.liquid` + snippet; `themeFilesUpsert`; set `theme_head_active` metafield |
+| `clearThemeHeadDelivery` | `247` | Clears `theme_head_active` after uninstall cleanup |
+| `attemptThemeHeadInject` | `theme-head-inject-status.server.ts:84` | Skip if `shouldSkipThemeHeadInject`; else inject + persist status on `StoreConfig` |
+| `shouldSkipThemeHeadInject` | `theme-head-inject-status.server.ts:34` | Skip when already `injected` or in `exempt_denied` cooldown (7 days, `14`) |
+| `isThemeFilesExemptDenied` | `theme-head-inject-utils.js:46` | Detects Shopify `themeFiles` exempt-denied errors → `EXEMPT_DENIED` status |
+| `THEME_HEAD_INJECT_STATUS` | `theme-head-inject-utils.js:54` | `injected`, `skipped`, `error`, `exempt_denied` |
+
+**Flow:** `syncScriptMetafield` success path calls `attemptThemeHeadInject` (`script-metafield.server.ts:140–142`). Failed inject with exempt-denied → `exempt_denied` on config; re-attempt blocked until cooldown unless `force`.
+
+### 10.4 Build pipeline
+
+`rebuildPerformanceScript` (`performance-script.server.ts`):
+
+1. Read `StoreConfig` lists + per-page audit data from latest `AuditLog.audit_data` when present.
+2. `generateDeferredScript` + `buildHiddenCss` (`script-generator.js`).
+3. Obfuscate in `generateDeferredScript`; store `scriptHash` on the row (`performance-script.server.ts` 197–207). Prisma also defines `inputsHash` on `PerformanceScript` but **no app/lib code reads it yet** (2026-10-19).
+4. `syncScriptMetafield` writes Shopify metafields (serialized per-shop chain in `script-metafield.server.ts`).
+
+Operator backfill: `scripts/backfill-script-metafield.ts`.
+
+### 10.4.1 `script-metafield.server.ts` — symbol table
+
+| Name | File:line | Purpose |
+|---|---|---|
+| `syncScriptMetafield` | `script-metafield.server.ts:75` | Per-shop serialized chain; reads **current** `PerformanceScript` row; `planMetafieldSync` → write/clear Shopify metafields |
+| `clearScriptMetafield` | `162` | Explicit metafield delete |
+| `reconcileScriptMetafield` | `183` | Cooldown-gated heal (`RECONCILE_COOLDOWN_MS` 60s); compares DB hash vs `metafieldHash` via `planMetafieldSync` |
+| `planMetafieldSync` | `script-inline.js:137` | **Skip write** when `scriptHash === metafieldHash` (noop); not `inputsHash` on `PerformanceScript` |
+
+**Rebuild skip:** `rebuildPerformanceScript` always regenerates (`performance-script.server.ts:146–208`). Metafield **sync** skips when hashes match (`planMetafieldSync` noop). Prisma `inputsHash` column has **no** `app/lib` reader (2026-10-19).
+
+---
+
+> **Diagram below (JSON `fetch` path):** retained from the prior doc. The theme embed block in this repo **does not** use that fetch; it renders inline metafields (**§10.1**). The proxy path remains for `application/javascript` + theme head inject.
 
 ```
 Theme (head)
@@ -715,16 +1011,19 @@ Theme (head)
     then remove the loader <script> node
 ```
 
-### 10.1 Liquid (`extensions/script-injector/blocks/performance-loader.liquid`)
+### 10.5 Liquid (`extensions/script-injector/blocks/performance-loader.liquid`)
 
-- Schema name: **Performance Script Loader**, `target: head`, no settings.
+- Schema name: **Performance Script Loader**, `target: compliance_head` (earliest app-embed slot in `<head>`; older docs said `head`). No settings.
 - No Liquid App Proxy signature helper — Shopify injects query params on
   the fetch URL when the request is same-origin on the shop domain.
 - Password-protected storefronts: anonymous `curl` without the password
   cookie gets Shopify’s password **HTML**, which looks like a 500. Unlock
   the storefront (or send `_password` + digest) before judging the proxy.
 
-### 10.2 `api.storefront-scripts.jsx`
+### 10.6 `api.storefront-scripts.jsx`
+
+
+> **2026-10-19 behavior:** This route returns **prebuilt** `PerformanceScript.deferScript` as `application/javascript` with ETag (`api.storefront-scripts.jsx` lines 13–21, 70–77). The bullets below describe an **older JSON + compile-on-request** contract; kept for context — do not implement both.
 
 - `authenticate.public.appProxy(request)`.
 - Shop = `auth.session.shop` or `?shop=`.
@@ -742,7 +1041,7 @@ Theme (head)
 
 Typical compiled `auditScript` is ~200–280KB after obfuscation.
 
-### 10.3 Hide CSS
+### 10.7 Hide CSS
 
 `buildHiddenCss` in `script-generator.js`:
 
@@ -755,7 +1054,7 @@ proxy JSON returns. The generated script also inserts that tag into
 `document.head` if the id is missing. First interaction adds
 `interacted` on `<html>` (§11.1), which lifts the hide.
 
-### 10.4 Present in the repo but not wired to the destore storefront
+### 10.8 Present in the repo but not wired to the destore storefront
 
 - `api.script.jsx` — dummy JS, two no-op scripts + empty style.
 - `api.save-performance-scripts.jsx` — writes `PerformanceScript` rows
@@ -818,6 +1117,57 @@ already passes string[].
 
 ---
 
+
+
+### 11.6 Template scopes (Global / Home / Collection / Product)
+
+ (`template-script-config.ts`)
+
+| Scope | Defer column | Hide column | First-user delay | Every-visit delay |
+|---|---|---|---|---|
+| global | `auditDeferGlobal` | `auditHideGlobal` | `firstUserDelayScriptsGlobal` | `staticDeferDefaultsGlobal` |
+| home | `auditDeferHome` | … | … | … |
+| collection | `auditDeferCollection` | … | … | … |
+| product | `auditDeferProduct` | … | … | … |
+
+**Union fallback:** legacy columns `auditDeferArray`, `auditHideSelectors`, `staticDeferDefaults`, `firstUserDelayScripts` — used when scoped buckets empty (`readBucketsFromRow` legacyColumn parameter).
+
+**UI:** `Step3Titles.jsx` + `script-token-action` intent applies per-scope keep/remove on a single token (`app._index.jsx` `1115+`; parallel handler exists only in §17.3 dead modules).
+
+---
+
+
+### 11.7 Storefront build pipeline (`script-generator.js`, `performance-script.server.ts`, `script-inline.js`)
+
+| Step | Where | Detail |
+|---|---|---|
+| Inputs | `performance-script.server.ts` 166–192 | Respects `*Enabled` toggles; optional per-page data from `AuditLog` |
+| Generate + obfuscate | `script-generator.js` 615–632 | `compact`, CFF 0.3, `stringArray` base64, `seed` from shop (`script-generator.js` 89–99), `selfDefending: false` for `eval` inline |
+| Persist | `performance-script.server.ts` 204–208 | `scriptHash` = sha256 of deferScript |
+| Metafield plan | `script-inline.js` `planMetafieldSync` | Max 6 × 60k chars; unsafe scripts not inlined |
+| Shopify write | `script-metafield.server.ts` | Per-shop serialized chain; 10s timeout + one retry |
+
+**Rebuild skip:** There is **no** `inputsHash` comparison in `app/lib` today — every `rebuildPerformanceScript` call regenerates and upserts (146–208).
+
+### 11.7.1 Build pipeline — symbol tables
+
+**`script-generator.js`**
+
+| Name | File:line | Purpose |
+|---|---|---|
+| `parseToArray` | `script-generator.js:3` | Coerce JSON/string list inputs |
+| `buildHiddenCss` | `24` | `html:not(.interacted) :is(...)` hide stylesheet |
+| `generateDeferredScript` | `79` | Full storefront IIFE; obfuscation block ~615–632 (`compact`, CFF, string array, shop `seed`) |
+
+**`performance-script.server.ts`**
+
+| Name | File:line | Purpose |
+|---|---|---|
+| `readStringArray` | `performance-script.server.ts:123` | Prisma Json → `string[]` |
+| `rebuildPerformanceScript` | `146` | Load config + per-page audit data → generate → upsert row → `void syncScriptMetafield` |
+
+---
+
 ## 12. Metaobject helpers (`app/lib/metaobjects.ts`)
 
 `CONFIG_TYPE = "$app:script_injector_config"` — the `$app:` prefix is
@@ -858,6 +1208,24 @@ JSON-encoded arrays; blank titles are stripped (Shopify rejects `""`).
 | `readStringArray` | loader + storefront-scripts | Coerce Prisma Json → `string[]` |
 | `updateAuditArrays` | `save-audit-arrays` | Partial patch |
 | `updateAuditFieldToggle` | `toggle-audit-field` | Preserve/restore |
+
+### 12.2 Two sources of truth — `metaobjects.ts` + `store-sync.server.ts`
+
+**Read path (dashboard loader):** Admin GraphQL metaobject via `getConfig` / `ensureConfig` (`metaobjects.ts:226–298`) for wizard flags; **Postgres wins** for non-empty audit arrays and toggles when loader merges (`§6` overlay). Metaobject is the Shopify-native mirror for app-enabled flags and script slot toggles.
+
+**Write path (toggle ON/OFF):** `updateConfig` → metaobject, then `safeSyncConfig` in `app._index.jsx` → `syncConfigToDatabase` (`store-sync.server.ts:299`). Update branch **refuses** to copy `auditComplete` or the three audit arrays from metaobject (`353–357`) so empty metaobject data cannot clobber a finished audit.
+
+| Name | File:line | Purpose |
+|---|---|---|
+| `getConfig` | `metaobjects.ts:226` | Read metaobject → `AppConfig` |
+| `updateConfig` | `236` | Partial metaobject field write |
+| `ensureConfig` | `298` | Get or create metaobject row |
+| `resetAudit` | `387` | Clear arrays on metaobject + `auditComplete=false` |
+| `syncConfigToDatabase` | `store-sync.server.ts:299` | Upsert `StoreConfig` flags; audit arrays **create-only** on first row |
+| `saveAuditReport` | `store-sync-audit.server.ts` | Audit engine → DB arrays + `AuditLog` (authoritative for defer/hide lists) |
+| `updateAuditArrays` | `store-sync.server.ts:635` | Merchant Step 3 saves — DB only |
+
+**Tie-break:** Finished audit data lives in Postgres (`saveAuditReport` / `updateAuditArrays`). Metaobject lists are not trusted on routine sync. Storefront bytes come from `rebuildPerformanceScript` reading **Postgres** `StoreConfig`, not metaobject JSON.
 
 ---
 
@@ -912,6 +1280,24 @@ Update `Session.scope` and `Store.currentScope`; log
 | `20260907113428_add_storefront_password` | ADD `storefrontPassword` |
 | `20260907140000_add_audit_field_toggles` | ADD 3 `*Enabled` booleans + 3 `*Preserved` JSONB |
 | `20260916112504_add_custom_page_urls` | ADD `customPlpUrl`, `customPdpUrl` |
+
+| `20260922085053_add_first_user_delay_scripts` | ADD first-user delay scripts + ms |
+| `20260922150000_add_password_protected_and_cached_endpoint` | ADD `isPasswordProtected`, `cachedAppEndpoint` |
+| `20260924120000_add_selected_theme_and_audit_pages` | ADD `selectedThemeId`, `auditPages` |
+| `20260924130000_add_performance_script_hash` | ADD `scriptHash` on `performance_scripts` |
+| `20260924140000_add_audit_phase` | ADD `auditPhase` |
+| `20260924150000_default_delay_scripts_wpm_gtm` | Default wpm/gtm delay tokens |
+| `20260924160000_backfill_delay_scripts_wpm_gtm` | Data backfill |
+| `20260924170000_password_protected_nullable` | Tri-state password flag |
+| `20260930120000_admin_session_version` | ADD `AdminUser.sessionVersion` |
+| `20260930150000_custom_page_urls` | ADD `customPageUrls` JSON |
+| `20261007120000_add_metafield_sync_columns` | ADD `metafieldHash`, `metafieldSyncedAt` |
+| `20261009140000_add_theme_head_inject_status` | Theme head inject status columns |
+| `20261012120000_add_psi_field_columns` | PSI field vitals + backoff |
+| `20261012140000_audit_job_and_psi_snapshot` | `AuditJob`, `PsiSnapshot`, `activeAuditJobId` |
+| `20261013153000_psi_preview_bypass_params` | `psiPreviewBypassParams` |
+| `20261013180000_template_script_columns` | Template-scoped defer/hide/delay columns |
+| `20261014120000_audit_job_active_unique` | One active job per store (partial unique) |
 
 `npx prisma migrate deploy` applies these. It is **not** a no-op.
 
@@ -1029,8 +1415,8 @@ Skip steps that are already done.
    If unreachable: `docker-compose up -d` from the repo root (may need
    docker group / sudo). If Docker is blocked, ask the developer. Do
    not change `DATABASE_URL` without asking.
-5. `npx prisma generate && npx prisma migrate deploy` (8 migrations;
-   see §14.2).
+5. `npx prisma generate && npx prisma migrate deploy` (25 migrations;
+   see §14.2 (full table — 25 folders)).
 
 ### 16.4 Playwright (audits fail without this)
 
@@ -1119,8 +1505,14 @@ The destore then talks to this machine, not
 
 ### 16.6 Storefront script contract (do not regress)
 
+> **2026-10-19 correction (keep prior text below):** The theme embed uses
+> **inline shop metafields** (`pagepulse-inline.liquid`, `compliance_head`) —
+> see **§10.1**. The JSON `fetch` contract in the next paragraph describes an
+> **older** integration shape; the live proxy returns **`application/javascript`**
+> (`PerformanceScript.deferScript`), not `{ success, data: { auditScript } }`.
+
 Theme embed `extensions/script-injector/blocks/performance-loader.liquid`
-does `fetch("/apps/performance-scripts")` and expects JSON:
+*(historical note)* does `fetch("/apps/performance-scripts")` and expects JSON:
 
 ```json
 { "success": true, "data": { "auditScript": "<js>", "hiddenCss": "<css>" } }
@@ -1241,8 +1633,12 @@ store passwords.
 
 These are real. Do not “fix” them in docs by pretending they are wired.
 
-1. **`api.script.jsx` is not used.** The Liquid in this repo fetches
-   `/apps/performance-scripts` → `api.storefront-scripts.jsx`.
+1. **`api.script.jsx` is not used** (file **removed from tree** 2026-10-19).
+   The Liquid in older integration notes fetches
+   `/apps/performance-scripts` → `api.storefront-scripts.jsx` (JSON shape —
+   see §16.6). If `api.script.jsx` reappears, it is still not the wired path.
+   Live delivery today: inline metafields (**§10.1**) + proxy JS (**§10.2** /
+   §10.6).
 2. **`PREDEFINED_SCRIPTS = []`.** Step 2 script-slot list is empty.
    Dummy strings in `scripts.ts` are unused.
 3. **`PerformanceScript.auditScript` is report JSON**, not executable JS.
@@ -1278,7 +1674,63 @@ These are real. Do not “fix” them in docs by pretending they are wired.
     fewer scopes. Using `--config` default of pagepulse is required for
     `/webhooks/compliance` to be registered.
 
----
+### 17.1 Additional traps (2026-10-19 supplement)
+
+| Item | Why |
+|---|---|
+| Dead dashboard + audit duplicate | Full inventory §17.3 — **1,855 lines**, not executed in production |
+| `Step1AuditRunning.jsx` | Stop button UI **never imported** |
+| `enqueueAuditJob` | Only `audit-soak.ts` — production uses direct `startAuditForStore` |
+| Oct-16 doc routes (`api.script.jsx`, etc.) | **Deleted** |
+| `PerformanceScript.auditScript` column | Legacy; report now in `AuditLog.audit_data` |
+| `admin-panel` Prisma schema | Can drift — check comment in `admin-panel/prisma/schema.prisma` |
+| Lint/typecheck | §17.4 |
+
+**`/audit-submit`**: still written to metaobject `app_endpoint` — **no route** (planned storefront POST).
+
+### 17.3 Dead and unwired code (import graph, 2026-10-19)
+
+**Total:** **1,855** lines (`wc -l`) across eight files ≈ **9.7%** of `app/` source (`19,058` lines) and ≈ **13.4%** of `app/lib/` (`13,803` lines). These modules are maintained in-tree but **never imported** by live routes (except the dead chain below). **`npm test` passing does not execute them.**
+
+| File | Lines (`wc -l`) | Imported by | Origin / verdict |
+|---|---:|---|---|
+| `app/lib/dashboard-loader.server.js` | 450 | **nothing** | Extracted loader refactor (`6a03bd2`, `a33dcfc`, 2026-10-14/15) — **wire** `app._index.jsx` to this module **or delete** and keep monolithic loader |
+| `app/lib/dashboard-actions.server.js` | 50 | **nothing** | Same refactor — **wire** as `action` export **or delete** |
+| `app/lib/dashboard-actions-audit.server.js` | 242 | dead `dashboard-actions.server.js` only | **delete** with cluster if refactor abandoned; else wire |
+| `app/lib/dashboard-actions-settings.server.js` | 116 | dead router only | same |
+| `app/lib/dashboard-actions-theme.server.js` | 85 | dead router only | same |
+| `app/lib/dashboard-actions-step3.server.js` | 248 | dead router only | same |
+| `app/lib/dashboard-helpers.server.js` | 213 | dead dashboard modules only | **delete** after wiring (live `safeSyncConfig` is inline in `app._index.jsx` `96–104`) |
+| `app/lib/audit-run-hidden.server.ts` | 451 | **nothing** | Fork of `runHiddenAudit` — **delete** to prevent drift; live scan is `audit.server.ts` |
+
+**Live dashboard split:** only `dashboard-report-loader.server.js` (22 lines) via `api.dashboard-report.jsx`.
+
+**Related unwired UI (not in the 1,855 total):** `Step1AuditRunning.jsx` stop button; `stop-audit` intent exists only in the §17.3 dead action router.
+
+### 17.4 Open build defects (documentation pass policy)
+
+| Check | Status | Detail |
+|---|---|---|
+| `npm run lint` | **Fixed this session** | `theme-head-inject-utils.js` imports `node:process`; `AuditReportPanel.jsx` documents unused `OverviewLighthouse` |
+| `npm run typecheck` | **Open — track in code** | `HiddenAuditResult` shape drift vs `audit-report-summary.server.ts`; `.ts` import extensions in `audit.server.ts`, `heal-template-config.server.ts`, `store-sync-audit.server.ts` |
+| `npm test` | **Green** (113 pass, 6 skipped, 0 fail — verified this session) |
+
+Typecheck fixes are **out of scope** for this doc pass unless explicitly requested; do not treat green tests as proof the dead modules work.
+
+### 17.2 Repo files not in §17 / §24 (verdict)
+
+| Path | Verdict | Evidence |
+|---|---|---|
+| `shopify.app.pagepulse.toml.org` | **Safe to delete** (backup) | Not read by CLI; live file is `shopify.app.pagepulse.toml` |
+| `admin-panel/next.config.ts.org` | **Safe to delete** (backup) | Next reads `next.config.ts` only |
+| `admin-panel/admindata-encrypted/` | **Keep if ops uses it** | Empty dir in this checkout; purpose UNVERIFIED — ask ops before delete |
+| `.freebuff/` | **Empty placeholder** | No files; no app imports |
+| `.cursor/rules/ponytail.mdc.disabled` | **Keep or delete** | Disabled rule; no runtime effect |
+| `.eslintignore` / `.prettierignore` | **Keep** | ESLint/Prettier read via CLI (`npm run lint`) |
+| `.editorconfig` | **Keep** | Editor formatting defaults |
+| `.npmrc` | **Keep** | npm install behaviour |
+| `.gitignore` / `.dockerignore` | **Keep** | git / Docker build context |
+| `extensions/script-injector/locales/en.default.json` | **Safe to delete after rename** | Key `performance_scripts` does not match block handle `performance-loader`; Shopify i18n unused for schema name today |
 
 ## 18. File-by-file: where do I change X?
 
@@ -1475,6 +1927,43 @@ Shared: flags, `scriptTitles`, `metaobjectId`, timestamps.
 
 ---
 
+
+### 20.8 Admin panel auth and queries (supplement)
+
+| Module | Key symbols | Behaviour |
+|---|---|---|
+| `auth.ts` | `requireAdmin`, `loginAdmin`, `sessionVersion` | iron-session cookie `admin-session`; password change bumps `sessionVersion` and invalidates old cookies (`auth.ts` 12–14, 71+) |
+| `rate-limit.ts` | `checkRateLimit`, `MAX_ATTEMPTS` | Login throttle (tested §26.2) |
+| `queries.ts` | `getDashboardStats`, `getStores`, `getStoreByDomain` | Prisma reads; demo mode concatenates `dummy-data.ts` |
+| `demo-mode.ts` | cookie `demo_mode`, `SHOW_DUMMY_DATA` | Fleet view mixing |
+| `store-table.tsx` | Renders store list | Links to `[domain]` detail |
+
+First admin: `admin-panel/scripts/ensure-admin.mjs` (not `prisma/seed.ts` on production boxes without devDeps).
+
+### 20.8.1 Admin auth & store table — symbol tables
+
+**`admin-panel/src/lib/auth.ts`**
+
+| Name | File:line | Purpose |
+|---|---|---|
+| `getAdminSession` | `auth.ts:56` | iron-session cookie `admin-session`, 7-day TTL |
+| `loginAdmin` | `71` | bcrypt compare (dummy hash on unknown email); sets `sessionVersion` from DB |
+| `requireAdmin` | `112` | Re-loads user; invalidates cookie when `sessionVersion` mismatches (password change) |
+| `requireRole` | `135` | Enforces `admin` vs `viewer` |
+| `changeAdminPassword` | `204` | Bumps `sessionVersion` on user row |
+
+**Rate limit:** `admin-panel/src/app/api/auth/login/route.ts` calls `checkRateLimit` from `rate-limit.ts` before `loginAdmin` (see §26.2).
+
+**`admin-panel/src/components/store-table.tsx`**
+
+| Name | File:line | Purpose |
+|---|---|---|
+| `StoreTable` (default) | `store-table.tsx:45` | Client table: search, status/appEnabled filters, sortable columns, pagination via URL query |
+| `navigate` | `59` | Pushes `/dashboard/stores?...` with preserved filter state |
+| `SORTABLE_COLUMNS` | `34` | shopName, domain, installedAt, appEnabled, … |
+
+---
+
 ## 21. `AppConfig` TypeScript shape (`app/types/script.ts`)
 
 ```
@@ -1557,3 +2046,414 @@ No Storefront API. No `ordersCount` query exists despite the mapper.
 | `/audit-submit` | Written to `app_endpoint`; **no route file** |
 
 ---
+
+---
+
+## 25. PageSpeed Insights layer
+
+| Module | Role |
+|---|---|
+| `psi.server.ts` | `fetchPsiLighthouse`, `parsePsiLighthouse`, skip rules, merchant-facing notes |
+| `psi-scheduler.server.ts` | `schedulePsiAfterAudit`, 7-day `MIN_INTERVAL_MS`, per-shop jitter up to 12h |
+| `psi-preview-url.server.ts` | Parse preview share URL → bypass params |
+| `PsiSnapshot` | Optional raw storage model |
+| `StoreConfig.psiFieldVitals` | Denormalized field vitals for UI |
+
+**Skip:** `shouldSkipPsiFetch(true)` when password store with no preview params.
+
+**Three merchant messages** (`psi.server.ts` 6–13): password unavailable; preview analyzed lock screen; preview expired.
+
+**Env:** `GOOGLE_PSI_API_KEY` required for live fetch (`psi.server.ts` 129).
+
+**Backoff:** `psiBackoffUntil` on repeated failures (scheduler).
+
+### 25.1 `psi-scheduler.server.ts` — symbol table
+
+| Name | File:line | Purpose |
+|---|---|---|
+| `schedulePsiAfterAudit` | `psi-scheduler.server.ts:26` | Fire-and-forget after audit; clears throttle fields then `runPsiJob` |
+| `refreshPsiForShop` | `48` | Awaitable fetch; `force` clears `psiLastFetchedAt` / `psiBackoffUntil` |
+| `claimPsi` / `psiInFlight` | `12–17` | Per-shop in-memory mutex — second concurrent job for same shop returns immediately |
+| `jitterMs` | `20` | Deterministic 0…12h spread from shop domain hash (`MIN_INTERVAL_MS` is 7 days, `11`) |
+| `runPsiJob` | `68` | Respects password skip, backoff, min interval + jitter; up to 3 HTTPS URLs × mobile/desktop |
+
+**Backoff curve:** When `fetchPsiLighthouse` returns `backoffUntil`, `persistFieldVitals` writes `psiBackoffUntil` on `StoreConfig` (`152–164`) and the job exits early.
+
+---
+
+---
+
+## 26. Tests (`npm test`)
+
+Root: `node --test "tests/*.test.js"` (`package.json` 21). Admin:
+`admin-panel/tests/rate-limit.test.ts` (run from admin-panel if wired in CI).
+
+### 26.1 Root `tests/*.test.js`
+
+| File | Protects | Named tests | Regression? | Not covered |
+|---|---|---|---|---|
+| `audit-candidates.test.js` | Token classification / URL parsing | `classifyCandidate marks chunk…`, `urlToCandidates never-defers checkout-web…`, `urlToCandidates buckets third-party…`, `coverageVerdict idle…`, `mergeSlugVariants…`, `pageMatchPatterns…` | General | Live Chromium |
+| `audit-classify-contract.test.js` | Classifier fixtures stable | `audit classify contract fixtures` | Contract guard | Real storefront URLs |
+| `audit-fold-policy.test.js` | Hide list vs fold assertion | `applyFoldPolicy passes…`, `applyFoldPolicy strips hide when fold assertion fails (D1=A)` | **D1=A fold bug** | DOM measurement |
+| `audit-inventory.test.js` | Inventory status mapping | `inventory token mapping defers clarity host…` | General | Full audit run |
+| `audit-inventory-build.test.js` | Report `topScripts` from inventory | `topScripts includes home request order…`, `topScripts lists classified tokens when…` | General | UI table render |
+| `audit-lifecycle.test.js` | Stale sweep / progress flags | `auditProgressFlags…`, `lastSignOfLife…`, `staleReason…`, `queuedJobStale…`, `planStaleSweep…`, `needsOrphanStaleClear…` | Queue stale design | DB integration |
+| `audit-popups.test.js` | Popup observer + cross-page veto | open/closed/dialog tests, hide CSS, cross-page veto, empty page | Popup false-positive class | Real merchant themes |
+| `audit-psi-parse.test.js` | PSI JSON parse | `parsePsiLighthouse extracts category scores…` | General | Live Google API |
+| `audit-psi-preview-url.test.js` | Preview bypass URL parsing | `parseThemePreviewShareUrl…`, `applyPsiPreviewBypass…`, `shouldSkipPsiForPasswordStore…`, `hasPsiPreviewBypass…`, `isPreviewBypassExpired…` | Password-store PSI | Scheduler jitter |
+| `audit-psi-skip.test.js` | Skip PSI on password gate | `shouldSkipPsiFetch…`, `psiReportLooksLikePasswordGate…` | General | Full scheduler job |
+| `audit-queue-policy.test.js` | Admission policy constants | `decideAdmission blocks duplicate…`, `decideAdmission allows enqueue when…`, `decideAdmission allows new shop…`, `STALE_RUNNING_MS is 15 minutes` | AUDIT-SYSTEM design | `enqueueAuditJob` wiring |
+| `audit-report-summary.test.js` | Step 3 summary builder | `buildAuditReportSummary aggregates…`, `buildAuditReportSummary marks scans older than 30 days` | General | Loader route |
+| `audit-report-summary-golden.test.js` | Summary JSON shape | `golden AuditReportSummary shape` | **UI contract** | PSI cards |
+| `audit-script-actions.test.js` | `script-token-action` patch math | `buildArrayPatchForTokenAction…`, `applyScopedTokenAction…`, `effectiveListForScope…` | Step 3 token UI | Route action integration |
+| `audit-template-buckets.test.js` | Per-template defer buckets | `buildTemplateDeferBuckets: global intersection…`, `buildTemplateDeferBuckets: PDP required PLP defer only` | Template scope bugs | DB columns |
+| `audit-template-extra.test.js` | Merchant "+" extra pages | `applyExtraPageDeferRules adds…`, `applyExtraPageDeferRules vetoes…`, `urlToCandidates yields tokens…` | Extra-page rules | discoverPages |
+| `performance-loader.test.js` | Liquid inline metafield contract | embed `compliance_head`, no proxy fetch, `MAX_CHUNKS`, json concat, stale chunk ignore | **Inline delivery** | Theme editor |
+| `proxy-shop.test.js` | App Proxy HMAC + shop resolution | session shop, unsigned `?shop=` refused, canonicalisation, shopify-api parity, route fast path | **Unsigned shop regression** | Liquid render |
+| `script-generator.test.js` | Obfuscated bundle behaviour | inline safety, timing logger, determinism, interaction release, delay lists, union fallback | Storefront gate bugs | Full obfuscation perf |
+| `script-inline.test.js` | Metafield chunking + sync plan | `isSafeForInline`, `planMetafieldSync`, `splitScript`, `writeScriptMetafield`, `deleteScriptMetafield` | Shopify 65k limit | Admin API live |
+| `theme-head-inject.test.js` | theme.liquid patch helpers | snippet path, `patchThemeLayoutHead` idempotent | Head inject | `themeFilesUpsert` API |
+| `theme-head-inject-status.test.js` | Shopify exemption detection | `isThemeFilesExemptDenied detects…` | Theme API denial | Full inject flow |
+
+### 26.2 `admin-panel/tests/rate-limit.test.ts`
+
+| File | Protects | Named tests | Regression? | Not covered |
+|---|---|---|---|---|
+| `rate-limit.test.ts` | Login brute-force throttle | `allows attempts until the limit…`, `window expiry unblocks`, `success resets and keys are case-insensitive…` | Admin auth abuse | iron-session crypto |
+
+### 26.3 Unprotected behaviour (intentional gaps)
+
+| Area | Why no test | Risk |
+|---|---|---|
+| `runHiddenAudit` Chromium scroll/click phase | Needs headed/CI browser farm | Audit quality regressions |
+| Theme embed on real shop | Needs Shopify theme render | Liquid/schema drift |
+| `syncScriptMetafield` per-shop chain races | Needs Admin API + timing | Stale inline script |
+| Webhook handlers (`webhooks.*.jsx`) | HMAC + Prisma integration | Uninstall/redact bugs |
+| `app._index.jsx` loader fast path | Heavy mock of Admin GraphQL | Slow dashboard return |
+| `enqueueAuditJob` / `drainAuditQueue` in production | Runner bypasses queue (`audit-runner.server.ts`) | Fleet overload |
+| `inputsHash` skip-rebuild | Column unused in `app/lib` | Extra obfuscation CPU |
+
+---
+
+## 27. Operations and failure recovery
+
+| Symptom | Check | Recovery (`file:line` cues) |
+|---|---|---|
+| Audit never finishes | `GET /api/audit/status` → `auditRunning`, `auditPhase`, `auditPageIndex` | Stale sweep: `audit-lifecycle.ts` `AUDIT_STALE_MS`; watchdog `maybeSweepStaleAuditStateForShop` (`audit-watchdog.server.ts` 164+). Orphan: `needsOrphanStaleClear` |
+| Audit stuck “queued” | `AuditJob.status`, `activeAuditJobId` on `StoreConfig` | `audit-queue.server.ts` `failStaleQueuedJobs`; soak tooling `scripts/audit-soak.ts` |
+| Storefront blank after enable | `shop.metafields['$app:pagepulse']` | `rebuildPerformanceScript` → `syncScriptMetafield` (`script-metafield.server.ts`); manual heal: `reconcileScriptMetafield` or `scripts/backfill-script-metafield.ts` — **not** on live dashboard load (dead loader only, §17.3) |
+| Proxy serves old JS | `PerformanceScript.scriptHash` vs `ETag` | Merchant save triggers `rebuildPerformanceScript` (`app._index.jsx` toggle ~677); proxy lazy rebuild `api.storefront-scripts.jsx` 73–77 |
+| PSI never updates | `psiLastFetchedAt`, `psiBackoffUntil`, `GOOGLE_PSI_API_KEY` | `refreshPsiForShop` / `schedulePsiAfterAudit` (`psi-scheduler.server.ts`); manual `scripts/refresh-psi.ts` |
+| Typecheck red on audit summary | `HiddenAuditResult` vs `audit-report-summary.server.ts` | Fix types at source (`audit-core.server.ts` 50+); see §17 |
+| First admin cannot log in | `AdminUser` row | `admin-panel/scripts/ensure-admin.mjs` via `npm run admin:ensure` (`admin-panel/package.json`) |
+
+---
+
+---
+
+## 28. Appendix A — STALE / WRONG correction log
+
+| Old claim (Oct-16 `PROJECT_FLOW.md`) | New truth | Evidence |
+|---|---|---|
+| §5 lists `api.audit.start.jsx`, `api.script.jsx`, … | Those route files **removed** | `glob app/routes/api.*` → 7 files only |
+| §6: storefront compile on **every proxy request** | Proxy serves **prebuilt** `deferScript`; compile in `rebuildPerformanceScript` | `api.storefront-scripts.jsx` 13–15, 70–77 |
+| §9–9.3: audit via `audit-script.ts` + `localStorage shopAuditP_v1` only | Live path is Playwright measure passes in `audit.server.ts` + inventory builders | `audit-runner.server.ts` imports `runHiddenAudit` from `audit.server.ts` |
+| §10: Liquid **fetch** JSON proxy as primary | Primary is **inline metafield** + `compliance_head`; proxy is JS mirror / head inject | `performance-loader.liquid`, `pagepulse-inline.liquid` |
+| §10.1: embed `target: head` | **`compliance_head`** | `performance-loader.liquid` 18 |
+| §3 / §14: **8** migrations | **applied** — §3 tree + §14.2 now say **25** | `find prisma/migrations -name migration.sql` |
+| §8: toggle OFF clears all audit arrays | Toggle OFF **does not** wipe audit state (only rebuilds empty script) | `app._index.jsx` 665–672 |
+| §8.2: toggle ON always `resetAudit` + audit | ON enables scripts; **audit** on OFF→ON via `startAuditForStore`, not full reset | `app._index.jsx` 651–698 |
+| Admin `sessionVersion` / PerformanceScript missing | Root schema includes them; admin copy updated but process debt remains | `prisma/schema.prisma` vs admin schema header comment |
+| `BROWSER_IDLE_CLOSE_MS = 2 min` in server-load doc | Code shows **10s** in `audit.server.ts` 160 | grep constant |
+
+---
+
+---
+
+## 29. Appendix B — File coverage manifest
+
+> Line counts use the **`wc -l` convention** (newline-terminated lines; files without a trailing newline count one fewer than naive line splits). Regenerated from the tree **264** manifest rows + `ponytail/` out-of-scope row.
+
+| Path | Lines | Coverage | Section |
+|---|---:|---|---|
+| `ponytail/` (tree) | — | deliberately out of scope | §3 |
+| `.cursor/skills/install-performance-app/SKILL.md` | 230 | documented briefly | §17c |
+| `.dockerignore` | 3 | documented briefly | §3–§15 |
+| `.editorconfig` | 15 | documented briefly | §3–§15 |
+| `.eslintignore` | 7 | documented briefly | §3–§15 |
+| `.eslintrc.cjs` | 96 | documented briefly | §3–§15 |
+| `.github/workflows/ci.yml` | 49 | documented briefly | §3 |
+| `.gitignore` | 59 | documented briefly | §3–§15 |
+| `.graphqlrc.js` | 38 | documented briefly | §3–§15 |
+| `.mcp.json` | 9 | documented briefly | §3–§15 |
+| `.npmrc` | 1 | documented briefly | §3–§15 |
+| `.playwright-mcp/page-*.yml (27 snapshots)` | 16587 | not source — tool artifact, safe to gitignore | §3 |
+| `.prettierignore` | 7 | documented briefly | §3–§15 |
+| `.react-router/types/+future.ts` | 8 | documented briefly | §4 — RR typegen |
+| `.react-router/types/+routes.ts` | 159 | documented briefly | §4 — RR typegen |
+| `.react-router/types/+server-build.d.ts` | 17 | documented briefly | §4 — RR typegen |
+| `.react-router/types/app/+types/root.ts` | 67 | documented briefly | §4 — RR typegen |
+| `.react-router/types/app/routes/+types/api.audit.status.ts` | 70 | documented briefly | §4 — RR typegen |
+| `.react-router/types/app/routes/+types/api.dashboard-report.ts` | 70 | documented briefly | §4 — RR typegen |
+| `.react-router/types/app/routes/+types/api.embed-status.ts` | 70 | documented briefly | §4 — RR typegen |
+| `.react-router/types/app/routes/+types/api.password-status.ts` | 70 | documented briefly | §4 — RR typegen |
+| `.react-router/types/app/routes/+types/api.storefront-scripts.ts` | 70 | documented briefly | §4 — RR typegen |
+| `.react-router/types/app/routes/+types/api.themes.ts` | 70 | documented briefly | §4 — RR typegen |
+| `.react-router/types/app/routes/+types/api.toggle-validate.ts` | 70 | documented briefly | §4 — RR typegen |
+| `.react-router/types/app/routes/+types/app._index.ts` | 73 | documented briefly | §4 — RR typegen |
+| `.react-router/types/app/routes/+types/app.extension.ts` | 73 | documented briefly | §4 — RR typegen |
+| `.react-router/types/app/routes/+types/app.settings.ts` | 73 | documented briefly | §4 — RR typegen |
+| `.react-router/types/app/routes/+types/app.ts` | 70 | documented briefly | §4 — RR typegen |
+| `.react-router/types/app/routes/+types/auth.$.ts` | 70 | documented briefly | §4 — RR typegen |
+| `.react-router/types/app/routes/+types/webhooks.app.scopes_update.ts` | 70 | documented briefly | §4 — RR typegen |
+| `.react-router/types/app/routes/+types/webhooks.app.uninstalled.ts` | 70 | documented briefly | §4 — RR typegen |
+| `.react-router/types/app/routes/+types/webhooks.compliance.ts` | 70 | documented briefly | §4 — RR typegen |
+| `.react-router/types/app/routes/_index/+types/route.ts` | 70 | documented briefly | §4 — RR typegen |
+| `.react-router/types/app/routes/auth.login/+types/route.ts` | 70 | documented briefly | §4 — RR typegen |
+| `Dockerfile` | 21 | documented briefly | §3–§15 |
+| `REQUIREMENTS_AND_PLANS.md` | 264 | documented briefly | §3 |
+| `SCRIPT_DELAY_ANALYSIS_AND_PLAN.md` | 235 | documented briefly | §3 |
+| `admin-panel/eslint.config.mjs` | 19 | documented briefly | §20 |
+| `admin-panel/next-env.d.ts` | 6 | documented briefly | §20 |
+| `admin-panel/next.config.ts` | 43 | documented briefly | §20 |
+| `admin-panel/package-lock.json` | 7669 | documented briefly | §20 |
+| `admin-panel/package.json` | 43 | documented briefly | §20 |
+| `admin-panel/postcss.config.js` | 6 | documented briefly | §20 |
+| `admin-panel/prisma/migrations/20260901095746_migrate_to_postgresql_add_models/migration.sql` | 133 | documented briefly | §14.2 |
+| `admin-panel/prisma/migrations/20260902073700_drop_audit_columns/migration.sql` | 12 | documented briefly | §14.2 |
+| `admin-panel/prisma/migrations/migration_lock.toml` | 3 | documented briefly | §20 |
+| `admin-panel/prisma/schema.prisma` | 278 | documented briefly | §20 |
+| `admin-panel/prisma/seed.ts` | 59 | documented briefly | §20 |
+| `admin-panel/scripts/ensure-admin.mjs` | 110 | documented briefly | §20 |
+| `admin-panel/src/app/api/auth/change-password/route.ts` | 47 | documented briefly | §20 |
+| `admin-panel/src/app/api/auth/login/route.ts` | 72 | documented briefly | §20 |
+| `admin-panel/src/app/api/auth/logout/route.ts` | 7 | documented briefly | §20 |
+| `admin-panel/src/app/api/auth/setup/route.ts` | 70 | documented briefly | §20 |
+| `admin-panel/src/app/api/auth/update-profile/route.ts` | 41 | documented briefly | §20 |
+| `admin-panel/src/app/api/demo/route.ts` | 37 | documented briefly | §20 |
+| `admin-panel/src/app/dashboard/layout.tsx` | 31 | documented briefly | §20 |
+| `admin-panel/src/app/dashboard/page.tsx` | 76 | documented briefly | §20 |
+| `admin-panel/src/app/dashboard/settings/page.tsx` | 9 | documented briefly | §20 |
+| `admin-panel/src/app/dashboard/stores/[domain]/page.tsx` | 29 | documented briefly | §20 |
+| `admin-panel/src/app/dashboard/stores/page.tsx` | 55 | documented briefly | §20 |
+| `admin-panel/src/app/layout.tsx` | 19 | documented briefly | §20 |
+| `admin-panel/src/app/login/page.tsx` | 96 | documented briefly | §20 |
+| `admin-panel/src/app/page.tsx` | 19 | documented briefly | §20 |
+| `admin-panel/src/app/setup/page.tsx` | 17 | documented briefly | §20 |
+| `admin-panel/src/app/setup/setup-form.tsx` | 128 | documented briefly | §20 |
+| `admin-panel/src/components/activity-timeline.tsx` | 83 | documented briefly | §20 |
+| `admin-panel/src/components/config-viewer.tsx` | 84 | documented briefly | §20 |
+| `admin-panel/src/components/country-chart.tsx` | 51 | documented briefly | §20 |
+| `admin-panel/src/components/installs-chart.tsx` | 67 | documented briefly | §20 |
+| `admin-panel/src/components/plan-chart.tsx` | 48 | documented briefly | §20 |
+| `admin-panel/src/components/settings-client.tsx` | 295 | documented briefly | §20 |
+| `admin-panel/src/components/sidebar.tsx` | 65 | documented briefly | §20 |
+| `admin-panel/src/components/stats-cards.tsx` | 50 | documented briefly | §20 |
+| `admin-panel/src/components/store-detail.tsx` | 147 | documented briefly | §20 |
+| `admin-panel/src/components/store-table.tsx` | 214 | documented in full | §20.8.1 |
+| `admin-panel/src/components/top-bar.tsx` | 70 | documented briefly | §20 |
+| `admin-panel/src/components/ui/badge.tsx` | 29 | documented briefly | §20 |
+| `admin-panel/src/components/ui/button.tsx` | 42 | documented briefly | §20 |
+| `admin-panel/src/components/ui/card.tsx` | 36 | documented briefly | §20 |
+| `admin-panel/src/components/ui/input.tsx` | 20 | documented briefly | §20 |
+| `admin-panel/src/components/ui/label.tsx` | 17 | documented briefly | §20 |
+| `admin-panel/src/components/ui/table.tsx` | 43 | documented briefly | §20 |
+| `admin-panel/src/lib/auth.ts` | 219 | documented in full | §20.8.1 |
+| `admin-panel/src/lib/data-source.ts` | 7 | documented briefly | §20 |
+| `admin-panel/src/lib/demo-mode.ts` | 39 | documented briefly | §20 |
+| `admin-panel/src/lib/dummy-data.ts` | 388 | documented briefly | §20 |
+| `admin-panel/src/lib/prisma.ts` | 9 | documented briefly | §20 |
+| `admin-panel/src/lib/queries.ts` | 336 | documented briefly | §20 |
+| `admin-panel/src/lib/rate-limit.ts` | 107 | documented briefly | §20 |
+| `admin-panel/src/lib/types.ts` | 115 | documented briefly | §20 |
+| `admin-panel/src/lib/utils.ts` | 58 | documented briefly | §20 |
+| `admin-panel/src/middleware.ts` | 38 | documented briefly | §20 |
+| `admin-panel/tailwind.config.ts` | 53 | documented briefly | §20 |
+| `admin-panel/tests/rate-limit.test.ts` | 38 | documented in full | §26 |
+| `admin-panel/tsconfig.json` | 29 | documented briefly | §20 |
+| `app/components/AuditReportPanel.jsx` | 611 | documented in full | §8.8.1 |
+| `app/components/FooterBranding.jsx` | 100 | documented briefly | §4–§11 |
+| `app/components/PpPillButton.jsx` | 36 | documented briefly | §4–§11 |
+| `app/components/Step1Activate.jsx` | 948 | documented in full | §8.11 |
+| `app/components/Step2Configure.jsx` | 61 | documented briefly | §4–§11 |
+| `app/components/Step3AuditResults.jsx` | 46 | documented briefly | §4–§11 |
+| `app/components/Step3Titles.jsx` | 553 | documented in full | §8.11 |
+| `app/components/WizardNavigation.jsx` | 26 | documented briefly | §4–§11 |
+| `app/components/WizardProgress.jsx` | 67 | documented briefly | §4–§11 |
+| `app/components/step1/Step1AuditRunning.jsx` | 137 | documented briefly | §4–§11 |
+| `app/components/step1/step1-shared.js` | 14 | documented briefly | §4–§11 |
+| `app/db.server.js` | 11 | documented briefly | §4–§11 |
+| `app/entry.server.jsx` | 65 | documented briefly | §4–§11 |
+| `app/lib/audit-candidates.ts` | 387 | documented briefly | §4–§11 |
+| `app/lib/audit-classified-inventory.ts` | 98 | documented in full | §9.5.5 |
+| `app/lib/audit-core.server.ts` | 721 | documented briefly | §4–§11 |
+| `app/lib/audit-fold-policy.server.ts` | 35 | documented briefly | §4–§11 |
+| `app/lib/audit-gate-impact.server.ts` | 63 | documented briefly | §4–§11 |
+| `app/lib/audit-inventory.server.ts` | 165 | documented briefly | §4–§11 |
+| `app/lib/audit-lifecycle.ts` | 75 | documented briefly | §4–§11 |
+| `app/lib/audit-logging.server.ts` | 18 | documented briefly | §4–§11 |
+| `app/lib/audit-metrics.server.ts` | 79 | documented briefly | §4–§11 |
+| `app/lib/audit-queue-policy.ts` | 26 | documented briefly | §4–§11 |
+| `app/lib/audit-queue-reconcile.server.ts` | 232 | documented briefly | §4–§11 |
+| `app/lib/audit-queue.server.ts` | 215 | documented briefly | §4–§11 |
+| `app/lib/audit-report-summary.server.ts` | 157 | documented briefly | §4–§11 |
+| `app/lib/audit-report-types.ts` | 156 | documented briefly | §4–§11 |
+| `app/lib/audit-resource-tokens.ts` | 17 | documented briefly | §4–§11 |
+| `app/lib/audit-run-hidden.server.ts` | 451 | documented — dead code | §17.3 |
+| `app/lib/audit-run-page-measure.server.ts` | 1180 | documented briefly | §4–§11 |
+| `app/lib/audit-run-page-timing.ts` | 12 | documented briefly | §4–§11 |
+| `app/lib/audit-runner.server.ts` | 281 | documented briefly | §4–§11 |
+| `app/lib/audit-script-actions-pure.ts` | 127 | documented briefly | §4–§11 |
+| `app/lib/audit-script-actions.ts` | 66 | documented briefly | §4–§11 |
+| `app/lib/audit-script.ts` | 49 | documented briefly | §4–§11 |
+| `app/lib/audit-template-buckets.ts` | 89 | documented briefly | §4–§11 |
+| `app/lib/audit-template-extra.ts` | 45 | documented briefly | §4–§11 |
+| `app/lib/audit-watchdog.server.ts` | 268 | documented briefly | §4–§11 |
+| `app/lib/audit.server.ts` | 2261 | documented in full | §9.6 |
+| `app/lib/dashboard-actions-audit.server.js` | 242 | documented — dead code | §17.3 |
+| `app/lib/dashboard-actions-settings.server.js` | 116 | documented — dead code | §17.3 |
+| `app/lib/dashboard-actions-step3.server.js` | 248 | documented — dead code | §17.3 |
+| `app/lib/dashboard-actions-theme.server.js` | 85 | documented — dead code | §17.3 |
+| `app/lib/dashboard-actions.server.js` | 50 | documented — dead code | §17.3 |
+| `app/lib/dashboard-helpers.server.js` | 213 | documented — dead code | §17.3 |
+| `app/lib/dashboard-loader.server.js` | 450 | documented — dead code | §17.3 |
+| `app/lib/dashboard-report-loader.server.js` | 22 | documented in full | §8.7 |
+| `app/lib/heal-template-config.server.ts` | 49 | documented briefly | §4–§11 |
+| `app/lib/metaobjects.ts` | 402 | documented in full | §12.2 |
+| `app/lib/page-urls.server.ts` | 160 | documented briefly | §4–§11 |
+| `app/lib/password-protection.server.ts` | 194 | documented briefly | §4–§11 |
+| `app/lib/per-page.ts` | 59 | documented briefly | §4–§11 |
+| `app/lib/performance-script.server.ts` | 223 | documented in full | §11.7.1 |
+| `app/lib/popup-audit.js` | 37 | documented briefly | §4–§11 |
+| `app/lib/proxy-shop.js` | 118 | documented briefly | §4–§11 |
+| `app/lib/psi-preview-url.server.ts` | 106 | documented briefly | §4–§11 |
+| `app/lib/psi-scheduler.server.ts` | 236 | documented in full | §25.1 |
+| `app/lib/psi.server.ts` | 205 | documented briefly | §4–§11 |
+| `app/lib/script-generator.js` | 700 | documented in full | §11.7.1 |
+| `app/lib/script-inline.js` | 337 | documented in full | §11.7 |
+| `app/lib/script-metafield.server.ts` | 238 | documented in full | §10.4.1 |
+| `app/lib/scripts.ts` | 25 | documented briefly | §4–§11 |
+| `app/lib/shopify-timeout.server.ts` | 30 | documented briefly | §4–§11 |
+| `app/lib/shopify.js` | 12 | documented briefly | §4–§11 |
+| `app/lib/store-heal.server.ts` | 22 | documented briefly | §4–§11 |
+| `app/lib/store-sync-audit.server.ts` | 299 | documented briefly | §4–§11 |
+| `app/lib/store-sync.server.ts` | 781 | documented in full | §12.2 |
+| `app/lib/template-script-config.ts` | 139 | documented briefly | §4–§11 |
+| `app/lib/theme-embed.server.js` | 233 | documented briefly | §4–§11 |
+| `app/lib/theme-head-inject-status.server.ts` | 108 | documented briefly | §4–§11 |
+| `app/lib/theme-head-inject-utils.js` | 56 | documented briefly | §4–§11 |
+| `app/lib/theme-head-inject.server.ts` | 256 | documented in full | §10.3.1 |
+| `app/lib/theme-head-patch.js` | 22 | documented briefly | §4–§11 |
+| `app/lib/use-password-status.js` | 57 | documented briefly | §4–§11 |
+| `app/root.jsx` | 24 | documented briefly | §4–§11 |
+| `app/routes.js` | 3 | documented briefly | §4–§11 |
+| `app/routes/_index/route.jsx` | 9 | documented briefly | §4–§11 |
+| `app/routes/api.audit.status.jsx` | 35 | documented briefly | §4–§11 |
+| `app/routes/api.dashboard-report.jsx` | 9 | documented briefly | §4–§11 |
+| `app/routes/api.embed-status.jsx` | 39 | documented briefly | §4–§11 |
+| `app/routes/api.password-status.jsx` | 25 | documented briefly | §4–§11 |
+| `app/routes/api.storefront-scripts.jsx` | 127 | documented briefly | §4–§11 |
+| `app/routes/api.themes.jsx` | 42 | documented briefly | §4–§11 |
+| `app/routes/api.toggle-validate.jsx` | 133 | documented briefly | §4–§11 |
+| `app/routes/app._index.jsx` | 1425 | documented in full | §8.10 |
+| `app/routes/app.extension.jsx` | 122 | documented briefly | §4–§11 |
+| `app/routes/app.jsx` | 48 | documented briefly | §4–§11 |
+| `app/routes/app.settings.jsx` | 225 | documented briefly | §4–§11 |
+| `app/routes/auth.$.jsx` | 17 | documented briefly | §4–§11 |
+| `app/routes/auth.login/error.server.jsx` | 11 | documented briefly | §4–§11 |
+| `app/routes/auth.login/route.jsx` | 47 | documented briefly | §4–§11 |
+| `app/routes/webhooks.app.scopes_update.jsx` | 40 | documented briefly | §4–§11 |
+| `app/routes/webhooks.app.uninstalled.jsx` | 46 | documented briefly | §4–§11 |
+| `app/routes/webhooks.compliance.jsx` | 57 | documented briefly | §4–§11 |
+| `app/shopify.server.js` | 34 | documented briefly | §4–§11 |
+| `app/types/script.ts` | 65 | documented briefly | §4–§11 |
+| `docker-compose.yml` | 17 | documented briefly | §3–§15 |
+| `docs/SERVER-CAPACITY-AND-AUDIT-PERFORMANCE.md` | 589 | documented briefly | docs/ |
+| `docs/server-load-reduce.md` | 1508 | documented briefly | docs/ |
+| `extensions/script-injector/blocks/performance-loader.liquid` | 21 | documented briefly | §10 |
+| `extensions/script-injector/locales/en.default.json` | 7 | documented briefly | §10 |
+| `extensions/script-injector/shopify.extension.toml` | 4 | documented briefly | §10 |
+| `extensions/script-injector/snippets/pagepulse-inline.liquid` | 11 | documented briefly | §10 |
+| `init.sql` | 1 | documented briefly | §3–§15 |
+| `package-lock.json` | 19977 | documented briefly | §3–§15 |
+| `package.json` | 78 | documented briefly | §3–§15 |
+| `pnpm-workspace.yaml` | 10 | documented briefly | §3–§15 |
+| `prisma/migrations/20260901095746_migrate_to_postgresql_add_models/migration.sql` | 133 | documented briefly | §14.2 |
+| `prisma/migrations/20260902073700_drop_audit_columns/migration.sql` | 12 | documented briefly | §14.2 |
+| `prisma/migrations/20260903115942_add_static_defer_defaults/migration.sql` | 21 | documented briefly | §14.2 |
+| `prisma/migrations/20260903132030_add_audit_progress_columns/migration.sql` | 3 | documented briefly | §14.2 |
+| `prisma/migrations/20260903164006_reconcile_and_add_audit/migration.sql` | 61 | documented briefly | §14.2 |
+| `prisma/migrations/20260907113428_add_storefront_password/migration.sql` | 5 | documented briefly | §14.2 |
+| `prisma/migrations/20260907140000_add_audit_field_toggles/migration.sql` | 7 | documented briefly | §14.2 |
+| `prisma/migrations/20260916112504_add_custom_page_urls/migration.sql` | 3 | documented briefly | §14.2 |
+| `prisma/migrations/20260922085053_add_first_user_delay_scripts/migration.sql` | 6 | documented briefly | §14.2 |
+| `prisma/migrations/20260922150000_add_password_protected_and_cached_endpoint/migration.sql` | 4 | documented briefly | §14.2 |
+| `prisma/migrations/20260924120000_add_selected_theme_and_audit_pages/migration.sql` | 4 | documented briefly | §14.2 |
+| `prisma/migrations/20260924130000_add_performance_script_hash/migration.sql` | 3 | documented briefly | §14.2 |
+| `prisma/migrations/20260924140000_add_audit_phase/migration.sql` | 2 | documented briefly | §14.2 |
+| `prisma/migrations/20260924150000_default_delay_scripts_wpm_gtm/migration.sql` | 3 | documented briefly | §14.2 |
+| `prisma/migrations/20260924160000_backfill_delay_scripts_wpm_gtm/migration.sql` | 38 | documented briefly | §14.2 |
+| `prisma/migrations/20260924170000_password_protected_nullable/migration.sql` | 8 | documented briefly | §14.2 |
+| `prisma/migrations/20260930120000_admin_session_version/migration.sql` | 5 | documented briefly | §14.2 |
+| `prisma/migrations/20260930150000_custom_page_urls/migration.sql` | 4 | documented briefly | §14.2 |
+| `prisma/migrations/20261007120000_add_metafield_sync_columns/migration.sql` | 4 | documented briefly | §14.2 |
+| `prisma/migrations/20261009140000_add_theme_head_inject_status/migration.sql` | 4 | documented briefly | §14.2 |
+| `prisma/migrations/20261012120000_add_psi_field_columns/migration.sql` | 3 | documented briefly | §14.2 |
+| `prisma/migrations/20261012140000_audit_job_and_psi_snapshot/migration.sql` | 91 | documented briefly | §14.2 |
+| `prisma/migrations/20261013153000_psi_preview_bypass_params/migration.sql` | 1 | documented briefly | §14.2 |
+| `prisma/migrations/20261013180000_template_script_columns/migration.sql` | 39 | documented briefly | §14.2 |
+| `prisma/migrations/20261014120000_audit_job_active_unique/migration.sql` | 6 | documented briefly | §14.2 |
+| `prisma/migrations/migration_lock.toml` | 3 | documented briefly | §14 |
+| `prisma/schema.prisma` | 365 | documented briefly | §14 |
+| `react-router.config.ts` | 15 | documented briefly | §3–§15 |
+| `scripts/audit-soak.ts` | 22 | documented briefly | §15 |
+| `scripts/backfill-script-metafield.ts` | 83 | documented briefly | §15 |
+| `scripts/print-psi-test-url.ts` | 45 | documented briefly | §15 |
+| `scripts/refresh-psi.ts` | 35 | documented briefly | §15 |
+| `scripts/verify-step3-summary.ts` | 51 | documented briefly | §15 |
+| `shopify.app.pagepulse.toml` | 113 | documented briefly | §3–§15 |
+| `shopify.app.toml` | 95 | documented briefly | §3–§15 |
+| `shopify.web.toml` | 8 | documented briefly | §3–§15 |
+| `tests/audit-candidates.test.js` | 47 | documented in full | §26 |
+| `tests/audit-classify-contract.test.js` | 36 | documented in full | §26 |
+| `tests/audit-fold-policy.test.js` | 28 | documented in full | §26 |
+| `tests/audit-inventory-build.test.js` | 75 | documented in full | §26 |
+| `tests/audit-inventory.test.js` | 23 | documented in full | §26 |
+| `tests/audit-lifecycle.test.js` | 155 | documented in full | §26 |
+| `tests/audit-popups.test.js` | 168 | documented in full | §26 |
+| `tests/audit-psi-parse.test.js` | 29 | documented in full | §26 |
+| `tests/audit-psi-preview-url.test.js` | 51 | documented in full | §26 |
+| `tests/audit-psi-skip.test.js` | 31 | documented in full | §26 |
+| `tests/audit-queue-policy.test.js` | 26 | documented in full | §26 |
+| `tests/audit-report-summary-golden.test.js` | 95 | documented in full | §26 |
+| `tests/audit-report-summary.test.js` | 77 | documented in full | §26 |
+| `tests/audit-script-actions.test.js` | 66 | documented in full | §26 |
+| `tests/audit-template-buckets.test.js` | 38 | documented in full | §26 |
+| `tests/audit-template-extra.test.js` | 51 | documented in full | §26 |
+| `tests/performance-loader.test.js` | 137 | documented in full | §26 |
+| `tests/proxy-shop.test.js` | 328 | documented in full | §26 |
+| `tests/script-generator.test.js` | 161 | documented in full | §26 |
+| `tests/script-inline.test.js` | 219 | documented in full | §26 |
+| `tests/theme-head-inject-status.test.js` | 13 | documented in full | §26 |
+| `tests/theme-head-inject.test.js` | 46 | documented in full | §26 |
+| `tsconfig.json` | 23 | documented briefly | §3–§15 |
+| `vite.config.js` | 62 | documented briefly | §3–§15 |
+
+
+## 30. Appendix G — Glossary
+
+| Term | Meaning |
+|---|---|
+| **Defer token** | Substring matched against script URLs to delay execution until interaction |
+| **Hide selector** | CSS selector hidden until `html.interacted` |
+| **Fold** | Top `FOLD_HEIGHT_PX` (1100px) band — hide candidates must not intersect |
+| **Settle** | Quiet-period wait before measuring (see `audit-run-page-timing.ts`) |
+| **Union fallback** | Legacy single-column lists when template buckets empty |
+| **Scoped defer** | Per-template lists: Global/Home/Collection/Product |
+| **coverage** | Whether a script ran before interaction (classification input) |
+| **compliance_head** | Shopify embed slot rendered early in `<head>` |
+| **inputsHash / metafieldHash** | Build fingerprint vs bytes live in Shopify metafields |
+| **PSI field vs lab** | CrUX field data vs Lighthouse lab metrics |
+| **Preview bypass** | `_bt` + `key` (+ `preview_theme_id`) for password-store PSI |
+| **blocklist vs hide list** | Defer tokens delay JS; hide selectors apply CSS `display:none` until interaction |
+

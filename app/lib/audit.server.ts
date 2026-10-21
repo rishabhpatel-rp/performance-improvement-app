@@ -157,7 +157,7 @@ function chromiumExecutablePath(): string | undefined {
 // of a ~1 s launch per use. Each audited page gets its own browser *context*
 // (isolated localStorage/cookies), so the parallel pages never interfere.
 // The browser closes itself after a period of no use to free memory.
-const BROWSER_IDLE_CLOSE_MS = 2 * 60 * 1000;
+const BROWSER_IDLE_CLOSE_MS = 10 * 1000;
 let browserPromise: Promise<Browser> | null = null;
 let browserUsers = 0;
 let browserIdleTimer: ReturnType<typeof setTimeout> | null = null;
@@ -171,6 +171,12 @@ async function getBrowser(): Promise<Browser> {
   const launching = chromium.launch({
     headless: true,
     executablePath: chromiumExecutablePath(),
+    args: [
+      "--disable-dev-shm-usage",
+      "--disable-gpu",
+      "--no-first-run",
+      "--disable-extensions",
+    ],
   });
   browserPromise = launching;
   launching
@@ -1326,7 +1332,6 @@ async function measurePage(
     const requestScripts: string[] = [];
     const seenRequestUrls = new Set<string>();
     const responseBytes = new Map<string, number>();
-    const bodyReads: Promise<void>[] = [];
     const onRequest = (req: import("playwright").Request) => {
       const u = req.url();
       if (/\.js(\?|$)/i.test(u) && !seenRequestUrls.has(u)) {
@@ -1340,18 +1345,7 @@ async function measurePage(
       const header = Number(res.headers()["content-length"]);
       if (Number.isFinite(header) && header > 0) {
         responseBytes.set(u, Math.max(responseBytes.get(u) || 0, header));
-        return;
       }
-      bodyReads.push(
-        res
-          .body()
-          .then((buf) => {
-            if (buf?.length) {
-              responseBytes.set(u, Math.max(responseBytes.get(u) || 0, buf.length));
-            }
-          })
-          .catch(() => {}),
-      );
     };
     page.on("request", onRequest);
     page.on("response", onResponse);
@@ -1609,7 +1603,6 @@ async function measurePage(
 
     page.off("request", onRequest);
     page.off("response", onResponse);
-    await Promise.all(bodyReads);
 
     const pathname = safePathname(url);
     const timedRows = await page
@@ -1914,6 +1907,10 @@ export async function runHiddenAudit({
             if (!seenPaths.has(path)) {
               seenPaths.add(path);
               measured.push(m);
+            } else if (pass > 0) {
+              // Later passes only add another URL sample. The first-pass page
+              // stays open for the fold checks. A harvest page is closed now.
+              await m.context.close().catch(() => {});
             }
             done++;
             try {
@@ -2256,7 +2253,9 @@ export async function runHiddenAudit({
         scriptInventory,
       };
     } finally {
-      await Promise.all(measured.map((m) => m.context.close().catch(() => {})));
+      const contexts = new Set(measuredAll.map((m) => m.context));
+      for (const m of measured) contexts.add(m.context);
+      await Promise.all([...contexts].map((c) => c.close().catch(() => {})));
     }
   });
 }
