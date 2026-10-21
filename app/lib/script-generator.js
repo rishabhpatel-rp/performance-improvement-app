@@ -650,7 +650,7 @@ export function generateDeferredScript({
   // every storefront page load. Off by default; flip to true to re-measure.
 // Re-enabled 2026-09-30 to re-measure gate install time. REMEMBER TO SET BACK
 // TO false once you have the numbers.
-const TEMP_TIMING_LOG = true;
+const TEMP_TIMING_LOG = false;
 
 function withTimingLog(obfuscated) {
   const before = `

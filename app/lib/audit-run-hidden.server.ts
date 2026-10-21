@@ -1,3 +1,7 @@
+/**
+ * Not the live scan. `audit-runner.server.ts` imports `runHiddenAudit` from
+ * `./audit.server`. This copy is unused. Do not fix one and ship the other.
+ */
 import { mergeSlugVariants, pageMatchPatterns } from "./audit-candidates";
 import { buildScriptInventory } from "./audit-inventory.server";
 import { measureGateImpactOnHome } from "./audit-gate-impact.server";
@@ -90,6 +94,8 @@ export async function runHiddenAudit({
             if (!seenPaths.has(path)) {
               seenPaths.add(path);
               measured.push(m);
+            } else if (pass > 0) {
+              await m.context.close().catch(() => {});
             }
             done++;
             try {
@@ -437,7 +443,9 @@ export async function runHiddenAudit({
 
       return draftReport;
     } finally {
-      await Promise.all(measured.map((m) => m.context.close().catch(() => {})));
+      const contexts = new Set(measuredAll.map((m) => m.context));
+      for (const m of measured) contexts.add(m.context);
+      await Promise.all([...contexts].map((c) => c.close().catch(() => {})));
     }
   });
 }

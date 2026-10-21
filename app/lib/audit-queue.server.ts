@@ -1,3 +1,8 @@
+/**
+ * Not the live scan path. `startAuditForStore` in audit-runner.server.ts
+ * runs Chrome directly and enforces the one-scan cap. Draining this queue
+ * fails the claimed job instead of launching a second browser.
+ */
 import prisma from "../db.server";
 import { Prisma } from "@prisma/client";
 import { MAX_CONCURRENT_AUDITS, STALE_RUNNING_MS } from "./audit-queue-policy";
@@ -5,7 +10,6 @@ import { QUEUED_JOB_STALE_MS } from "./audit-lifecycle";
 import {
   AUDIT_SUPERSEDED_ERROR,
   reconcileStoreAfterJobEnd,
-  touchAuditJobHeartbeat,
 } from "./audit-queue-reconcile.server";
 
 const DRAIN_LOCK = { draining: false };
@@ -188,19 +192,9 @@ async function runClaimedJob(job: {
   payload: unknown;
 }) {
   try {
-    const { executeAuditJob } = await import("./audit-runner.server");
-    const { unauthenticated } = await import("../shopify.server");
-    const { admin } = await unauthenticated.admin(job.shopDomain);
-    await touchAuditJobHeartbeat(job.id);
-    await executeAuditJob(admin, job.shopDomain, { jobId: job.id });
-    // A stop or a newer run already marked this row failed. Writing
-    // "succeeded" here brought a cancelled audit back and cleared the live one.
-    const marked = await prisma.auditJob.updateMany({
-      where: { id: job.id, status: "running", stopRequested: false },
-      data: { status: "succeeded", lockedAt: null },
-    });
-    if (marked.count === 0) return;
-    await reconcileStoreAfterJobEnd(job.storeId, job.id, "succeeded");
+    throw new Error(
+      "audit queue is not the live scan path; startAuditForStore owns the one-scan cap",
+    );
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     await prisma.auditJob.update({

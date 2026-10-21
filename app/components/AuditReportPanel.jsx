@@ -289,6 +289,8 @@ function MetricRow({ def, metrics, animate }) {
   );
 }
 
+// PSI overview block — not mounted in panel yet (see §8.8.1).
+// eslint-disable-next-line no-unused-vars
 function OverviewLighthouse({ view, pageLabel }) {
   const [ref, animate] = useInView();
   const cats = view?.categories ?? {};

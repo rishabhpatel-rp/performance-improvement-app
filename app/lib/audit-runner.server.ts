@@ -13,6 +13,31 @@ type AdminClient = any;
 
 const auditRunGenerations = new Map<string, number>();
 
+// One scan at a time on this process. The capacity note's "2 is safe" assumed
+// tabs close after each pass; they do not, so 1 stays the cap until measured.
+const MAX_CONCURRENT_AUDITS = 1;
+let runningAudits = 0;
+const auditWaiters: Array<() => void> = [];
+
+function acquireAuditSlot(): Promise<void> {
+  if (runningAudits < MAX_CONCURRENT_AUDITS) {
+    runningAudits += 1;
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => {
+    auditWaiters.push(() => {
+      runningAudits += 1;
+      resolve();
+    });
+  });
+}
+
+function releaseAuditSlot(): void {
+  runningAudits -= 1;
+  const next = auditWaiters.shift();
+  if (next) next();
+}
+
 /**
  * `preview_theme_id` for the audit, or undefined when it is not needed.
  * The live (MAIN) theme is audited without the param (no Shopify preview bar
@@ -98,6 +123,10 @@ export async function startAuditForStore(
 
   // eslint-disable-next-line @typescript-eslint/no-floating-promises
   (async () => {
+    // After auditRunning is written, so a shop waiting for a slot still
+    // shows as running. A newer run for the same shop bumps runGeneration
+    // and this one releases the slot instead of scanning.
+    await acquireAuditSlot();
     try {
       if (!isCurrentRun()) return;
       // Storefront password (Step 1, password-protected stores), custom PLP/PDP
@@ -244,6 +273,7 @@ export async function startAuditForStore(
         });
     } finally {
       if (isCurrentRun()) auditRunGenerations.delete(shopDomain);
+      releaseAuditSlot();
     }
   })();
 
