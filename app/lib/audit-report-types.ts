@@ -153,4 +153,12 @@ export interface AuditReportSummary {
     };
   };
   pageRoles?: Record<string, string>;
+  /** Above-fold image issues per audited page. Key = page pathname. */
+  imageRecommendations?: Record<string, Array<{
+    selector: string;
+    src: string;
+    issue: "lazy-above-fold" | "missing-fetchpriority" | "oversized";
+    description: string;
+    fix: string;
+  }>>;
 }

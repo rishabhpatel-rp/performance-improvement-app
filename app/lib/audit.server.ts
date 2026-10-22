@@ -15,6 +15,7 @@ import {
 import { normalizeCustomUrl } from "./page-urls.server";
 import { buildScriptInventoryFromClassified } from "./audit-classified-inventory.ts";
 import { buildScriptInventory } from "./audit-inventory.server.ts";
+import { applyHideSelectorHygiene } from "./audit-hide-safety.server";
 
 /** A `Profiler.ScriptCoverage` record: `coverageVerdict` only needs
  *  `functions`, but callers also need the `url` to map the record back to
@@ -1004,32 +1005,56 @@ async function verifyFoldSurvives(
     try {
       const hits = await page.evaluate(
         ([sels, foldHeight]) => {
-          // Record which fold elements are visible now, then apply the CSS the
-          // consumer would apply, then look again. Anything that disappeared
-          // inside the band is a violation.
           const helpers = (
             window as unknown as {
               __ppHelpers?: {
                 isMajorForFold: (el: Element) => boolean;
-                isVisible: (el: Element) => boolean;
               };
             }
           ).__ppHelpers;
           if (!helpers) return [] as string[];
 
+          const foldH = foldHeight as number;
+
+          const foldChromeRoot = (el: Element): Element | null => {
+            try {
+              return el.closest(
+                "header,[role=banner],[role=navigation],nav,.hero,.hero-wrapper,.shopify-section-header,.header-section,.header-logo",
+              );
+            } catch {
+              return null;
+            }
+          };
           const docTop = (el: Element) => {
             const r = el.getBoundingClientRect();
             return r.top + (window.pageYOffset || document.documentElement.scrollTop || 0);
           };
-          const foldMajor = Array.prototype.filter.call(
-            document.querySelectorAll("body *"),
-            helpers.isMajorForFold,
-          ).filter((el: Element) => docTop(el) < (foldHeight as number));
-
-          const before = new Set<Element>();
-          foldMajor.forEach((el: Element) => {
-            if (helpers.isVisible(el)) before.add(el);
-          });
+          const overlapsFoldBand = (el: Element): boolean => {
+            const r = el.getBoundingClientRect();
+            if (r.width > 0 || r.height > 0) {
+              const top = docTop(el);
+              const bottom = top + r.height;
+              if (top < foldH && bottom > 0) return true;
+            }
+            const chrome = foldChromeRoot(el);
+            if (chrome) {
+              const cr = chrome.getBoundingClientRect();
+              if (cr.height > 0) {
+                const cTop = docTop(chrome);
+                const cBottom = cTop + cr.height;
+                if (cTop < foldH && cBottom > 0) return true;
+              }
+            }
+            return false;
+          };
+          const isFoldSensitiveTarget = (el: Element): boolean => {
+            if (!overlapsFoldBand(el)) return false;
+            if (helpers.isMajorForFold(el)) return true;
+            const tag = el.tagName;
+            if (tag === "IMG" || tag === "PICTURE" || tag === "VIDEO") return true;
+            if (foldChromeRoot(el) && el.classList.contains("lazyload")) return true;
+            return false;
+          };
 
           const style = document.createElement("style");
           style.textContent =
@@ -1047,11 +1072,11 @@ async function verifyFoldSurvives(
             try {
               els = document.querySelectorAll(sel);
             } catch {
-              continue; // invalid selector
+              continue;
             }
             for (let j = 0; j < els.length; j++) {
               const el = els[j];
-              if (!before.has(el)) continue;
+              if (!isFoldSensitiveTarget(el)) continue;
               if (!el.getClientRects().length) {
                 hidden.push(sel);
                 break;
@@ -1781,24 +1806,49 @@ async function selectorsOverlapFoldOnPage(
             r.top + (window.pageYOffset || document.documentElement.scrollTop || 0)
           );
         }
-        function hasLayout(el: Element): boolean {
+        const foldH = foldHeight as number;
+        const foldChromeRoot = (el: Element): Element | null => {
+          try {
+            return el.closest(
+              "header,[role=banner],[role=navigation],nav,.hero,.hero-wrapper,.shopify-section-header,.header-section,.header-logo",
+            );
+          } catch {
+            return null;
+          }
+        };
+        const overlapsFoldBand = (el: Element): boolean => {
           const r = el.getBoundingClientRect();
-          return !(r.width === 0 && r.height === 0 && r.top === 0 && r.left === 0);
-        }
-      function overlapsFold(el: Element): boolean {
-        if (!hasLayout(el)) return false;
-        const top = docTop(el);
-        const bottom = top + el.getBoundingClientRect().height;
-        return top < (foldHeight as number) && bottom > 0;
-      }
-
+          if (r.width > 0 || r.height > 0) {
+            const top = docTop(el);
+            const bottom = top + r.height;
+            if (top < foldH && bottom > 0) return true;
+          }
+          const chrome = foldChromeRoot(el);
+          if (chrome) {
+            const cr = chrome.getBoundingClientRect();
+            if (cr.height > 0) {
+              const cTop = docTop(chrome);
+              const cBottom = cTop + cr.height;
+              if (cTop < foldH && cBottom > 0) return true;
+            }
+          }
+          return false;
+        };
+        const isFoldSensitiveTarget = (el: Element): boolean => {
+          if (!overlapsFoldBand(el)) return false;
+          if (helpers.isMajorForFold(el)) return true;
+          const tag = el.tagName;
+          if (tag === "IMG" || tag === "PICTURE" || tag === "VIDEO") return true;
+          if (foldChromeRoot(el) && el.classList.contains("lazyload")) return true;
+          return false;
+        };
 
         const out: string[] = [];
         for (const sel of sels as string[]) {
           try {
             const els = document.querySelectorAll(sel);
             for (let i = 0; i < els.length; i++) {
-              if (helpers.isMajorForFold(els[i]) && overlapsFold(els[i])) {
+              if (isFoldSensitiveTarget(els[i])) {
                 out.push(sel);
                 break;
               }
@@ -2044,7 +2094,25 @@ export async function runHiddenAudit({
       for (const s of selectorSet) {
         if (foldProtectedSelectors.has(s) || visSet.has(s)) selectorSet.delete(s);
       }
-      const hideSelectors = [...selectorSet].sort();
+      let hideSelectors = [...selectorSet].sort();
+      const hideHygiene = applyHideSelectorHygiene(hideSelectors);
+      hideSelectors = hideHygiene.hideSelectors;
+      if (hideHygiene.warnings.length) {
+        console.warn(
+          `[audit] Dropped ${hideHygiene.warnings.length} unsafe hide selector(s):`,
+          hideHygiene.warnings.slice(0, 8).join(", "),
+        );
+      }
+
+      const postHygieneFoldVeto = await Promise.all(
+        measured.map(({ page }) => selectorsOverlapFoldOnPage(page, hideSelectors)),
+      );
+      postHygieneFoldVeto.forEach((hits) =>
+        hits.forEach((x) => foldProtectedSelectors.add(x)),
+      );
+      hideSelectors = hideSelectors
+        .filter((x) => !foldProtectedSelectors.has(x) && !visSet.has(x))
+        .sort();
 
       // Per-page hide lists. The consumer resolves its page at runtime from
       // location.pathname, so each audited page contributes its own collapsed
@@ -2061,7 +2129,9 @@ export async function runHiddenAudit({
           if (foldProtectedSelectors.has(list) || visSet.has(list)) continue;
           local.add(list);
         }
-        hideSelectorsByPage[path] = [...local].sort();
+        hideSelectorsByPage[path] = [...local]
+          .filter((x) => !foldProtectedSelectors.has(x) && !visSet.has(x))
+          .sort();
         pagePatterns[path] = pageMatchPatterns(path);
       });
 
@@ -2098,7 +2168,13 @@ export async function runHiddenAudit({
       // which is how an empty `deferArray` shipped unnoticed. This re-applies
       // the emitted hide CSS to each page and asks the browser whether any
       // fold-overlapping element disappeared.
-      const foldAssertion = await verifyFoldSurvives(measured, hideSelectors);
+      let foldAssertion = await verifyFoldSurvives(measured, hideSelectors);
+      if (!foldAssertion.ok) {
+        hideSelectors = [];
+        for (const path of Object.keys(hideSelectorsByPage)) {
+          hideSelectorsByPage[path] = [];
+        }
+      }
 
       // Base + delta. The storefront bundle ships the intersection once and each
       // page only its extras, which keeps a render-blocking script small: full

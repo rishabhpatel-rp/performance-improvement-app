@@ -5,7 +5,7 @@ import {
   describePages,
   AuditBlockedError,
 } from "./audit.server";
-import { saveAuditReport } from "./store-sync.server";
+import { saveAuditReport } from "./store-sync-audit.server";
 import { listThemes, numericThemeId } from "./theme-embed.server";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any

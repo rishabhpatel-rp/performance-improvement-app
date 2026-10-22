@@ -1,4 +1,6 @@
 import prisma from "../db.server";
+import { applyFoldPolicy } from "./audit-fold-policy.server";
+import { applyHideSelectorHygiene } from "./audit-hide-safety.server";
 import {
   rebuildPerformanceScript,
   readStringArray,
@@ -547,7 +549,22 @@ export async function saveAuditReport(
   const deferOn = current?.auditDeferArrayEnabled ?? true;
   const hideOn = current?.auditHideSelectorsEnabled ?? true;
   const activeDefer = deferOn ? report.deferArray : [];
-  const activeHide = hideOn ? report.hideSelectors : [];
+  const hygiene = applyHideSelectorHygiene(report.hideSelectors ?? []);
+  const foldPolicy = applyFoldPolicy(
+    hygiene.hideSelectors,
+    (report as { foldAssertion?: { ok: boolean; violations?: string[]; pagesChecked: number } })
+      .foldAssertion ?? { ok: true, violations: [], pagesChecked: 0 },
+  );
+  const activeHide = hideOn ? foldPolicy.hideSelectors : [];
+  const reportToPersist = {
+    ...report,
+    hideSelectors: activeHide,
+    warnings: [
+      ...((report as { warnings?: string[] }).warnings ?? []),
+      ...hygiene.warnings,
+      ...foldPolicy.warnings,
+    ],
+  };
 
   // On success the audit stays "running" here: the flag flips to complete only
   // after the storefront script has been rebuilt and stored (below), so the
@@ -598,7 +615,7 @@ export async function saveAuditReport(
     data: {
       domain: shopDomain,
       audit_type: "auto-audit",
-      audit_data: report,
+      audit_data: reportToPersist,
       status,
       details,
     },

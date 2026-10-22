@@ -126,6 +126,7 @@ export function buildAuditReportSummary(
       report.labVitalsByPath,
     ),
     psiSkipNote,
+    imageRecommendations: report.imageRecommendations ?? {},
     templateBuckets: report.templateBuckets
       ? {
           defer: {

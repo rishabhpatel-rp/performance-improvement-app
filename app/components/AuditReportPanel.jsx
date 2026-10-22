@@ -357,6 +357,92 @@ function OverviewLighthouse({ view, pageLabel }) {
   );
 }
 
+const IMAGE_ISSUE_META = {
+  "lazy-above-fold": {
+    label: "Lazy-load on above-fold image",
+    color: "#DC2626",
+    icon: "⚠️",
+    lcpImpact: "Delays LCP by 1 extra round-trip",
+  },
+  "missing-fetchpriority": {
+    label: "Missing fetchpriority=high",
+    color: "#D97706",
+    icon: "⚡",
+    lcpImpact: "Browser discovers image late in preload queue",
+  },
+  oversized: {
+    label: "Oversized image",
+    color: "#2563EB",
+    icon: "📦",
+    lcpImpact: "Wastes bandwidth, slows LCP",
+  },
+};
+
+function ImageRecommendationsPanel({ imageRecommendations }) {
+  if (!imageRecommendations) return null;
+  const allIssues = Object.entries(imageRecommendations).flatMap(([path, issues]) =>
+    issues.map((issue) => ({ ...issue, path })),
+  );
+  if (!allIssues.length) return null;
+
+  return (
+    <div style={{ marginTop: 24 }}>
+      <div style={{ fontSize: 15, fontWeight: 700, color: "#111827", marginBottom: 10 }}>
+        🖼 Above-fold image issues ({allIssues.length})
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+        {allIssues.map((issue, idx) => {
+          const meta = IMAGE_ISSUE_META[issue.issue] || {};
+          return (
+            <div
+              key={idx}
+              style={{
+                border: `1px solid ${meta.color}33`,
+                borderLeft: `4px solid ${meta.color}`,
+                borderRadius: 8,
+                padding: "12px 16px",
+                background: "#FAFAFA",
+              }}
+            >
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                <span style={{ fontSize: 15 }}>{meta.icon}</span>
+                <span style={{ fontWeight: 600, color: meta.color, fontSize: 13 }}>
+                  {meta.label}
+                </span>
+                <span style={{ fontSize: 11, color: "#6B7280", marginLeft: "auto" }}>
+                  {issue.path}
+                </span>
+              </div>
+              <div style={{ fontSize: 12, color: "#374151", marginBottom: 4 }}>
+                {issue.description}
+              </div>
+              {issue.src && (
+                <div style={{ fontSize: 11, color: "#6B7280", marginBottom: 6, wordBreak: "break-all" }}>
+                  <strong>Image:</strong>{" "}
+                  <code style={{ background: "#F3F4F6", padding: "1px 4px", borderRadius: 4 }}>
+                    {issue.src.length > 80 ? `…${issue.src.slice(-80)}` : issue.src}
+                  </code>
+                </div>
+              )}
+              <div
+                style={{
+                  fontSize: 12,
+                  color: "#065F46",
+                  background: "#ECFDF5",
+                  borderRadius: 6,
+                  padding: "6px 10px",
+                }}
+              >
+                <strong>Fix:</strong> {issue.fix}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 export default function AuditReportPanel({
   summary,
   auditStatus,
@@ -606,6 +692,8 @@ export default function AuditReportPanel({
           </table>
           </div>
         </div>
+
+      <ImageRecommendationsPanel imageRecommendations={summary.imageRecommendations} />
     </div>
   );
 }
