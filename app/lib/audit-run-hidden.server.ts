@@ -413,6 +413,11 @@ export async function runHiddenAudit({
         pagesAudited: urls.map((u) => safePathname(u)),
         completedAt: new Date().toISOString(),
         labVitalsByPath,
+        imageRecommendations: Object.fromEntries(
+          measured
+            .map((m, i) => [safePathname(urls[i]), m.imageIssues ?? []])
+            .filter(([, issues]) => (issues as unknown[]).length > 0),
+        ),
       };
 
       draftReport.scriptInventory = buildScriptInventory(draftReport, resourcesByPath);

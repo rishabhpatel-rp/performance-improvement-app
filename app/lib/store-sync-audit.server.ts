@@ -5,6 +5,11 @@ import {
 } from "./performance-script.server";
 import type { HiddenAuditResult } from "./audit.server";
 import { applyFoldPolicy } from "./audit-fold-policy.server";
+import {
+  applyHideSelectorHygiene,
+  emptyHideTemplateBuckets,
+  filterHideTemplateBuckets,
+} from "./audit-hide-safety.server";
 import { schedulePsiAfterAudit } from "./psi-scheduler.server";
 import { templateBucketsToStorePatch } from "./template-script-config";
 const DEFAULT_STATIC_DEFER = ["wpm", "gtm"];
@@ -36,12 +41,17 @@ export async function saveAuditReport(
   const hideOn = current?.auditHideSelectorsEnabled ?? true;
   const activeDefer = deferOn ? report.deferArray : [];
 
+  const hygiene = applyHideSelectorHygiene(report.hideSelectors ?? []);
   const foldPolicy = applyFoldPolicy(
-    report.hideSelectors ?? [],
+    hygiene.hideSelectors,
     report.foldAssertion ?? { ok: true, violations: [], pagesChecked: 0 },
   );
   const hideForStore = hideOn ? foldPolicy.hideSelectors : [];
-  const reportWarnings = [...(report.warnings ?? []), ...foldPolicy.warnings];
+  const reportWarnings = [
+    ...(report.warnings ?? []),
+    ...hygiene.warnings,
+    ...foldPolicy.warnings,
+  ];
   const reportToPersist: AuditReport = {
     ...report,
     hideSelectors: hideForStore,
@@ -64,9 +74,13 @@ export async function saveAuditReport(
 
   let templatePatch: Record<string, string[]> = {};
   if (report.templateBuckets?.defer && report.templateBuckets?.hide) {
+    const hideBuckets =
+      hideOn && foldPolicy.ok
+        ? filterHideTemplateBuckets(report.templateBuckets.hide, hideForStore)
+        : emptyHideTemplateBuckets();
     templatePatch = templateBucketsToStorePatch(
       report.templateBuckets.defer,
-      report.templateBuckets.hide,
+      hideBuckets,
     );
     if (!deferOn) {
       for (const key of Object.keys(templatePatch)) {

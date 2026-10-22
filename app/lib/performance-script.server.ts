@@ -5,6 +5,7 @@ import {
   orderPagePatterns,
   selectPerPageVariants,
 } from "./per-page";
+import { sanitizeHideSelectorsForStore } from "./audit-hide-safety.server";
 import { buildHiddenCss, generateDeferredScript } from "./script-generator";
 
 /**
@@ -79,7 +80,9 @@ async function readPerPageAuditData(
       for (const page of Object.keys(patternMap)) {
         if (!readStringArray(patternMap[page]).includes(pattern)) continue;
         readStringArray(addMap[page]).forEach((x) => add.add(x));
-        readStringArray(hideMap[page]).forEach((x) => hide.add(x));
+        sanitizeHideSelectorsForStore(readStringArray(hideMap[page])).forEach((x) =>
+          hide.add(x),
+        );
       }
       return { pattern, add: [...add], hide: [...hide] };
     });
@@ -186,12 +189,16 @@ export async function rebuildPerformanceScript(
           : [],
         firstVisitDelayMs: config.firstUserDelayMs ?? 12000,
         everyLoadDelayMs: config.everyTimeDelayMs ?? 6000,
-        hideSelectors: hideEnabled ? readStringArray(config.auditHideSelectors) : [],
+        hideSelectors: hideEnabled
+          ? sanitizeHideSelectorsForStore(readStringArray(config.auditHideSelectors))
+          : [],
         // Settings "Debug mode": keep console logging in the storefront bundle.
         debugMode: config.debugMode === true,
       });
 
-      hiddenCss = hideEnabled ? buildHiddenCss(readStringArray(config.auditHideSelectors)) : "";
+      hiddenCss = hideEnabled
+        ? buildHiddenCss(sanitizeHideSelectorsForStore(readStringArray(config.auditHideSelectors)))
+        : "";
     }
 
     const built: BuiltPerformanceScript = {

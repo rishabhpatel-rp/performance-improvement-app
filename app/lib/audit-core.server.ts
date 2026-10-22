@@ -96,6 +96,8 @@ export interface HiddenAuditResult {
   gateImpact?: GateImpactEntry;
   auditRunMeta?: AuditRunMeta;
   fieldVitals?: FieldVitalsSummary;
+  /** Above-fold image issues per audited page (lazy-load, missing fetchpriority, oversized). */
+  imageRecommendations?: Record<string, import("./audit-run-page-measure.server").AboveFoldImageIssue[]>;
 }
 
 export interface PageFunnel {

@@ -163,6 +163,8 @@ export interface MeasuredPage {
     requestOrder?: number;
     startTime?: number;
   }>;
+  /** Above-fold image issues detected during the measure pass (feature N7). */
+  imageIssues?: AboveFoldImageIssue[];
 }
 
 /**
@@ -313,32 +315,56 @@ export async function verifyFoldSurvives(
     try {
       const hits = await page.evaluate(
         ([sels, foldHeight]) => {
-          // Record which fold elements are visible now, then apply the CSS the
-          // consumer would apply, then look again. Anything that disappeared
-          // inside the band is a violation.
           const helpers = (
             window as unknown as {
               __ppHelpers?: {
                 isMajorForFold: (el: Element) => boolean;
-                isVisible: (el: Element) => boolean;
               };
             }
           ).__ppHelpers;
           if (!helpers) return [] as string[];
 
+          const foldH = foldHeight as number;
+
+          const foldChromeRoot = (el: Element): Element | null => {
+            try {
+              return el.closest(
+                "header,[role=banner],[role=navigation],nav,.hero,.hero-wrapper,.shopify-section-header,.header-section,.header-logo",
+              );
+            } catch {
+              return null;
+            }
+          };
           const docTop = (el: Element) => {
             const r = el.getBoundingClientRect();
             return r.top + (window.pageYOffset || document.documentElement.scrollTop || 0);
           };
-          const foldMajor = Array.prototype.filter.call(
-            document.querySelectorAll("body *"),
-            helpers.isMajorForFold,
-          ).filter((el: Element) => docTop(el) < (foldHeight as number));
-
-          const before = new Set<Element>();
-          foldMajor.forEach((el: Element) => {
-            if (helpers.isVisible(el)) before.add(el);
-          });
+          const overlapsFoldBand = (el: Element): boolean => {
+            const r = el.getBoundingClientRect();
+            if (r.width > 0 || r.height > 0) {
+              const top = docTop(el);
+              const bottom = top + r.height;
+              if (top < foldH && bottom > 0) return true;
+            }
+            const chrome = foldChromeRoot(el);
+            if (chrome) {
+              const cr = chrome.getBoundingClientRect();
+              if (cr.height > 0) {
+                const cTop = docTop(chrome);
+                const cBottom = cTop + cr.height;
+                if (cTop < foldH && cBottom > 0) return true;
+              }
+            }
+            return false;
+          };
+          const isFoldSensitiveTarget = (el: Element): boolean => {
+            if (!overlapsFoldBand(el)) return false;
+            if (helpers.isMajorForFold(el)) return true;
+            const tag = el.tagName;
+            if (tag === "IMG" || tag === "PICTURE" || tag === "VIDEO") return true;
+            if (foldChromeRoot(el) && el.classList.contains("lazyload")) return true;
+            return false;
+          };
 
           const style = document.createElement("style");
           style.textContent =
@@ -356,11 +382,11 @@ export async function verifyFoldSurvives(
             try {
               els = document.querySelectorAll(sel);
             } catch {
-              continue; // invalid selector
+              continue;
             }
             for (let j = 0; j < els.length; j++) {
               const el = els[j];
-              if (!before.has(el)) continue;
+              if (!isFoldSensitiveTarget(el)) continue;
               if (!el.getClientRects().length) {
                 hidden.push(sel);
                 break;
@@ -475,6 +501,150 @@ async function captureInitialFold(
         reasons: {},
       }),
     );
+}
+
+// ---------------------------------------------------------------------------
+// Above-fold image issue detection (feature N7)
+// ---------------------------------------------------------------------------
+
+export interface AboveFoldImageIssue {
+  /** A best-effort CSS selector for the image element. */
+  selector: string;
+  /** The src / srcset URL for display in the report. */
+  src: string;
+  /** Machine-readable issue code. */
+  issue: "lazy-above-fold" | "missing-fetchpriority" | "oversized";
+  /** Human-readable explanation. */
+  description: string;
+  /** How the developer should fix it. */
+  fix: string;
+}
+
+/**
+ * Inspect every `<img>` (and `<source>` inside `<picture>`) in the first
+ * `FOLD_HEIGHT_PX` of the document and flag:
+ *  - `loading="lazy"` on an above-fold image (delays LCP)
+ *  - missing `fetchpriority="high"` on the first/largest above-fold image
+ *  - natural width > 2× rendered width (wasted bytes)
+ *
+ * Only called for the full measure pass (not harvestOnly). Runs after settle
+ * so lazy images have had a chance to get their natural dimensions.
+ */
+export async function captureAboveFoldImageIssues(
+  page: Page,
+): Promise<AboveFoldImageIssue[]> {
+  return page
+    .evaluate((foldHeight) => {
+      const issues: Array<{
+        selector: string;
+        src: string;
+        issue: string;
+        description: string;
+        fix: string;
+      }> = [];
+
+      function docTop(el: Element): number {
+        const r = el.getBoundingClientRect();
+        return r.top + (window.pageYOffset || document.documentElement.scrollTop || 0);
+      }
+      function isAboveFold(el: Element): boolean {
+        const r = el.getBoundingClientRect();
+        // Accept images that haven't loaded yet (0×0) but are inside header/hero.
+        const inChrome = !!el.closest(
+          "header,[role=banner],.hero,.hero-wrapper,.shopify-section-header,.header-section",
+        );
+        if (r.width === 0 && r.height === 0 && !inChrome) return false;
+        const top = docTop(el);
+        const bottom = top + Math.max(r.height, 1);
+        return top < (foldHeight as number) && bottom > 0;
+      }
+      function bestSelector(el: HTMLImageElement): string {
+        if (el.id) return `#${CSS.escape(el.id)}`;
+        const classes = Array.from(el.classList)
+          .filter((c) => /^[a-zA-Z]/.test(c))
+          .slice(0, 2)
+          .map((c) => `.${CSS.escape(c)}`)
+          .join("");
+        if (classes) return `img${classes}`;
+        return "img";
+      }
+      function mainSrc(el: HTMLImageElement): string {
+        return el.src || el.currentSrc || el.getAttribute("data-src") || "";
+      }
+
+      const imgs = Array.from(
+        document.querySelectorAll<HTMLImageElement>("img"),
+      ).filter(isAboveFold);
+
+      // Flag lazy-loading on any above-fold image.
+      for (const img of imgs) {
+        if (img.loading === "lazy" || img.classList.contains("lazyload")) {
+          issues.push({
+            selector: bestSelector(img),
+            src: mainSrc(img),
+            issue: "lazy-above-fold",
+            description:
+              'Above-fold image has loading="lazy" or class="lazyload". ' +
+              "The browser delays fetching it until it is about to enter the viewport, " +
+              "which pushes LCP back by one extra round-trip.",
+            fix:
+              'Remove loading="lazy" (or the lazyload class) and add fetchpriority="high" ' +
+              "to the most important hero / logo image.",
+          });
+        }
+      }
+
+      // Flag missing fetchpriority="high" on the first/largest above-fold image
+      // that is NOT already flagged as lazy (it may still lack the priority hint).
+      const nonLazy = imgs.filter(
+        (img) => img.loading !== "lazy" && !img.classList.contains("lazyload"),
+      );
+      if (nonLazy.length > 0) {
+        // Pick the largest rendered image as the likely LCP candidate.
+        const candidate = nonLazy.reduce((best, img) => {
+          const r = img.getBoundingClientRect();
+          const br = best.getBoundingClientRect();
+          return r.width * r.height >= br.width * br.height ? img : best;
+        }, nonLazy[0]);
+        if (!candidate.hasAttribute("fetchpriority")) {
+          issues.push({
+            selector: bestSelector(candidate),
+            src: mainSrc(candidate),
+            issue: "missing-fetchpriority",
+            description:
+              "The largest above-fold image has no fetchpriority attribute. " +
+              "Without a high-priority hint the browser discovers it late in " +
+              "the preload scanner queue, delaying LCP.",
+            fix: 'Add fetchpriority="high" to this image element in the theme.',
+          });
+        }
+      }
+
+      // Flag oversized images (natural > 2× rendered in both dimensions).
+      for (const img of imgs) {
+        const r = img.getBoundingClientRect();
+        if (
+          r.width > 0 &&
+          r.height > 0 &&
+          img.naturalWidth > 0 &&
+          img.naturalWidth > r.width * 2.2 &&
+          img.naturalHeight > r.height * 2.2
+        ) {
+          issues.push({
+            selector: bestSelector(img),
+            src: mainSrc(img),
+            issue: "oversized",
+            description: `Image is ${img.naturalWidth}×${img.naturalHeight}px but displayed at ${Math.round(r.width)}×${Math.round(r.height)}px (${Math.round(img.naturalWidth / r.width)}× oversized). Wasted bytes slow LCP.`,
+            fix:
+              "Serve a smaller image or use Shopify's image_url filter with a " +
+              "width parameter matching the rendered size (e.g. | image_url: width: 800).",
+          });
+        }
+      }
+
+      return issues;
+    }, FOLD_HEIGHT_PX)
+    .catch(() => [] as AboveFoldImageIssue[]);
 }
 
 /** Best-effort simulation of a real browsing session: scroll through the
@@ -976,6 +1146,7 @@ export async function measurePage(
     const pathname = safePathname(url);
     let labVitals: LabVitalsEntry | undefined;
     let resourceRows: MeasuredPage["resourceRows"];
+    let imageIssues: MeasuredPage["imageIssues"];
     if (!harvestOnly) {
       labVitals = (await page
         .evaluate(COLLECT_LAB_VITALS_JS)
@@ -1015,6 +1186,7 @@ export async function measurePage(
           return rows;
         }, pathname)
         .catch(() => []);
+      imageIssues = await captureAboveFoldImageIssues(page);
     }
 
     return {
@@ -1022,6 +1194,7 @@ export async function measurePage(
       page,
       labVitals,
       resourceRows,
+      imageIssues,
       acc: {
         p: [...mergedKept],
         vis: [...new Set([...read.vis, ...fold.selectors, ...revealedByInteraction])],
@@ -1146,24 +1319,49 @@ export async function selectorsOverlapFoldOnPage(
             r.top + (window.pageYOffset || document.documentElement.scrollTop || 0)
           );
         }
-        function hasLayout(el: Element): boolean {
+        const foldH = foldHeight as number;
+        const foldChromeRoot = (el: Element): Element | null => {
+          try {
+            return el.closest(
+              "header,[role=banner],[role=navigation],nav,.hero,.hero-wrapper,.shopify-section-header,.header-section,.header-logo",
+            );
+          } catch {
+            return null;
+          }
+        };
+        const overlapsFoldBand = (el: Element): boolean => {
           const r = el.getBoundingClientRect();
-          return !(r.width === 0 && r.height === 0 && r.top === 0 && r.left === 0);
-        }
-      function overlapsFold(el: Element): boolean {
-        if (!hasLayout(el)) return false;
-        const top = docTop(el);
-        const bottom = top + el.getBoundingClientRect().height;
-        return top < (foldHeight as number) && bottom > 0;
-      }
-
+          if (r.width > 0 || r.height > 0) {
+            const top = docTop(el);
+            const bottom = top + r.height;
+            if (top < foldH && bottom > 0) return true;
+          }
+          const chrome = foldChromeRoot(el);
+          if (chrome) {
+            const cr = chrome.getBoundingClientRect();
+            if (cr.height > 0) {
+              const cTop = docTop(chrome);
+              const cBottom = cTop + cr.height;
+              if (cTop < foldH && cBottom > 0) return true;
+            }
+          }
+          return false;
+        };
+        const isFoldSensitiveTarget = (el: Element): boolean => {
+          if (!overlapsFoldBand(el)) return false;
+          if (helpers.isMajorForFold(el)) return true;
+          const tag = el.tagName;
+          if (tag === "IMG" || tag === "PICTURE" || tag === "VIDEO") return true;
+          if (foldChromeRoot(el) && el.classList.contains("lazyload")) return true;
+          return false;
+        };
 
         const out: string[] = [];
         for (const sel of sels as string[]) {
           try {
             const els = document.querySelectorAll(sel);
             for (let i = 0; i < els.length; i++) {
-              if (helpers.isMajorForFold(els[i]) && overlapsFold(els[i])) {
+              if (isFoldSensitiveTarget(els[i])) {
                 out.push(sel);
                 break;
               }
