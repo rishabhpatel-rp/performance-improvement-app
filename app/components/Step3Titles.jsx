@@ -1,47 +1,57 @@
 /* eslint-disable react/prop-types */
 import { useState, useEffect } from "react";
-import { useFetcher } from "react-router";
+import { useFetcher, useRevalidator } from "react-router";
 
-const FIELDS = [
-  {
-    key: "auditDeferArray",
-    enabledKey: "auditDeferArrayEnabled",
-    preservedKey: "auditDeferArrayPreserved",
-    delayKey: null,
-    label: "Defer Heavy Scripts",
-    hint: "Add the script names you want to defer till interaction.",
-    placeholder: '["jquery.min.js","cdn.clarity"]',
-  },
-  {
-    key: "auditHideSelectors",
-    enabledKey: "auditHideSelectorsEnabled",
-    preservedKey: "auditHideSelectorsPreserved",
-    delayKey: null,
-    label: "Hide Lastfold Classes",
-    hint: "Add the class names you want to hide till interaction.",
-    placeholder: '["#footer-links",".product-grid > :nth-child(n+5)"]',
-  },
-  {
-    key: "firstUserDelayScripts",
-    enabledKey: "firstUserDelayScriptsEnabled",
-    preservedKey: "firstUserDelayScriptsPreserved",
-    delayKey: "firstUserDelayMs",
-    delayDefault: 12000,
-    label: "Delay Scripts for First User",
-    hint: "Add the script names you want to delay for first-time visitors.",
-    placeholder: '["wpm","gtm"]',
-  },
-  {
-    key: "staticDeferDefaults",
-    enabledKey: "staticDeferDefaultsEnabled",
-    preservedKey: "staticDeferDefaultsPreserved",
-    delayKey: "everyTimeDelayMs",
-    delayDefault: 6000,
-    label: "Delay Scripts",
-    hint: "Add the script names you want to delay on every page load.",
-    placeholder: '["wpm","gtm"]',
-  },
-];
+const SCOPE_SUFFIX = {
+  global: "Global",
+  home: "Home",
+  collection: "Collection",
+  product: "Product",
+};
+
+function fieldsForScope(scope) {
+  const s = SCOPE_SUFFIX[scope] || "Global";
+  return [
+    {
+      key: `auditDefer${s}`,
+      toggleField: "auditDeferArray",
+      enabledKey: "auditDeferArrayEnabled",
+      delayKey: null,
+      label: "Defer Heavy Scripts",
+      hint: "Add the script names you want to defer till interaction.",
+      placeholder: '["jquery.min.js","cdn.clarity"]',
+    },
+    {
+      key: `auditHide${s}`,
+      toggleField: "auditHideSelectors",
+      enabledKey: "auditHideSelectorsEnabled",
+      delayKey: null,
+      label: "Hide Lastfold Classes",
+      hint: "Add the class names you want to hide till interaction.",
+      placeholder: '["#footer-links",".product-grid > :nth-child(n+5)"]',
+    },
+    {
+      key: `firstUserDelayScripts${s}`,
+      toggleField: "firstUserDelayScripts",
+      enabledKey: "firstUserDelayScriptsEnabled",
+      delayKey: `firstUserDelayMs${s}`,
+      delayDefault: 12000,
+      label: "Delay Scripts for First User",
+      hint: "Add the script names you want to delay for first-time visitors.",
+      placeholder: '["wpm","gtm"]',
+    },
+    {
+      key: `staticDeferDefaults${s}`,
+      toggleField: "staticDeferDefaults",
+      enabledKey: "staticDeferDefaultsEnabled",
+      delayKey: `everyTimeDelayMs${s}`,
+      delayDefault: 6000,
+      label: "Delay Scripts",
+      hint: "Add the script names you want to delay on every page load.",
+      placeholder: '["wpm","gtm"]',
+    },
+  ];
+}
 
 // Serialize a string array as a pretty JSON array, wrapping each element on
 // its own line for readability in the textarea.
@@ -75,9 +85,11 @@ function validateArray(text) {
  * beside the toggle when that box is dirty and valid. Invalid JSON replaces
  * the hint and tints the card critical. Invalid content is never saved.
  */
-export default function Step3Titles({ config }) {
+export default function Step3Titles({ config, scope = "global" }) {
   const fetcher = useFetcher();
+  const revalidator = useRevalidator();
   const saveData = fetcher.data;
+  const FIELDS = fieldsForScope(scope);
 
   // drafts[key] = current editable text; originals[key] = last-saved text.
   const [drafts, setDrafts] = useState({});
@@ -125,7 +137,7 @@ export default function Step3Titles({ config }) {
     });
     setDelayDrafts(nextDelayDrafts);
     setDelayOriginals(nextDelayOriginals);
-  }, [config]);
+  }, [config, scope]);
 
   const handleDelayChange = (delayKey, value) => {
     // Only allow positive integers
@@ -160,13 +172,14 @@ export default function Step3Titles({ config }) {
     }
   }, [saveData, delayOriginals]);
 
-  const isEnabled = (field) => toggles[field.key] ?? config?.[field.enabledKey] ?? true;
+  const isEnabled = (field) =>
+    toggles[field.toggleField] ?? config?.[field.enabledKey] ?? true;
 
   const handleToggle = (field, checked) => {
     fetcher.submit(
       {
         intent: "toggle-audit-field",
-        field: field.key,
+        field: field.toggleField,
         enabled: String(checked),
       },
       { method: "POST" },
@@ -185,7 +198,7 @@ export default function Step3Titles({ config }) {
     });
     setDrafts(nextDrafts);
     setOriginals(nextOriginals);
-  }, [config]);
+  }, [config, scope]);
 
   const handleChange = (key, text) => {
     setDrafts((prev) => ({ ...prev, [key]: text }));
@@ -196,7 +209,7 @@ export default function Step3Titles({ config }) {
     const { valid } = validateArray(text);
     if (!valid) return;
 
-    const payload = { intent: "save-audit-arrays" };
+    const payload = { intent: "save-audit-arrays", scope };
     const original = originals[field.key] ?? text;
     if (text !== original) {
       payload[field.key] = text;
@@ -239,6 +252,11 @@ export default function Step3Titles({ config }) {
   useEffect(() => {
     if (fetcher.state === "idle") setSavingKey(null);
   }, [fetcher.state]);
+
+  useEffect(() => {
+    if (!saveData?.ok) return;
+    void revalidator.revalidate();
+  }, [saveData, revalidator]);
 
   const renderFieldCard = (field) => {
     const enabled = isEnabled(field);
@@ -523,6 +541,12 @@ export default function Step3Titles({ config }) {
         {saveData && !saveData.ok && (
           <s-banner tone="critical" style={{ marginBottom: 16 }}>
             Save failed: {saveData.error || "Unknown error"}
+          </s-banner>
+        )}
+        {saveData?.ok && saveData.metafieldStatus === "failed" && (
+          <s-banner tone="warning" style={{ marginBottom: 16 }}>
+            Saved in the database. The shop is still running the previous script
+            because the metafield update failed.
           </s-banner>
         )}
 

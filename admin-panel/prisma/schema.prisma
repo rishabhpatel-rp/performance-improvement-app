@@ -136,6 +136,31 @@ model StoreConfig {
   auditHideSelectors Json     @default("[]") // CSS selectors to hide
   staticDeferDefaults Json    @default("[\"wpm\",\"gtm\"]") // Static always-defer defaults e.g. ["wpm","gtm"]
 
+  auditDeferGlobal      Json @default("[]")
+  auditDeferHome        Json @default("[]")
+  auditDeferCollection  Json @default("[]")
+  auditDeferProduct     Json @default("[]")
+  auditHideGlobal       Json @default("[]")
+  auditHideHome         Json @default("[]")
+  auditHideCollection   Json @default("[]")
+  auditHideProduct      Json @default("[]")
+  staticDeferDefaultsGlobal      Json @default("[\"wpm\",\"gtm\"]")
+  staticDeferDefaultsHome        Json @default("[]")
+  staticDeferDefaultsCollection  Json @default("[]")
+  staticDeferDefaultsProduct     Json @default("[]")
+  firstUserDelayScriptsGlobal      Json @default("[\"wpm\",\"gtm\"]")
+  firstUserDelayScriptsHome        Json @default("[]")
+  firstUserDelayScriptsCollection  Json @default("[]")
+  firstUserDelayScriptsProduct     Json @default("[]")
+  firstUserDelayMsGlobal      Int @default(12000)
+  firstUserDelayMsHome        Int @default(12000)
+  firstUserDelayMsCollection  Int @default(12000)
+  firstUserDelayMsProduct     Int @default(12000)
+  everyTimeDelayMsGlobal      Int @default(6000)
+  everyTimeDelayMsHome        Int @default(6000)
+  everyTimeDelayMsCollection  Int @default(6000)
+  everyTimeDelayMsProduct     Int @default(6000)
+
   // Audit field toggle states (on/off) — Step 3 "Audit Results" textareas
   auditDeferArrayEnabled      Boolean @default(true)
   auditHideSelectorsEnabled   Boolean @default(true)
@@ -265,6 +290,7 @@ model PerformanceScript {
 
   auditScript String?  @map("audit_script") // legacy (raw audit report JSON); no longer written or read
   deferScript String?  @map("defer_script")
+  readableScript String? @map("readable_script")
   hiddenCss   String?  @map("hidden_css")
   scriptHash    String?   @map("script_hash")
   scriptBuiltAt DateTime? @map("script_built_at")
@@ -275,4 +301,20 @@ model PerformanceScript {
 
   @@index([storeId])
   @@map("performance_scripts")
+}
+
+// Read model only. Rows are written by the merchant app. Do not migrate from admin-panel.
+model AuditLog {
+  id         Int      @id @default(autoincrement())
+  domain     String
+  audit_type String   @default("general")
+  audit_data Json?
+  timestamp  DateTime @default(now())
+  status     String   @default("completed")
+  details    String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([domain])
+  @@index([timestamp])
 }

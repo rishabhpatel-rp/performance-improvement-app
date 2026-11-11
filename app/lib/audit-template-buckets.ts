@@ -87,3 +87,57 @@ export function templateDeferToPageVariants(
     { pattern: "/", add: buckets.home, hide: h.home },
   ];
 }
+
+export interface TabDelayMs {
+  home: number;
+  collection: number;
+  product: number;
+}
+
+/** Three variants, always. A one-name tab is kept. `/` is last so it does not steal product or collection URLs. */
+export function templateScopedPageVariants(input: {
+  defer: TemplateDeferBuckets;
+  hide: TemplateDeferBuckets;
+  first: TemplateDeferBuckets;
+  every: TemplateDeferBuckets;
+  firstMs: TabDelayMs;
+  everyMs: TabDelayMs;
+}): Array<{
+  pattern: string;
+  add: string[];
+  hide: string[];
+  first: string[];
+  every: string[];
+  firstMs: number;
+  everyMs: number;
+}> {
+  return [
+    {
+      pattern: "/products/",
+      add: input.defer.product,
+      hide: input.hide.product,
+      first: input.first.product,
+      every: input.every.product,
+      firstMs: input.firstMs.product,
+      everyMs: input.everyMs.product,
+    },
+    {
+      pattern: "/collections/",
+      add: input.defer.collection,
+      hide: input.hide.collection,
+      first: input.first.collection,
+      every: input.every.collection,
+      firstMs: input.firstMs.collection,
+      everyMs: input.everyMs.collection,
+    },
+    {
+      pattern: "/",
+      add: input.defer.home,
+      hide: input.hide.home,
+      first: input.first.home,
+      every: input.every.home,
+      firstMs: input.firstMs.home,
+      everyMs: input.everyMs.home,
+    },
+  ];
+}

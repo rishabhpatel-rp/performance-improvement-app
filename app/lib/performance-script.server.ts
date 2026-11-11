@@ -6,7 +6,16 @@ import {
   selectPerPageVariants,
 } from "./per-page";
 import { sanitizeHideSelectorsForStore } from "./audit-hide-safety.server";
-import { buildHiddenCss, generateDeferredScript } from "./script-generator";
+import { buildHiddenCss, buildDeferredScriptSource, generateDeferredScript } from "./script-generator";
+import { templateScopedPageVariants } from "./audit-template-buckets";
+import {
+  readBucketsFromRow,
+  auditDeferColumn,
+  auditHideColumn,
+  firstUserDelayColumn,
+  staticDeferColumn,
+  unionTemplateLists,
+} from "./template-script-config";
 
 /**
  * Per-page data from the most recent completed audit.
@@ -18,7 +27,8 @@ import { buildHiddenCss, generateDeferredScript } from "./script-generator";
  * merchant hand-edited the arrays in Step 3), the caller falls back to the
  * single union in `StoreConfig`, which is exactly today's behaviour.
  */
-async function readPerPageAuditData(
+/** Kept for callers that still want the audit log's per-page split. The injected script does not use it. */
+export async function readPerPageAuditData(
   shopDomain: string,
 ): Promise<{
   baseScripts: string[];
@@ -130,9 +140,20 @@ export function readStringArray(value: unknown): string[] {
 
 export interface BuiltPerformanceScript {
   deferScript: string; // final obfuscated JS ("" when the app is off)
+  readableScript: string;
   hiddenCss: string;
   scriptHash: string;
   scriptBuiltAt: Date;
+  metafieldStatus?: string;
+}
+
+function delayMs(row: Record<string, unknown>, key: string, fallback: number): number {
+  const n = row[key];
+  return typeof n === "number" && Number.isFinite(n) && n >= 0 ? n : fallback;
+}
+
+function emptyBuckets() {
+  return { global: [] as string[], home: [] as string[], collection: [] as string[], product: [] as string[] };
 }
 
 /**
@@ -160,64 +181,92 @@ export async function rebuildPerformanceScript(
     const active = store.isActive && Boolean(config?.appEnabled);
 
     let deferScript = "";
+    let readableScript = "";
     let hiddenCss = "";
 
     if (active && config) {
+      const row = config as unknown as Record<string, unknown>;
+      const deferOn = config.auditDeferArrayEnabled !== false;
+      const hideOn = config.auditHideSelectorsEnabled !== false;
+      const firstOn = config.firstUserDelayScriptsEnabled !== false;
+      const everyOn = config.staticDeferDefaultsEnabled !== false;
 
-      // The toggle must win over per-page data: when deferral is switched off
-      // nothing may be gated, so per-page lists are only read when it is on.
-      const deferEnabled = config.auditDeferArrayEnabled !== false;
-      const perPage = deferEnabled ? await readPerPageAuditData(shopDomain) : null;
-      const hideEnabled = config.auditHideSelectorsEnabled;
+      const defer = deferOn
+        ? readBucketsFromRow(row, auditDeferColumn, "auditDeferArray")
+        : emptyBuckets();
+      const hideRaw = hideOn
+        ? readBucketsFromRow(row, auditHideColumn, "auditHideSelectors")
+        : emptyBuckets();
+      const hide = {
+        global: sanitizeHideSelectorsForStore(hideRaw.global),
+        home: sanitizeHideSelectorsForStore(hideRaw.home),
+        collection: sanitizeHideSelectorsForStore(hideRaw.collection),
+        product: sanitizeHideSelectorsForStore(hideRaw.product),
+      };
+      const first = firstOn
+        ? readBucketsFromRow(row, firstUserDelayColumn, "firstUserDelayScripts")
+        : emptyBuckets();
+      const every = everyOn
+        ? readBucketsFromRow(row, staticDeferColumn, "staticDeferDefaults")
+        : emptyBuckets();
 
-      deferScript = generateDeferredScript({
-        // `baseScripts` is what every audited page loads and is only consulted
-        // when a page variant matches; `interactionGatedScripts` is the union
-        // used for an un-audited page (a blog post, a search result). With no
-        // per-page data the variant list is empty, so every page uses the union
-        // — the pre-existing behaviour.
-        baseScripts: perPage?.baseScripts ?? [],
-        pageVariants: perPage?.variants ?? [],
-        interactionGatedScripts: deferEnabled
-          ? readStringArray(config.auditDeferArray)
-          : [],
-        firstVisitDelayedScripts: config.firstUserDelayScriptsEnabled
-          ? readStringArray(config.firstUserDelayScripts)
-          : [],
-        everyLoadDelayedScripts: config.staticDeferDefaultsEnabled
-          ? readStringArray(config.staticDeferDefaults)
-          : [],
-        firstVisitDelayMs: config.firstUserDelayMs ?? 12000,
-        everyLoadDelayMs: config.everyTimeDelayMs ?? 6000,
-        hideSelectors: hideEnabled
-          ? sanitizeHideSelectorsForStore(readStringArray(config.auditHideSelectors))
-          : [],
-        // Settings "Debug mode": keep console logging in the storefront bundle.
+      const firstMs = {
+        home: delayMs(row, "firstUserDelayMsHome", delayMs(row, "firstUserDelayMs", 12000)),
+        collection: delayMs(row, "firstUserDelayMsCollection", delayMs(row, "firstUserDelayMs", 12000)),
+        product: delayMs(row, "firstUserDelayMsProduct", delayMs(row, "firstUserDelayMs", 12000)),
+      };
+      const everyMs = {
+        home: delayMs(row, "everyTimeDelayMsHome", delayMs(row, "everyTimeDelayMs", 6000)),
+        collection: delayMs(row, "everyTimeDelayMsCollection", delayMs(row, "everyTimeDelayMs", 6000)),
+        product: delayMs(row, "everyTimeDelayMsProduct", delayMs(row, "everyTimeDelayMs", 6000)),
+      };
+
+      const scriptInput = {
+        tabScoped: true as const,
+        baseScripts: defer.global,
+        pageVariants: templateScopedPageVariants({ defer, hide, first, every, firstMs, everyMs }),
+        interactionGatedScripts: unionTemplateLists(defer),
+        globalHideSelectors: hide.global,
+        globalFirstVisitDelayedScripts: first.global,
+        globalEveryLoadDelayedScripts: every.global,
+        hideSelectors: unionTemplateLists(hide),
+        firstVisitDelayedScripts: [],
+        everyLoadDelayedScripts: [],
+        firstVisitDelayMs: delayMs(row, "firstUserDelayMsGlobal", delayMs(row, "firstUserDelayMs", 12000)),
+        everyLoadDelayMs: delayMs(row, "everyTimeDelayMsGlobal", delayMs(row, "everyTimeDelayMs", 6000)),
         debugMode: config.debugMode === true,
-      });
+      };
 
-      hiddenCss = hideEnabled
-        ? buildHiddenCss(sanitizeHideSelectorsForStore(readStringArray(config.auditHideSelectors)))
-        : "";
+      readableScript = buildDeferredScriptSource(scriptInput);
+      deferScript = generateDeferredScript(scriptInput);
+      hiddenCss = hideOn ? buildHiddenCss(unionTemplateLists(hide)) : "";
     }
 
     const built: BuiltPerformanceScript = {
       deferScript,
+      readableScript,
       hiddenCss,
       scriptHash: createHash("sha256").update(deferScript).digest("hex"),
       scriptBuiltAt: new Date(),
     };
 
+    const stored = {
+      deferScript: built.deferScript,
+      readableScript: built.readableScript,
+      hiddenCss: built.hiddenCss,
+      scriptHash: built.scriptHash,
+      scriptBuiltAt: built.scriptBuiltAt,
+    };
+
     await prisma.performanceScript.upsert({
       where: { storeId: store.id },
-      create: { storeId: store.id, ...built },
-      update: built,
+      create: { storeId: store.id, ...stored },
+      update: stored,
     });
 
-    // Mirror deferScript to shop metafields for the inline theme embed (same bytes as the app proxy).
-    void import("./script-metafield.server").then(({ syncScriptMetafield }) =>
-      syncScriptMetafield(shopDomain),
-    );
+    const { syncScriptMetafield } = await import("./script-metafield.server");
+    const sync = await syncScriptMetafield(shopDomain);
+    built.metafieldStatus = sync.status;
 
     return built;
   } catch (err) {

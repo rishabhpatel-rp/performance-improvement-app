@@ -73,3 +73,12 @@
 2026-10-14T12:23:14Z  app/lib/dashboard-loader.server.js
 
   [NOTE] console.log present — strip before merge
+2026-10-23T12:32:40Z  tests/storefront-tabs.test.js
+
+  [ERROR] syntax error — SyntaxError: Unexpected token '}'
+2026-10-23T12:35:26Z  tests/storefront-tabs.test.js
+
+  [ERROR] syntax error — SyntaxError: Unexpected token '}'
+2026-10-23T12:35:43Z  tests/storefront-tabs.test.js
+
+  [ERROR] syntax error — SyntaxError: Unexpected token '}'

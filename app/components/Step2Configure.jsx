@@ -1,7 +1,16 @@
 /* eslint-disable react/prop-types */
+import { useState } from "react";
 import { useFetcher } from "react-router";
 import { PREDEFINED_SCRIPTS } from "../lib/scripts";
 import Step3Titles from "./Step3Titles";
+import Step3AuditResults from "./Step3AuditResults";
+
+const TABS = [
+  { id: "global", label: "Global" },
+  { id: "home", label: "Home" },
+  { id: "collection", label: "PLP" },
+  { id: "product", label: "PDP" },
+];
 
 const FIELD_BY_INDEX = ["script1Enabled", "script2Enabled", "script3Enabled"];
 
@@ -11,8 +20,9 @@ const FIELD_BY_INDEX = ["script1Enabled", "script2Enabled", "script3Enabled"];
  * to the script's default name, purely cosmetic). Toggles are disabled
  * while the app itself is off.
  */
-export default function Step2Configure({ config }) {
+export default function Step2Configure({ config, auditStatus, appEnabled }) {
   const fetcher = useFetcher();
+  const [scope, setScope] = useState("global");
 
   // Merge action response into config for fresh state after toggle
   const liveConfig = fetcher.data?.config
@@ -54,8 +64,39 @@ export default function Step2Configure({ config }) {
         </s-stack>
       )}
 
-      {/* Step 3 content merged into Step 2: editable audit-result arrays */}
-      <Step3Titles config={liveConfig} />
+      <div style={{ display: "flex", gap: 8, marginTop: 20, flexWrap: "wrap" }}>
+        {TABS.map((tab) => (
+          <button
+            key={tab.id}
+            type="button"
+            onClick={() => setScope(tab.id)}
+            style={{
+              borderRadius: 999,
+              border: scope === tab.id ? "1px solid #111827" : "1px solid #E5E7EB",
+              background: scope === tab.id ? "#111827" : "#fff",
+              color: scope === tab.id ? "#fff" : "#374151",
+              padding: "6px 14px",
+              fontSize: 13,
+              cursor: "pointer",
+            }}
+          >
+            {tab.label}
+          </button>
+        ))}
+      </div>
+      {scope !== "global" && (
+        <p style={{ fontSize: 13, color: "#6B7177", marginTop: 8 }}>
+          This page also uses every name in the Global tab.
+        </p>
+      )}
+
+      <Step3Titles config={liveConfig} scope={scope} />
+      <Step3AuditResults
+        config={liveConfig}
+        auditStatus={auditStatus}
+        appEnabled={appEnabled}
+        scope={scope}
+      />
     </s-section>
   );
 }

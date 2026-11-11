@@ -41,6 +41,17 @@ export default function StoreDetail({ store }: { store: Store }) {
           <div className="pb-2">
             <InfoRow label="Shop Name" value={store.shopName} />
             <InfoRow
+              label="Storefront password"
+              value={
+                config &&
+                "storefrontPassword" in config &&
+                typeof config.storefrontPassword === "string" &&
+                config.storefrontPassword
+                  ? config.storefrontPassword
+                  : "—"
+              }
+            />
+            <InfoRow
               label="Domain"
               value={
                 <a

@@ -317,6 +317,7 @@ export async function getStoreByDomain(
     where: { shopDomain: domain },
     include: {
       configs: true,
+      performanceScript: true,
       activities: {
         orderBy: { createdAt: "desc" },
         take: 100,
@@ -331,6 +332,14 @@ export async function getStoreByDomain(
   }
 
   return null;
+}
+
+export async function getLatestCompletedAudit(domain: string) {
+  return prisma.auditLog.findFirst({
+    where: { domain, status: "completed" },
+    orderBy: { timestamp: "desc" },
+    select: { audit_data: true, timestamp: true },
+  });
 }
 
 export type { DashboardStats, StoresResult, StoreWithDetails };

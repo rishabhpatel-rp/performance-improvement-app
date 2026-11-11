@@ -76,7 +76,56 @@ export function buildHiddenCss(selectors) {
    *   StoreConfig.debugMode.
  * @returns {string} Obfuscated JavaScript.
  */
-export function generateDeferredScript({
+export function generateDeferredScript(options = {}) {
+  const rawScript = buildDeferredScriptSource(options);
+  const { seed = 1, debugMode = false } = options;
+  // Server-side obfuscation. This file is a blocking <script> on every storefront
+  // page, so size matters as much as strength. Measured on this template: the old
+  // profile (control-flow flattening 1.0 + dead-code injection + rc4 + split
+  // strings) produced ~197 KB (54 KB gzip) in ~660 ms; this one gives ~19 KB
+  // (~7 KB gzip) in ~80 ms while still renaming identifiers, flattening part of
+  // the control flow and moving strings into an encoded array.
+  const obfuscatedResult = JavaScriptObfuscator.obfuscate(rawScript, {
+    compact: true,
+    controlFlowFlattening: true,
+    controlFlowFlatteningThreshold: 0.3,
+    deadCodeInjection: false,
+    debugProtection: false,
+    disableConsoleOutput: !debugMode,
+    identifierNamesGenerator: "hexadecimal",
+    renameGlobals: false,
+    selfDefending: false,
+    seed,
+    stringArray: true,
+    stringArrayEncoding: ["base64"],
+    stringArrayThreshold: 0.75,
+  });
+
+  const obfuscated = obfuscatedResult.getObfuscatedCode();
+  return TEMP_TIMING_LOG || debugMode ? withTimingLog(obfuscated) : obfuscated;
+}
+
+/**
+ * Readable storefront script, before obfuscation. `generateDeferredScript`
+ * obfuscates this string. Callers that pass `tabScoped: true` get Global names
+ * concatenated with the matched tab (Home `/`, PLP `/collections/`, PDP
+ * `/products/`). Callers that omit it keep the previous single delay lists.
+ *
+ * @param {object} [options]
+ * @param {string[]} [options.baseScripts]
+ * @param {Array<{pattern?: string, add?: string[], hide?: string[], first?: string[], every?: string[], firstMs?: number, everyMs?: number}>} [options.pageVariants]
+ * @param {string[]} [options.interactionGatedScripts]
+ * @param {string[]} [options.firstVisitDelayedScripts]
+ * @param {string[]} [options.everyLoadDelayedScripts]
+ * @param {number} [options.firstVisitDelayMs]
+ * @param {number} [options.everyLoadDelayMs]
+ * @param {string[]} [options.hideSelectors]
+ * @param {string[]} [options.globalHideSelectors]
+ * @param {string[]} [options.globalFirstVisitDelayedScripts]
+ * @param {string[]} [options.globalEveryLoadDelayedScripts]
+ * @param {boolean} [options.tabScoped]
+ */
+export function buildDeferredScriptSource({
   baseScripts = [],
   pageVariants = [],
   interactionGatedScripts = [],
@@ -85,24 +134,10 @@ export function generateDeferredScript({
   firstVisitDelayMs = 12000,
   everyLoadDelayMs = 6000,
   hideSelectors = [],
-  // Obfuscator seed. c686cae dropped the seeded `obfuscateRawScript()` API and
-  // this left `generateDeferredScript()` non-deterministic: javascript-obfuscator
-  // picks fresh hexadecimal identifiers per call, so two runs over identical
-  // options produced different bytes (22857 vs 23052). That matters because
-  // rebuildPerformanceScript() hashes the output into `scriptHash`
-  // (performance-script.server.ts) and planMetafieldSync() compares that against
-  // the stored metafield hash to decide whether to rewrite the shop metafield.
-  // Non-deterministic output therefore rewrote the metafield and changed the
-  // storefront script bytes on every rebuild, busting the merchant's browser
-  // cache for no reason. `seed` is the obfuscator's own determinism switch; any
-  // stable non-zero value works, and identical options give byte-identical
-  // output. It must not be 0 — javascript-obfuscator treats 0 as "unset" and
-  // falls back to a random seed, which is the bug this option exists to close.
-  seed = 1,
-  // Mirrors the Settings "Debug mode" toggle ("Adds console logging to
-  // injected scripts"). Previously the flag was stored in the metaobject and
-  // StoreConfig but never reached this function, so the toggle did nothing.
-  debugMode = false,
+  globalHideSelectors = [],
+  globalFirstVisitDelayedScripts = [],
+  globalEveryLoadDelayedScripts = [],
+  tabScoped = false,
 } = {}) {
   // Intern identical selector lists. They are small, but a store whose pages
   // share the same below-fold sections would otherwise repeat them per variant.
@@ -114,11 +149,20 @@ export function generateDeferredScript({
     hideSets.push({ key, list });
     return hideSets.length - 1;
   };
-  const variants = pageVariants.map((v) => ({
-    pattern: v.pattern,
-    add: v.add || [],
-    hideIndex: internHide(v.hide || []),
-  }));
+  const variants = pageVariants.map((v) => {
+    const row = {
+      pattern: v.pattern,
+      add: v.add || [],
+      hideIndex: internHide(v.hide || []),
+    };
+    if (tabScoped) {
+      row.first = v.first || [];
+      row.every = v.every || [];
+      row.firstMs = Number.isFinite(v.firstMs) ? v.firstMs : firstVisitDelayMs;
+      row.everyMs = Number.isFinite(v.everyMs) ? v.everyMs : everyLoadDelayMs;
+    }
+    return row;
+  });
   const fallbackHideIndex = internHide(hideSelectors);
 
   const baseJson = JSON.stringify(baseScripts);
@@ -128,6 +172,9 @@ export function generateDeferredScript({
   const fallbackJson = JSON.stringify({ hide: fallbackHideIndex });
   const firstVisitDelayedJson = JSON.stringify(firstVisitDelayedScripts);
   const everyLoadDelayedJson = JSON.stringify(everyLoadDelayedScripts);
+  const globalHideJson = JSON.stringify(tabScoped ? globalHideSelectors : []);
+  const globalFirstJson = JSON.stringify(tabScoped ? globalFirstVisitDelayedScripts : []);
+  const globalEveryJson = JSON.stringify(tabScoped ? globalEveryLoadDelayedScripts : []);
 
   // Source script template
   const rawScript = `
@@ -182,12 +229,33 @@ export function generateDeferredScript({
     }
 
     var PAGE = resolvePage();
-    // BASE is what every audited page loads; the variant adds only this page's
-    // extras. No match at all means an un-audited page (a blog post, a search
-    // result): fall back to the union, which is the safe superset.
-    var gatedTokens = PAGE ? BASE.concat(PAGE.add) : UNION;
-    var activeSelectors = PAGE ? HIDE_SETS[PAGE.hideIndex] : HIDE_SETS[FALLBACK.hide];
+    // BASE is the Global tab. PAGE.add is that tab only (Home, PLP, or PDP).
+    // No match at all falls back to the union of every tab.
+    var gatedTokens = PAGE ? BASE.concat(PAGE.add || []) : UNION;
+    var GLOBAL_HIDE = ${globalHideJson};
+    var pageHide = PAGE ? (HIDE_SETS[PAGE.hideIndex] || []) : (HIDE_SETS[FALLBACK.hide] || []);
+    var activeSelectors = PAGE ? GLOBAL_HIDE.concat(pageHide) : pageHide;
     var hideCss = buildPageCss(activeSelectors || []);
+
+    var TAB_SCOPED = ${tabScoped ? "true" : "false"};
+    var GLOBAL_FIRST = ${globalFirstJson};
+    var GLOBAL_EVERY = ${globalEveryJson};
+    var LEGACY_FIRST = ${firstVisitDelayedJson};
+    var LEGACY_EVERY = ${everyLoadDelayedJson};
+    function delayPack(kind, legacyNames, legacyMs) {
+      if (!TAB_SCOPED) return { names: legacyNames, ms: legacyMs };
+      var pageNames = [];
+      var ms = legacyMs;
+      if (PAGE) {
+        pageNames = kind === "first" ? (PAGE.first || []) : (PAGE.every || []);
+        var pageMs = kind === "first" ? PAGE.firstMs : PAGE.everyMs;
+        if (pageMs != null) ms = pageMs;
+      }
+      var globalNames = kind === "first" ? GLOBAL_FIRST : GLOBAL_EVERY;
+      return { names: globalNames.concat(pageNames), ms: ms };
+    }
+    var FIRST_PACK = delayPack("first", LEGACY_FIRST, ${Number(firstVisitDelayMs) || 0});
+    var EVERY_PACK = delayPack("every", LEGACY_EVERY, ${Number(everyLoadDelayMs) || 0});
 
 
     if (hideCss && !doc.getElementById("pp-hide-lastfold")) {
@@ -425,8 +493,8 @@ export function generateDeferredScript({
 
       if (alreadyRan) return;
 
-      var FIRST_VISIT_DELAYED_SCRIPTS = ${firstVisitDelayedJson};
-      var _delay = ${firstVisitDelayMs};
+      var FIRST_VISIT_DELAYED_SCRIPTS = FIRST_PACK.names;
+      var _delay = FIRST_PACK.ms;
       var fudRe = FIRST_VISIT_DELAYED_SCRIPTS.length
         ? new RegExp(
             FIRST_VISIT_DELAYED_SCRIPTS.map(function (p) {
@@ -530,7 +598,7 @@ export function generateDeferredScript({
     })();
 
     (function () {
-      var EVERY_LOAD_DELAYED_SCRIPTS = ${everyLoadDelayedJson};
+      var EVERY_LOAD_DELAYED_SCRIPTS = EVERY_PACK.names;
 
       var etRe = EVERY_LOAD_DELAYED_SCRIPTS.length
         ? new RegExp(
@@ -601,38 +669,12 @@ export function generateDeferredScript({
       setTimeout(function () {
         etReleased = true;
         releaseHeldET();
-      }, ${everyLoadDelayMs});
+      }, EVERY_PACK.ms);
     })();
   })();
   `;
 
-  // Server-side obfuscation. This file is a blocking <script> on every storefront
-  // page, so size matters as much as strength. Measured on this template: the old
-  // profile (control-flow flattening 1.0 + dead-code injection + rc4 + split
-  // strings) produced ~197 KB (54 KB gzip) in ~660 ms; this one gives ~19 KB
-  // (~7 KB gzip) in ~80 ms while still renaming identifiers, flattening part of
-  // the control flow and moving strings into an encoded array.
-  const obfuscatedResult = JavaScriptObfuscator.obfuscate(rawScript, {
-    compact: true,
-    controlFlowFlattening: true,
-    controlFlowFlatteningThreshold: 0.3,
-    deadCodeInjection: false,
-    debugProtection: false,
-    disableConsoleOutput: !debugMode,  // debug mode is the only way to keep console output
-    identifierNamesGenerator: "hexadecimal",
-    renameGlobals: false,
-    selfDefending: false,
-    // javascript-obfuscator >=5 takes a top-level numeric `seed` that makes the
-    // whole run deterministic (verified against 5.7.0: without it, two calls
-    // over identical source emit different hexadecimal identifiers).
-    seed,
-    stringArray: true,
-    stringArrayEncoding: ["base64"],
-    stringArrayThreshold: 0.75,
-  });
-
-  const obfuscated = obfuscatedResult.getObfuscatedCode();
-  return TEMP_TIMING_LOG || debugMode ? withTimingLog(obfuscated) : obfuscated;
+  return rawScript;
 }
 
 // ---------------------------------------------------------------------------
