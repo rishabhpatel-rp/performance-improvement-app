@@ -16,7 +16,7 @@
     "seed": "tsx prisma/seed.ts"
   },
   "dependencies": {
-    "@prisma/client": "^6.2.0",
+    "@prisma/client": "^7.10.1",
     "bcryptjs": "^2.4.3",
     "clsx": "^2.1.1",
     "iron-session": "^8.0.4",
