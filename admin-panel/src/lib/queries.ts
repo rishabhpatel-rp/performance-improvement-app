@@ -7,10 +7,6 @@ import {
   buildInstallsByDay,
   buildCountByKey,
 } from "./dummy-data";
-import {
-  templateDelayFormKeys,
-  templateListFormKeys,
-} from "./template-script-config";
 import type {
   DashboardStats,
   StoresResult,
@@ -52,8 +48,8 @@ const STORE_CONFIG_SELECT = {
   updatedAt: true,
 } as const;
 
-function storeDetailConfigSelect(): Record<string, true> {
-  const select: Record<string, true> = {
+function storeDetailConfigSelect() {
+  return {
     ...STORE_CONFIG_SELECT,
     auditDeferArray: true,
     auditHideSelectors: true,
@@ -75,10 +71,32 @@ function storeDetailConfigSelect(): Record<string, true> {
     auditComplete: true,
     auditError: true,
     appEnabled: true,
-  };
-  for (const key of templateListFormKeys()) select[key] = true;
-  for (const key of templateDelayFormKeys()) select[key] = true;
-  return select;
+
+    auditDeferGlobal: true,
+    auditDeferHome: true,
+    auditDeferCollection: true,
+    auditDeferProduct: true,
+    auditHideGlobal: true,
+    auditHideHome: true,
+    auditHideCollection: true,
+    auditHideProduct: true,
+    firstUserDelayScriptsGlobal: true,
+    firstUserDelayScriptsHome: true,
+    firstUserDelayScriptsCollection: true,
+    firstUserDelayScriptsProduct: true,
+    staticDeferDefaultsGlobal: true,
+    staticDeferDefaultsHome: true,
+    staticDeferDefaultsCollection: true,
+    staticDeferDefaultsProduct: true,
+    firstUserDelayMsGlobal: true,
+    firstUserDelayMsHome: true,
+    firstUserDelayMsCollection: true,
+    firstUserDelayMsProduct: true,
+    everyTimeDelayMsGlobal: true,
+    everyTimeDelayMsHome: true,
+    everyTimeDelayMsCollection: true,
+    everyTimeDelayMsProduct: true,
+  } as const;
 }
 
 const SORTABLE_FIELDS = [

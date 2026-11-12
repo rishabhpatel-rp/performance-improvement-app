@@ -28,7 +28,7 @@ export default function StoreDetail({
   demoMode?: boolean;
 }) {
   const [tab, setTab] = useState<"config" | "scripts" | "activity">("scripts");
-  const config = (store.configs[0] ?? null) as Record<string, unknown> | null;
+  const config = store.configs[0] ?? null;
 
   const shopifyAdminUrl = `https://${store.shopDomain}/admin`;
 
@@ -154,12 +154,12 @@ export default function StoreDetail({
           {tab === "scripts" ? (
             <StoreTemplateEditor
               shopDomain={store.shopDomain}
-              config={config}
+              config={config as unknown as Record<string, unknown> | null}
               auditSummary={store.auditSummary}
               readOnly={demoMode || !config}
             />
           ) : tab === "config" ? (
-            <ConfigViewer config={config as StoreWithDetails["configs"][0] | null} />
+            <ConfigViewer config={config} />
           ) : (
             <ActivityTimeline activities={store.activities} />
           )}
