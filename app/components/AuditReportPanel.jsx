@@ -2,9 +2,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useFetcher, useRevalidator } from "react-router";
 import {
-  inferScriptActionFromLists,
   scriptListStateForScope,
+  scriptListStateForTab,
 } from "../lib/audit-script-actions";
+import { scriptsForScope, tabDropdownAction } from "../lib/scan-summary-scope";
 
 const SCRIPT_ACTION_OPTIONS = [
   { value: "defer", label: "Defer until interaction" },
@@ -34,11 +35,14 @@ function formatScriptSize(row) {
 }
 
 function scriptActionSelectValue(row, lists) {
-  const inferred = inferScriptActionFromLists(lists, row.token, row.status);
-  if (inferred !== "keep") return inferred;
-  if (row.status === "deferred") return "defer";
-  if (row.status === "never") return "protected";
-  return "protected";
+  return tabDropdownAction(
+    {
+      auditDeferArray: lists.auditDeferArray,
+      firstUserDelayScripts: lists.firstUserDelayScripts,
+      staticDeferDefaults: lists.staticDeferDefaults,
+    },
+    row.token,
+  );
 }
 
 function compareScriptRows(a, b, colId, lists) {
@@ -448,6 +452,7 @@ export default function AuditReportPanel({
   auditStatus,
   appEnabled,
   templateConfig = null,
+  scope = "global",
 }) {
   const actionFetcher = useFetcher();
   const revalidator = useRevalidator();
@@ -462,19 +467,23 @@ export default function AuditReportPanel({
   }, [actionFetcher.state, actionFetcher.data, revalidator]);
 
   const scriptLists = useMemo(
+    () => scriptListStateForTab(templateConfig, scope),
+    [templateConfig, scope],
+  );
+  const globalLists = useMemo(
     () => scriptListStateForScope(templateConfig, "global"),
     [templateConfig],
   );
 
   const sortedScripts = useMemo(() => {
-    const rows = [...(summary?.topScripts || [])];
+    const rows = scriptsForScope(summary?.topScripts || [], summary?.pageRoles, scope);
     const { col, dir } = scriptSort;
     rows.sort((a, b) => {
       const c = compareScriptRows(a, b, col, scriptLists);
       return dir === "asc" ? c : -c;
     });
     return rows;
-  }, [summary?.topScripts, scriptSort, scriptLists]);
+  }, [summary?.topScripts, summary?.pageRoles, scope, scriptSort, scriptLists]);
 
   const toggleScriptSort = (colId) => {
     setScriptSort((prev) =>
@@ -662,7 +671,7 @@ export default function AuditReportPanel({
                               intent: "script-token-action",
                               token: actionKey,
                               action,
-                              scope: "global",
+                              scope,
                             },
                             { method: "POST" },
                           );
@@ -684,6 +693,14 @@ export default function AuditReportPanel({
                           </option>
                         ))}
                       </select>
+                      {scope !== "global" &&
+                        (globalLists.auditDeferArray.includes(actionKey) ||
+                          globalLists.firstUserDelayScripts.includes(actionKey) ||
+                          globalLists.staticDeferDefaults.includes(actionKey)) && (
+                          <div style={{ fontSize: 11, color: "#6B7280", marginTop: 4 }}>
+                            Also in Global
+                          </div>
+                        )}
                     </td>
                   </tr>
                 );

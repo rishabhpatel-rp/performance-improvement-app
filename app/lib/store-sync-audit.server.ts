@@ -258,3 +258,77 @@ export async function toggleStorefrontFamily(
     enabled,
   };
 }
+
+async function writeStorefrontPatch(
+  shopDomain: string,
+  data: Record<string, unknown>,
+) {
+  const store = await prisma.store.findUnique({ where: { shopDomain } });
+  if (!store) return null;
+  const existing = await prisma.storeConfig.findUnique({
+    where: { storeId: store.id },
+  });
+  if (!existing) {
+    await prisma.storeConfig.create({
+      data: {
+        storeId: store.id,
+        appEnabled: false,
+        script1Enabled: false,
+        script2Enabled: false,
+        script3Enabled: false,
+        debugMode: false,
+        scriptTitles: [],
+        ...(data as object),
+      },
+    });
+  } else {
+    await prisma.storeConfig.update({
+      where: { storeId: store.id },
+      data: data as object,
+    });
+  }
+  const built = await rebuildPerformanceScript(shopDomain);
+  return { metafieldStatus: built?.metafieldStatus ?? "failed" };
+}
+
+/** Save one tab's lists, rebuild the obfuscated script, and push metafields. */
+export async function applyStorefrontLists(
+  shopDomain: string,
+  scope: TemplateScope,
+  patch: ScopeListPatch,
+) {
+  const store = await prisma.store.findUnique({
+    where: { shopDomain },
+    include: { configs: { take: 1 } },
+  });
+  if (!store) return null;
+  const row = (store.configs[0] ?? {}) as Record<string, unknown>;
+  const data = applyScopePatch(row, scope, patch);
+  if (Object.keys(data).length === 0) return null;
+  const written = await writeStorefrontPatch(shopDomain, data);
+  if (!written) return null;
+  return { ok: true as const, metafieldStatus: written.metafieldStatus };
+}
+
+/** One switch covers every tab of that box. Off preserves the four scopes. */
+export async function toggleStorefrontFamily(
+  shopDomain: string,
+  family: ListFamily,
+  enabled: boolean,
+) {
+  const store = await prisma.store.findUnique({
+    where: { shopDomain },
+    include: { configs: { take: 1 } },
+  });
+  if (!store) return null;
+  const row = (store.configs[0] ?? {}) as Record<string, unknown>;
+  const data = toggleFamilyPatch(row, family, enabled);
+  const written = await writeStorefrontPatch(shopDomain, data);
+  if (!written) return null;
+  return {
+    ok: true as const,
+    metafieldStatus: written.metafieldStatus,
+    family,
+    enabled,
+  };
+}

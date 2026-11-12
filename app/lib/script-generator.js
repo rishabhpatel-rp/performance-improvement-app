@@ -79,34 +79,30 @@ export function buildHiddenCss(selectors) {
 export function generateDeferredScript(options = {}) {
   const rawScript = buildDeferredScriptSource(options);
   const { seed = 1, debugMode = false } = options;
+  // Server-side obfuscation. This file is a blocking <script> on every storefront
+  // page, so size matters as much as strength. Measured on this template: the old
+  // profile (control-flow flattening 1.0 + dead-code injection + rc4 + split
+  // strings) produced ~197 KB (54 KB gzip) in ~660 ms; this one gives ~19 KB
+  // (~7 KB gzip) in ~80 ms while still renaming identifiers, flattening part of
+  // the control flow and moving strings into an encoded array.
+  const obfuscatedResult = JavaScriptObfuscator.obfuscate(rawScript, {
+    compact: true,
+    controlFlowFlattening: true,
+    controlFlowFlatteningThreshold: 0.3,
+    deadCodeInjection: false,
+    debugProtection: false,
+    disableConsoleOutput: !debugMode,
+    identifierNamesGenerator: "hexadecimal",
+    renameGlobals: false,
+    selfDefending: false,
+    seed,
+    stringArray: true,
+    stringArrayEncoding: ["base64"],
+    stringArrayThreshold: 0.75,
+  });
 
-  let scriptBody = rawScript;
-  if (!SKIP_JAVASCRIPT_OBFUSCATION) {
-    // Server-side obfuscation. This file is a blocking <script> on every storefront
-    // page, so size matters as much as strength. Measured on this template: the old
-    // profile (control-flow flattening 1.0 + dead-code injection + rc4 + split
-    // strings) produced ~197 KB (54 KB gzip) in ~660 ms; this one gives ~19 KB
-    // (~7 KB gzip) in ~80 ms while still renaming identifiers, flattening part of
-    // the control flow and moving strings into an encoded array.
-    const obfuscatedResult = JavaScriptObfuscator.obfuscate(rawScript, {
-      compact: true,
-      controlFlowFlattening: true,
-      controlFlowFlatteningThreshold: 0.3,
-      deadCodeInjection: false,
-      debugProtection: false,
-      disableConsoleOutput: !debugMode,
-      identifierNamesGenerator: "hexadecimal",
-      renameGlobals: false,
-      selfDefending: false,
-      seed,
-      stringArray: true,
-      stringArrayEncoding: ["base64"],
-      stringArrayThreshold: 0.75,
-    });
-    scriptBody = obfuscatedResult.getObfuscatedCode();
-  }
-
-  return TEMP_TIMING_LOG || debugMode ? withTimingLog(scriptBody) : scriptBody;
+  const obfuscated = obfuscatedResult.getObfuscatedCode();
+  return TEMP_TIMING_LOG || debugMode ? withTimingLog(obfuscated) : obfuscated;
 }
 
 /**

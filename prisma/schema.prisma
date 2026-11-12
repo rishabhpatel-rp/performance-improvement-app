@@ -346,6 +346,8 @@ model PerformanceScript {
   // its inputs change. Served as-is by the app proxy (fallback) and mirrored
   // byte-for-byte into the shop metafield that the theme app embed renders inline.
   deferScript String?  @map("defer_script")
+  // Readable script before obfuscation. The tabs are the editor; this column is display-only.
+  readableScript String? @map("readable_script")
   hiddenCss   String?  @map("hidden_css") // plain hide-lastfold CSS (already embedded in deferScript)
   scriptHash    String?   @map("script_hash") // sha256 of deferScript, used as the HTTP ETag
   scriptBuiltAt DateTime? @map("script_built_at")

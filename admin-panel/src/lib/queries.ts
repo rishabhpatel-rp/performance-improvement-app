@@ -372,28 +372,14 @@ export async function getStoreByDomain(
 ): Promise<StoreWithDetails | null> {
   const demoMode = await getDemoMode();
 
-  const [real, auditLog] = await Promise.all([
-    prisma.store.findUnique({
-      where: { shopDomain: domain },
-      include: {
-        configs: {
-          select: storeDetailConfigSelect(),
-          orderBy: { updatedAt: "desc" },
-          take: 1,
-        },
-        performanceScript: {
-          select: {
-            scriptHash: true,
-            readableScript: true,
-            hiddenCss: true,
-            scriptBuiltAt: true,
-            metafieldSyncedAt: true,
-          },
-        },
-        activities: {
-          orderBy: { createdAt: "desc" },
-          take: 100,
-        },
+  const real = await prisma.store.findUnique({
+    where: { shopDomain: domain },
+    include: {
+      configs: true,
+      performanceScript: true,
+      activities: {
+        orderBy: { createdAt: "desc" },
+        take: 100,
       },
     }),
     prisma.auditLog.findFirst({
