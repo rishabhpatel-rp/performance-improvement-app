@@ -1,3 +1,5 @@
+// Not called by app/routes/app._index.jsx. The live writer is applyStorefrontLists
+// in store-sync-audit.server.ts. Do not reconnect this copy.
 import prisma from "../db.server";
 import {
   updateAuditArrays,

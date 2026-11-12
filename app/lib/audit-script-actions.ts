@@ -46,6 +46,21 @@ export function scriptListStateForScope(
   };
 }
 
+/** Names stored on this tab only. Global is not mixed into Home, PLP, or PDP. */
+export function scriptListStateForTab(
+  row: Record<string, unknown> | null | undefined,
+  scope: TemplateScope,
+): ScriptListState {
+  const defer = readBucketsFromRow(row, auditDeferColumn, "auditDeferArray");
+  const first = readBucketsFromRow(row, firstUserDelayColumn, "firstUserDelayScripts");
+  const every = readBucketsFromRow(row, staticDeferColumn, "staticDeferDefaults");
+  return {
+    auditDeferArray: defer[scope],
+    firstUserDelayScripts: first[scope],
+    staticDeferDefaults: every[scope],
+  };
+}
+
 export function storePatchFromTemplateLists(
   defer: TemplateListBuckets,
   hide: TemplateListBuckets,

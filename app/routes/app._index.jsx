@@ -17,8 +17,6 @@ import {
   logActivity,
   readStringArray,
   readAuditPages,
-  updateAuditArrays,
-  updateAuditFieldToggle,
 } from "../lib/store-sync.server";
 import { startAuditForStore } from "../lib/audit-runner.server";
 import {
@@ -42,8 +40,18 @@ import { usePasswordStatus } from "../lib/use-password-status";
 import WizardProgress from "../components/WizardProgress";
 import Step1Activate from "../components/Step1Activate";
 import Step2Configure from "../components/Step2Configure";
-import Step3AuditResults from "../components/Step3AuditResults";
 import { buildArrayPatchForTokenAction } from "../lib/audit-script-actions";
+import {
+  applyStorefrontLists,
+  toggleStorefrontFamily,
+} from "../lib/store-sync-audit.server";
+import {
+  familyFromField,
+  isTemplateScope,
+  scopeListColumn,
+  scopeMsColumn,
+} from "../lib/storefront-lists";
+import { templateConfigFromRow } from "../lib/template-script-config";
 import WizardNavigation from "../components/WizardNavigation";
 import FooterBranding from "../components/FooterBranding";
 
@@ -192,6 +200,30 @@ const STORE_CONFIG_SELECT = {
   firstUserDelayScriptsPreserved: true,
   firstUserDelayMs: true,
   everyTimeDelayMs: true,
+  auditDeferGlobal: true,
+  auditDeferHome: true,
+  auditDeferCollection: true,
+  auditDeferProduct: true,
+  auditHideGlobal: true,
+  auditHideHome: true,
+  auditHideCollection: true,
+  auditHideProduct: true,
+  staticDeferDefaultsGlobal: true,
+  staticDeferDefaultsHome: true,
+  staticDeferDefaultsCollection: true,
+  staticDeferDefaultsProduct: true,
+  firstUserDelayScriptsGlobal: true,
+  firstUserDelayScriptsHome: true,
+  firstUserDelayScriptsCollection: true,
+  firstUserDelayScriptsProduct: true,
+  firstUserDelayMsGlobal: true,
+  firstUserDelayMsHome: true,
+  firstUserDelayMsCollection: true,
+  firstUserDelayMsProduct: true,
+  everyTimeDelayMsGlobal: true,
+  everyTimeDelayMsHome: true,
+  everyTimeDelayMsCollection: true,
+  everyTimeDelayMsProduct: true,
   // NEW: Cached values for fast path
   isPasswordProtected: true,
   cachedAppEndpoint: true,
@@ -529,7 +561,7 @@ let shopResult = { shopData: null, isNewStore: false };
     auditHideSelectorsPreserved: dbPreserved?.auditHideSelectorsPreserved ?? [],
     staticDeferDefaultsPreserved:
       dbPreserved?.staticDeferDefaultsPreserved ?? [],
-    storefrontPassword,
+    hasStorefrontPassword: Boolean(storefrontPassword),
     customPlpUrl,
     customPdpUrl,
     customPageUrls,
@@ -548,6 +580,7 @@ let shopResult = { shopData: null, isNewStore: false };
       // Check the length explicitly to get the schema default.
     firstUserDelayMs: sc?.firstUserDelayMs ?? 12000,
     everyTimeDelayMs: sc?.everyTimeDelayMs ?? 6000,
+    ...templateConfigFromRow(sc),
   };
 
   console.log(
@@ -881,7 +914,9 @@ export const action = async ({ request }) => {
       return { ok: false, error: "Invalid field." };
     }
 
-    const result = await updateAuditFieldToggle(session.shop, field, enabled);
+    const family = familyFromField(field);
+    if (!family) return { ok: false, error: "Invalid field." };
+    const result = await toggleStorefrontFamily(session.shop, family, enabled);
     if (!result) {
       return { ok: false, error: "Store record not found." };
     }
@@ -893,7 +928,7 @@ export const action = async ({ request }) => {
       { changedFields: [field] },
     );
 
-    return { ok: true, field, enabled };
+    return { ok: true, field, enabled, metafieldStatus: result.metafieldStatus };
   }
 
   
@@ -914,72 +949,47 @@ export const action = async ({ request }) => {
       }
     };
 
-    // If a field's toggle is OFF, force the stored value to [] regardless of
-    // what was submitted (the real data stays in the preserved column).
-    const prisma = (await import("../db.server")).default;
-    const storeRow = await prisma.store.findUnique({
-      where: { shopDomain: session.shop },
-      select: {
-        id: true,
-        configs: {
-          select: {
-            auditDeferArrayEnabled: true,
-            auditHideSelectorsEnabled: true,
-            staticDeferDefaultsEnabled: true,
-              // Without this, `sc.firstUserDelayScriptsEnabled` is always
-              // undefined and the toggle-OFF -> [] coercion below can never
-              // apply to firstUserDelayScripts (the ?? true fallback wins).
-              firstUserDelayScriptsEnabled: true,
-          },
-        },
-      },
-    });
-    const sc = storeRow?.configs?.[0];
-    const toggleState = {
-      auditDeferArray: sc?.auditDeferArrayEnabled ?? true,
-      auditHideSelectors: sc?.auditHideSelectorsEnabled ?? true,
-      staticDeferDefaults: sc?.staticDeferDefaultsEnabled ?? true,
-      firstUserDelayScripts: sc?.firstUserDelayScriptsEnabled ?? true,
-    };
+    const scopeRaw = String(formData.get("scope") || "global");
+    if (!isTemplateScope(scopeRaw)) {
+      return { ok: false, error: "Invalid tab." };
+    }
 
     const patch = {};
-    const fields = [
-      ["auditDeferArray", formData.get("auditDeferArray")],
-      ["auditHideSelectors", formData.get("auditHideSelectors")],
-      ["staticDeferDefaults", formData.get("staticDeferDefaults")],
-      ["firstUserDelayScripts", formData.get("firstUserDelayScripts")],
+    const listFields = [
+      ["defer", scopeListColumn("defer", scopeRaw)],
+      ["hide", scopeListColumn("hide", scopeRaw)],
+      ["first", scopeListColumn("first", scopeRaw)],
+      ["every", scopeListColumn("every", scopeRaw)],
     ];
-    for (const [key, raw] of fields) {
-      if (formData.has(key)) {
-        const value = (toggleState[key] ?? true)
-          ? parseJsonArray(raw)
-          : [];
-        if (value === null) {
-          return {
-            ok: false,
-            error: "Each field must be a valid JSON array of strings.",
-          };
-        }
-        patch[key] = value;
+    for (const [name, key] of listFields) {
+      if (!formData.has(key)) continue;
+      const value = parseJsonArray(formData.get(key));
+      if (value === null) {
+        return {
+          ok: false,
+          error: "Each field must be a valid JSON array of strings.",
+        };
       }
+      patch[name] = value;
     }
 
-    // NEW: Handle delay integer fields (stored in milliseconds)
-    const firstUserDelayMs = formData.get("firstUserDelayMs");
-    const everyTimeDelayMs = formData.get("everyTimeDelayMs");
-
-    if (firstUserDelayMs !== null && firstUserDelayMs !== "") {
-      const ms = parseInt(firstUserDelayMs, 10);
-      if (!isNaN(ms) && ms >= 0) {
-        patch.firstUserDelayMs = ms;
+    const firstKey = scopeMsColumn("first", scopeRaw);
+    const everyKey = scopeMsColumn("every", scopeRaw);
+    const firstRaw = formData.get(firstKey);
+    const everyRaw = formData.get(everyKey);
+    if (firstRaw !== null && firstRaw !== "") {
+      const ms = parseInt(firstRaw, 10);
+      if (Number.isNaN(ms) || ms < 0) {
+        return { ok: false, error: "Delay must be zero or greater." };
       }
+      patch.firstMs = ms;
     }
-
-    if (everyTimeDelayMs !== null && everyTimeDelayMs !== "") {
-      const ms = parseInt(everyTimeDelayMs, 10);
-      if (!isNaN(ms) && ms >= 0) {
-        patch.everyTimeDelayMs = ms;
+    if (everyRaw !== null && everyRaw !== "") {
+      const ms = parseInt(everyRaw, 10);
+      if (Number.isNaN(ms) || ms < 0) {
+        return { ok: false, error: "Delay must be zero or greater." };
       }
+      patch.everyMs = ms;
     }
 
     if (Object.keys(patch).length === 0) {
@@ -987,11 +997,18 @@ export const action = async ({ request }) => {
     }
 
     try {
-      const result = await updateAuditArrays(session.shop, patch);
+      const result = await applyStorefrontLists(session.shop, scopeRaw, patch);
       if (!result) {
         return { ok: false, error: "Store record not found." };
       }
-      return { ok: true, ...patch };
+      const echoed = { metafieldStatus: result.metafieldStatus };
+      if (patch.defer) echoed[scopeListColumn("defer", scopeRaw)] = patch.defer;
+      if (patch.hide) echoed[scopeListColumn("hide", scopeRaw)] = patch.hide;
+      if (patch.first) echoed[scopeListColumn("first", scopeRaw)] = patch.first;
+      if (patch.every) echoed[scopeListColumn("every", scopeRaw)] = patch.every;
+      if (patch.firstMs != null) echoed[scopeMsColumn("first", scopeRaw)] = patch.firstMs;
+      if (patch.everyMs != null) echoed[scopeMsColumn("every", scopeRaw)] = patch.everyMs;
+      return { ok: true, ...echoed };
     } catch (err) {
       console.error(
         "[Dashboard] Failed to save audit arrays:",
@@ -1038,7 +1055,7 @@ export const action = async ({ request }) => {
     ) {
       try {
         const { started } = await startAuditForStore(admin, session.shop);
-        return { ok: true, storefrontPassword, auditRestarted: started };
+        return { ok: true, hasStorefrontPassword: Boolean(storefrontPassword), auditRestarted: started };
       } catch (err) {
         console.warn(
           "[Dashboard] Failed to restart audit after password save:",
@@ -1046,7 +1063,7 @@ export const action = async ({ request }) => {
         );
       }
     }
-    return { ok: true, storefrontPassword };
+    return { ok: true, hasStorefrontPassword: Boolean(storefrontPassword) };
   }
 
   if (intent === "save-custom-page-urls") {
@@ -1115,26 +1132,19 @@ export const action = async ({ request }) => {
   if (intent === "script-token-action") {
     const token = String(formData.get("token") || "").trim();
     const actionName = String(formData.get("action") || "");
+    const scopeRaw = String(formData.get("scope") || "global");
     const allowed = ["defer", "delay_first", "delay_every", "protected"];
     if (!token) return { ok: false, error: "Missing script token." };
     if (!allowed.includes(actionName)) {
       return { ok: false, error: "Invalid action." };
     }
+    if (!isTemplateScope(scopeRaw)) {
+      return { ok: false, error: "Invalid tab." };
+    }
 
     const store = await prisma.store.findUnique({
       where: { shopDomain: session.shop },
-      select: {
-        configs: {
-          select: {
-            auditDeferArray: true,
-            auditDeferArrayEnabled: true,
-            firstUserDelayScripts: true,
-            staticDeferDefaults: true,
-          },
-          orderBy: { updatedAt: "desc" },
-          take: 1,
-        },
-      },
+      include: { configs: { take: 1 } },
     });
     const sc = store?.configs?.[0];
     if (!sc) return { ok: false, error: "Store config not found." };
@@ -1144,16 +1154,20 @@ export const action = async ({ request }) => {
 
     const patch = buildArrayPatchForTokenAction(
       {
-        auditDeferArray: readStringArray(sc.auditDeferArray),
-        firstUserDelayScripts: readStringArray(sc.firstUserDelayScripts),
-        staticDeferDefaults: readStringArray(sc.staticDeferDefaults),
+        auditDeferArray: readStringArray(sc[scopeListColumn("defer", scopeRaw)]),
+        firstUserDelayScripts: readStringArray(sc[scopeListColumn("first", scopeRaw)]),
+        staticDeferDefaults: readStringArray(sc[scopeListColumn("every", scopeRaw)]),
       },
       token,
       actionName,
     );
     if (!patch) return { ok: true, noop: true, token, action: actionName };
 
-    const result = await updateAuditArrays(session.shop, patch);
+    const result = await applyStorefrontLists(session.shop, scopeRaw, {
+      defer: patch.auditDeferArray,
+      first: patch.firstUserDelayScripts,
+      every: patch.staticDeferDefaults,
+    });
     if (!result) return { ok: false, error: "Store record not found." };
 
     await safeLogActivity(
@@ -1396,8 +1410,7 @@ export default function Dashboard() {
       )}
       {currentStep === 2 && (
         <>
-          <Step2Configure config={liveConfig} />
-          <Step3AuditResults
+          <Step2Configure
             config={liveConfig}
             auditStatus={auditStatus}
             appEnabled={appEnabled}

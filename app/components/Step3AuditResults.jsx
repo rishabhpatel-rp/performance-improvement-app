@@ -8,6 +8,7 @@ export default function Step3AuditResults({
   config,
   auditStatus,
   appEnabled,
+  scope = "global",
 }) {
   const reportFetcher = useFetcher();
   const reportUrl = `/api/dashboard-report${window.location.search}`;
@@ -40,6 +41,7 @@ export default function Step3AuditResults({
         auditStatus={auditStatus}
         appEnabled={appEnabled}
         templateConfig={config}
+        scope={scope}
       />
     </div>
   );

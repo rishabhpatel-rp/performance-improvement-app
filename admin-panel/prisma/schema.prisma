@@ -17,10 +17,13 @@
 //       than root, but make that explicit with a comment per field group
 //       and a migration-checklist step on the root app ("does this need to
 //       reach admin-panel/prisma/schema.prisma?").
-// `AppTracking` and `AuditLog` (root schema) were intentionally NOT added
-// here — they aren't wired to Store via a foreign key and weren't in the
-// shared-model list this task named; flagging separately rather than
-// silently including them (see repo audit note on scope).
+// `AppTracking` (root schema) is not mirrored here. `AuditLog` is included
+// as a read-only model for store-detail audit summaries.
+//
+// MERGE NOTE: `main` and feature branches both added the same template-bucket
+// block to StoreConfig in different places. Git "auto-merges" that as duplicate
+// fields (P1012). After merging `main`, run `npx prisma validate` in this
+// directory and remove any second copy of auditDeferGlobal…everyTimeDelayMs*.
 
 generator client {
   provider = "prisma-client-js"

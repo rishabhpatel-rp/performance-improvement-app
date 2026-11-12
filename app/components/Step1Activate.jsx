@@ -108,11 +108,15 @@ export default function Step1Activate({
   // the in-flight request, including on late/slow responses.
   const validating = validationFetcher.state !== "idle";
 
-  // Local draft for the storefront password, seeded from the saved value.
-  const [pwDraft, setPwDraft] = useState(config.storefrontPassword || "");
-  const savedPassword =
-    pwFetcher.data?.storefrontPassword ?? (config.storefrontPassword || "");
-  const pwDirty = pwDraft !== savedPassword;
+  // Local draft for the storefront password. Never pre-filled with the saved
+  // value — the actual password must stay server-side only (CREDENTIAL_BROWSER_LEAKAGE).
+  // `hasSavedPassword` tells us whether a password is already stored so we can
+  // show "Password saved ✓" without ever sending the value to the browser.
+  const [pwDraft, setPwDraft] = useState("");
+  const hasSavedPassword =
+    pwFetcher.data?.hasStorefrontPassword ?? (config.hasStorefrontPassword ?? false);
+  // Dirty when the merchant has typed something (any content = new value to save).
+  const pwDirty = pwDraft.length > 0;
 
   // The password box is hidden until protection is confirmed (background
   // check) or an audit was stopped by the password page.
@@ -135,7 +139,7 @@ export default function Step1Activate({
     (passwordProtected === true ||
       passwordBlockCode === "PASSWORD_REQUIRED" ||
       blockedAtToggle) &&
-    !savedPassword;
+    !hasSavedPassword;
 
   // Main toggle is blocked if password is required but not saved, or if there
   // is no usable theme to install the extension in.
@@ -185,7 +189,10 @@ export default function Step1Activate({
 
   useEffect(() => {
     if (!pwFetcher.data?.ok) return;
-    setPwDraft(pwFetcher.data.storefrontPassword || "");
+    // Clear the draft after a successful save — the actual password must never
+    // be stored in React state. The "Password saved ✓" indicator uses
+    // hasSavedPassword (boolean from the action response) instead.
+    setPwDraft("");
     if (pwFetcher.data.auditRestarted === true) onAuditRestarted?.();
   }, [pwFetcher.data, onAuditRestarted]);
 
@@ -663,7 +670,11 @@ export default function Step1Activate({
                     type="text"
                     label="Storefront password"
                     labelAccessibilityVisibility="exclusive"
-                    placeholder="Enter storefront password (required)"
+                    placeholder={
+                      hasSavedPassword
+                        ? "Enter new password to replace the saved one"
+                        : "Enter storefront password (required)"
+                    }
                     value={pwDraft}
                     onChange={(e) => setPwDraft(e.target.value)}
                     required
@@ -671,13 +682,13 @@ export default function Step1Activate({
                 </div>
                 <s-button
                   variant="secondary"
-                  disabled={!pwDraft || !pwDirty || pwFetcher.state !== "idle"}
+                  disabled={!pwDraft || pwFetcher.state !== "idle"}
                   onClick={handleSavePassword}
                 >
                   {pwFetcher.state !== "idle" ? "Saving…" : "Save"}
                 </s-button>
               </div>
-              {!pwDirty && savedPassword && (
+              {!pwDirty && hasSavedPassword && (
                 <s-text tone="success">Password saved</s-text>
               )}
             </div>
