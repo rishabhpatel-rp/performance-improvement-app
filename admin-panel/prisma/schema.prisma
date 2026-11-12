@@ -302,6 +302,7 @@ model PerformanceScript {
 
   auditScript String?  @map("audit_script") // legacy (raw audit report JSON); no longer written or read
   deferScript String?  @map("defer_script")
+  readableScript String? @map("readable_script")
   hiddenCss   String?  @map("hidden_css")
   scriptHash    String?   @map("script_hash")
   scriptBuiltAt DateTime? @map("script_built_at")

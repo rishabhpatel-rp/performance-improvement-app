@@ -384,6 +384,8 @@ export async function getStoreByDomain(
         performanceScript: {
           select: {
             scriptHash: true,
+            readableScript: true,
+            hiddenCss: true,
             scriptBuiltAt: true,
             metafieldSyncedAt: true,
           },
@@ -411,6 +413,14 @@ export async function getStoreByDomain(
   }
 
   return null;
+}
+
+export async function getLatestCompletedAudit(domain: string) {
+  return prisma.auditLog.findFirst({
+    where: { domain, status: "completed" },
+    orderBy: { timestamp: "desc" },
+    select: { audit_data: true, timestamp: true },
+  });
 }
 
 export type { DashboardStats, StoresResult, StoreWithDetails };

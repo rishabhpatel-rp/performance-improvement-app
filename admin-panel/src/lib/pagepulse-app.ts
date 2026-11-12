@@ -2,12 +2,16 @@
  * Server-to-server calls into the main PagePulse Remix app (rebuild + metafield sync).
  */
 export function getPagePulseAppUrl(): string | null {
-  const url = process.env.PAGEPULSE_APP_URL?.trim();
+  const url =
+    process.env.PAGEPULSE_APP_URL?.trim() ||
+    process.env.PAGEPULSE_INTERNAL_URL?.trim();
   return url || null;
 }
 
 export function getAdminInternalSecret(): string | null {
-  const secret = process.env.ADMIN_INTERNAL_SECRET?.trim();
+  const secret =
+    process.env.ADMIN_INTERNAL_SECRET?.trim() ||
+    process.env.INTERNAL_API_SECRET?.trim();
   if (!secret || secret.length < 16) return null;
   return secret;
 }
@@ -24,7 +28,7 @@ export async function callPagePulseStoreConfigApi(
       status: 503,
       body: {
         error:
-          "PAGEPULSE_APP_URL and ADMIN_INTERNAL_SECRET must be set on the admin panel (same value as the main app).",
+          "Set PAGEPULSE_APP_URL (or PAGEPULSE_INTERNAL_URL) and ADMIN_INTERNAL_SECRET (or INTERNAL_API_SECRET) on the admin panel — same values as the merchant app.",
       },
     };
   }

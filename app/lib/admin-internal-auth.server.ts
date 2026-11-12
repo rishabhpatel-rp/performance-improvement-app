@@ -4,10 +4,12 @@
  * offline sessions stored here).
  */
 export function verifyAdminInternalRequest(request: Request): boolean {
-  const expected = process.env.ADMIN_INTERNAL_SECRET?.trim();
+  const expected =
+    process.env.ADMIN_INTERNAL_SECRET?.trim() ||
+    process.env.INTERNAL_API_SECRET?.trim();
   if (!expected || expected.length < 16) {
     console.error(
-      "[admin-internal] ADMIN_INTERNAL_SECRET is missing or too short — rejecting request.",
+      "[admin-internal] ADMIN_INTERNAL_SECRET or INTERNAL_API_SECRET is missing or too short — rejecting request.",
     );
     return false;
   }
