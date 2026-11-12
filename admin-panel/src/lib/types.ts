@@ -34,12 +34,53 @@ export interface StoreConfig {
   staticDeferDefaultsPreserved?: unknown;
   firstUserDelayScriptsPreserved?: unknown;
   lastAuditAt?: Date | string | null;
+  /** Per-scope template buckets written by the merchant app and this editor. */
+  auditDeferGlobal?: unknown;
+  auditDeferHome?: unknown;
+  auditDeferCollection?: unknown;
+  auditDeferProduct?: unknown;
+  auditHideGlobal?: unknown;
+  auditHideHome?: unknown;
+  auditHideCollection?: unknown;
+  auditHideProduct?: unknown;
+  firstUserDelayScriptsGlobal?: unknown;
+  firstUserDelayScriptsHome?: unknown;
+  firstUserDelayScriptsCollection?: unknown;
+  firstUserDelayScriptsProduct?: unknown;
+  staticDeferDefaultsGlobal?: unknown;
+  staticDeferDefaultsHome?: unknown;
+  staticDeferDefaultsCollection?: unknown;
+  staticDeferDefaultsProduct?: unknown;
+  firstUserDelayMsGlobal?: number | null;
+  firstUserDelayMsHome?: number | null;
+  firstUserDelayMsCollection?: number | null;
+  firstUserDelayMsProduct?: number | null;
+  everyTimeDelayMsGlobal?: number | null;
+  everyTimeDelayMsHome?: number | null;
+  everyTimeDelayMsCollection?: number | null;
+  everyTimeDelayMsProduct?: number | null;
+  auditRunning?: boolean;
+  auditFailed?: boolean;
+  auditError?: string | null;
 }
 
 export interface PerformanceScriptSummary {
   scriptHash: string | null;
+  readableScript?: string | null;
+  hiddenCss?: string | null;
   scriptBuiltAt: Date | string | null;
   metafieldSyncedAt: Date | string | null;
+}
+
+export interface ScriptInventoryRow {
+  token: string;
+  status: string;
+  pages: string[];
+}
+
+export interface ScriptInventorySummary {
+  topScripts: ScriptInventoryRow[];
+  pageRoles: Record<string, string>;
 }
 
 export interface StoreSummary {

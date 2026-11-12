@@ -5,7 +5,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { cn, formatDate } from "@/lib/utils";
 import ConfigViewer from "@/components/config-viewer";
-import StoreTemplateEditor from "@/components/store-template-editor";
+import StoreScriptEditor from "@/components/store-script-editor";
 import ActivityTimeline from "@/components/activity-timeline";
 import type { StoreWithDetails } from "@/lib/types";
 
@@ -27,37 +27,21 @@ export default function StoreDetail({
   store: Store;
   demoMode?: boolean;
 }) {
-  const [tab, setTab] = useState<"config" | "scripts" | "activity">("scripts");
+  const [tab, setTab] = useState<"config" | "activity">("config");
   const config = store.configs[0] ?? null;
 
   const shopifyAdminUrl = `https://${store.shopDomain}/admin`;
 
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+    <div className="space-y-8">
       {/* Left column — Store Info */}
-      <Card className="lg:col-span-1 h-fit">
+      <Card>
         <CardHeader>
-          <CardTitle className="flex items-center justify-between">
-            Store Info
-            <Badge variant={store.isActive ? "success" : "destructive"}>
-              {store.isActive ? "Active" : "Inactive"}
-            </Badge>
-          </CardTitle>
+          <CardTitle>Store Info</CardTitle>
         </CardHeader>
         <CardContent className="divide-y divide-border">
           <div className="pb-2">
             <InfoRow label="Shop Name" value={store.shopName} />
-            <InfoRow
-              label="Storefront password"
-              value={
-                config &&
-                "storefrontPassword" in config &&
-                typeof config.storefrontPassword === "string" &&
-                config.storefrontPassword
-                  ? config.storefrontPassword
-                  : "—"
-              }
-            />
             <InfoRow
               label="Domain"
               value={
@@ -79,7 +63,9 @@ export default function StoreDetail({
             <InfoRow label="City" value={store.city} />
             <InfoRow
               label="Address"
-              value={[store.address1, store.address2, store.zip].filter(Boolean).join(", ") || undefined}
+              value={[store.address1, store.address2, store.zip]
+                .filter(Boolean)
+                .join(", ") || undefined}
             />
           </div>
 
@@ -131,16 +117,16 @@ export default function StoreDetail({
       </Card>
 
       {/* Right column — Tabs */}
-      <Card className="lg:col-span-2 h-fit">
+      <Card>
         <CardHeader className="pb-0">
           <div className="flex gap-1 border-b border-border -mb-px">
-            <TabButton active={tab === "scripts"} onClick={() => setTab("scripts")}>
-              Script lists
-            </TabButton>
             <TabButton active={tab === "config"} onClick={() => setTab("config")}>
               Configuration
             </TabButton>
-            <TabButton active={tab === "activity"} onClick={() => setTab("activity")}>
+            <TabButton
+              active={tab === "activity"}
+              onClick={() => setTab("activity")}
+            >
               Activity Timeline
               {store.activities.length > 0 && (
                 <span className="ml-1.5 text-xs text-muted-foreground">
@@ -151,20 +137,40 @@ export default function StoreDetail({
           </div>
         </CardHeader>
         <CardContent className="pt-6">
-          {tab === "scripts" ? (
-            <StoreTemplateEditor
-              shopDomain={store.shopDomain}
-              config={config as unknown as Record<string, unknown> | null}
-              auditSummary={store.auditSummary}
-              readOnly={demoMode || !config}
-            />
-          ) : tab === "config" ? (
+          {tab === "config" ? (
             <ConfigViewer config={config} />
           ) : (
             <ActivityTimeline activities={store.activities} />
           )}
         </CardContent>
       </Card>
+
+      <StoreScriptEditor
+        domain={store.shopDomain}
+        config={config}
+        appEnabled={config?.appEnabled === true}
+        readableScript={store.performanceScript?.readableScript ?? ""}
+        hiddenCss={store.performanceScript?.hiddenCss ?? ""}
+        scriptBuiltAt={
+          store.performanceScript?.scriptBuiltAt instanceof Date
+            ? store.performanceScript.scriptBuiltAt.toISOString()
+            : store.performanceScript?.scriptBuiltAt ?? ""
+        }
+        metafieldSyncedAt={
+          store.performanceScript?.metafieldSyncedAt instanceof Date
+            ? store.performanceScript.metafieldSyncedAt.toISOString()
+            : store.performanceScript?.metafieldSyncedAt ?? ""
+        }
+        scriptHash={
+          store.performanceScript?.scriptHash ?? ""
+        }
+        summary={store.auditSummary ? {
+          topScripts: [],
+          pageRoles: {}
+        } : null}
+        auditSummary={store.auditSummary ?? null}
+        readOnly={demoMode || store.id.startsWith("dummy_")}
+      />
     </div>
   );
 }
