@@ -18,6 +18,28 @@ export interface StoreConfig {
   metaobjectId: string | null;
   updatedAt: Date;
   auditComplete?: boolean;
+  /** Full row fields — present on store detail (`getStoreByDomain` uses `configs: true`). */
+  auditDeferArray?: unknown;
+  auditHideSelectors?: unknown;
+  staticDeferDefaults?: unknown;
+  firstUserDelayScripts?: unknown;
+  auditDeferArrayEnabled?: boolean;
+  auditHideSelectorsEnabled?: boolean;
+  staticDeferDefaultsEnabled?: boolean;
+  firstUserDelayScriptsEnabled?: boolean;
+  firstUserDelayMs?: number;
+  everyTimeDelayMs?: number;
+  auditDeferArrayPreserved?: unknown;
+  auditHideSelectorsPreserved?: unknown;
+  staticDeferDefaultsPreserved?: unknown;
+  firstUserDelayScriptsPreserved?: unknown;
+  lastAuditAt?: Date | string | null;
+}
+
+export interface PerformanceScriptSummary {
+  scriptHash: string | null;
+  scriptBuiltAt: Date | string | null;
+  metafieldSyncedAt: Date | string | null;
 }
 
 export interface StoreSummary {
@@ -72,8 +94,16 @@ export interface StoreWithConfigs extends StoreSummary {
   configs: StoreConfig[];
 }
 
+export interface AuditSummary {
+  completedAt: Date | string;
+  variantCount: number | null;
+  baseCount: number | null;
+}
+
 export interface StoreWithDetails extends StoreWithConfigs {
   activities: StoreActivity[];
+  performanceScript?: PerformanceScriptSummary | null;
+  auditSummary?: AuditSummary | null;
 }
 
 export interface InstallsByDayPoint {

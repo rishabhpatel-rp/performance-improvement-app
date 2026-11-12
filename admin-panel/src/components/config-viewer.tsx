@@ -1,5 +1,6 @@
 import { Badge } from "@/components/ui/badge";
 import { formatDate } from "@/lib/utils";
+import { readJsonStringArray } from "@/lib/audit-array-fields";
 
 interface ConfigLike {
   appEnabled: boolean;
@@ -10,6 +11,14 @@ interface ConfigLike {
   scriptTitles: unknown;
   metaobjectId: string | null;
   updatedAt: Date | string;
+  auditDeferArrayEnabled?: boolean;
+  auditHideSelectorsEnabled?: boolean;
+  staticDeferDefaultsEnabled?: boolean;
+  firstUserDelayScriptsEnabled?: boolean;
+  auditDeferArray?: unknown;
+  auditHideSelectors?: unknown;
+  staticDeferDefaults?: unknown;
+  firstUserDelayScripts?: unknown;
 }
 
 function toStringArray(value: unknown): string[] {
@@ -65,6 +74,40 @@ export default function ConfigViewer({ config }: { config: ConfigLike | null }) 
       <ToggleRow label="Script 2" enabled={config.script2Enabled} />
       <ToggleRow label="Script 3 (Style)" enabled={config.script3Enabled} />
       <ToggleRow label="Debug Mode" enabled={config.debugMode} />
+
+      <ToggleRow
+        label="Defer array (Step 2)"
+        enabled={config.auditDeferArrayEnabled !== false}
+      />
+      <ToggleRow
+        label="Hide selectors (Step 2)"
+        enabled={config.auditHideSelectorsEnabled !== false}
+      />
+      <ToggleRow
+        label="Every-load delay list"
+        enabled={config.staticDeferDefaultsEnabled !== false}
+      />
+      <ToggleRow
+        label="First-visit delay list"
+        enabled={config.firstUserDelayScriptsEnabled !== false}
+      />
+
+      <ListField
+        label="Defer Heavy Scripts (active)"
+        items={readJsonStringArray(config.auditDeferArray)}
+      />
+      <ListField
+        label="Hide selectors (active)"
+        items={readJsonStringArray(config.auditHideSelectors)}
+      />
+      <ListField
+        label="Delay Scripts — every load"
+        items={readJsonStringArray(config.staticDeferDefaults)}
+      />
+      <ListField
+        label="Delay Scripts — first user"
+        items={readJsonStringArray(config.firstUserDelayScripts)}
+      />
 
       <ListField label="Script Titles" items={scriptTitles} />
 

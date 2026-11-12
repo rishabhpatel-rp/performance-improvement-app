@@ -5,8 +5,9 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { cn, formatDate } from "@/lib/utils";
 import ConfigViewer from "@/components/config-viewer";
+import StoreTemplateEditor from "@/components/store-template-editor";
 import ActivityTimeline from "@/components/activity-timeline";
-import type { StoreWithDetails } from "@/lib/queries";
+import type { StoreWithDetails } from "@/lib/types";
 
 type Store = NonNullable<StoreWithDetails>;
 
@@ -19,9 +20,15 @@ function InfoRow({ label, value }: { label: string; value: React.ReactNode }) {
   );
 }
 
-export default function StoreDetail({ store }: { store: Store }) {
-  const [tab, setTab] = useState<"config" | "activity">("config");
-  const config = store.configs[0] ?? null;
+export default function StoreDetail({
+  store,
+  demoMode = false,
+}: {
+  store: Store;
+  demoMode?: boolean;
+}) {
+  const [tab, setTab] = useState<"config" | "scripts" | "activity">("scripts");
+  const config = (store.configs[0] ?? null) as Record<string, unknown> | null;
 
   const shopifyAdminUrl = `https://${store.shopDomain}/admin`;
 
@@ -88,6 +95,26 @@ export default function StoreDetail({ store }: { store: Store }) {
 
           <div className="pt-2">
             <InfoRow label="Current Scope" value={store.currentScope} />
+            {store.performanceScript && (
+              <>
+                <InfoRow
+                  label="Script built"
+                  value={formatDate(store.performanceScript.scriptBuiltAt)}
+                />
+                <InfoRow
+                  label="Script hash"
+                  value={
+                    store.performanceScript.scriptHash
+                      ? `${store.performanceScript.scriptHash.slice(0, 12)}…`
+                      : undefined
+                  }
+                />
+                <InfoRow
+                  label="Metafield synced"
+                  value={formatDate(store.performanceScript.metafieldSyncedAt)}
+                />
+              </>
+            )}
           </div>
         </CardContent>
       </Card>
@@ -96,6 +123,9 @@ export default function StoreDetail({ store }: { store: Store }) {
       <Card className="lg:col-span-2 h-fit">
         <CardHeader className="pb-0">
           <div className="flex gap-1 border-b border-border -mb-px">
+            <TabButton active={tab === "scripts"} onClick={() => setTab("scripts")}>
+              Script lists
+            </TabButton>
             <TabButton active={tab === "config"} onClick={() => setTab("config")}>
               Configuration
             </TabButton>
@@ -110,8 +140,15 @@ export default function StoreDetail({ store }: { store: Store }) {
           </div>
         </CardHeader>
         <CardContent className="pt-6">
-          {tab === "config" ? (
-            <ConfigViewer config={config} />
+          {tab === "scripts" ? (
+            <StoreTemplateEditor
+              shopDomain={store.shopDomain}
+              config={config}
+              auditSummary={store.auditSummary}
+              readOnly={demoMode || !config}
+            />
+          ) : tab === "config" ? (
+            <ConfigViewer config={config as StoreWithDetails["configs"][0] | null} />
           ) : (
             <ActivityTimeline activities={store.activities} />
           )}

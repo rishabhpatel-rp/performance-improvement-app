@@ -606,33 +606,36 @@ export function generateDeferredScript({
   })();
   `;
 
-  // Server-side obfuscation. This file is a blocking <script> on every storefront
-  // page, so size matters as much as strength. Measured on this template: the old
-  // profile (control-flow flattening 1.0 + dead-code injection + rc4 + split
-  // strings) produced ~197 KB (54 KB gzip) in ~660 ms; this one gives ~19 KB
-  // (~7 KB gzip) in ~80 ms while still renaming identifiers, flattening part of
-  // the control flow and moving strings into an encoded array.
-  const obfuscatedResult = JavaScriptObfuscator.obfuscate(rawScript, {
-    compact: true,
-    controlFlowFlattening: true,
-    controlFlowFlatteningThreshold: 0.3,
-    deadCodeInjection: false,
-    debugProtection: false,
-    disableConsoleOutput: !debugMode,  // debug mode is the only way to keep console output
-    identifierNamesGenerator: "hexadecimal",
-    renameGlobals: false,
-    selfDefending: false,
-    // javascript-obfuscator >=5 takes a top-level numeric `seed` that makes the
-    // whole run deterministic (verified against 5.7.0: without it, two calls
-    // over identical source emit different hexadecimal identifiers).
-    seed,
-    stringArray: true,
-    stringArrayEncoding: ["base64"],
-    stringArrayThreshold: 0.75,
-  });
+  let scriptBody = rawScript;
+  if (!SKIP_JAVASCRIPT_OBFUSCATION) {
+    // Server-side obfuscation. This file is a blocking <script> on every storefront
+    // page, so size matters as much as strength. Measured on this template: the old
+    // profile (control-flow flattening 1.0 + dead-code injection + rc4 + split
+    // strings) produced ~197 KB (54 KB gzip) in ~660 ms; this one gives ~19 KB
+    // (~7 KB gzip) in ~80 ms while still renaming identifiers, flattening part of
+    // the control flow and moving strings into an encoded array.
+    const obfuscatedResult = JavaScriptObfuscator.obfuscate(rawScript, {
+      compact: true,
+      controlFlowFlattening: true,
+      controlFlowFlatteningThreshold: 0.3,
+      deadCodeInjection: false,
+      debugProtection: false,
+      disableConsoleOutput: !debugMode,  // debug mode is the only way to keep console output
+      identifierNamesGenerator: "hexadecimal",
+      renameGlobals: false,
+      selfDefending: false,
+      // javascript-obfuscator >=5 takes a top-level numeric `seed` that makes the
+      // whole run deterministic (verified against 5.7.0: without it, two calls
+      // over identical source emit different hexadecimal identifiers).
+      seed,
+      stringArray: true,
+      stringArrayEncoding: ["base64"],
+      stringArrayThreshold: 0.75,
+    });
+    scriptBody = obfuscatedResult.getObfuscatedCode();
+  }
 
-  const obfuscated = obfuscatedResult.getObfuscatedCode();
-  return TEMP_TIMING_LOG || debugMode ? withTimingLog(obfuscated) : obfuscated;
+  return TEMP_TIMING_LOG || debugMode ? withTimingLog(scriptBody) : scriptBody;
 }
 
 // ---------------------------------------------------------------------------
@@ -650,7 +653,12 @@ export function generateDeferredScript({
   // every storefront page load. Off by default; flip to true to re-measure.
 // Re-enabled 2026-09-30 to re-measure gate install time. REMEMBER TO SET BACK
 // TO false once you have the numbers.
-const TEMP_TIMING_LOG = false;
+const TEMP_TIMING_LOG = true;
+
+// Dev-only: set true to skip javascript-obfuscator (readable script). Every store
+// gets plain JS on the next rebuildPerformanceScript() on this process. Never true
+// in production.
+const SKIP_JAVASCRIPT_OBFUSCATION = true;
 
 function withTimingLog(obfuscated) {
   const before = `

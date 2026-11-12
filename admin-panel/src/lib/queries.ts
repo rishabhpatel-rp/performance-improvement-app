@@ -7,6 +7,10 @@ import {
   buildInstallsByDay,
   buildCountByKey,
 } from "./dummy-data";
+import {
+  templateDelayFormKeys,
+  templateListFormKeys,
+} from "./template-script-config";
 import type {
   DashboardStats,
   StoresResult,
@@ -14,6 +18,7 @@ import type {
   StoreWithConfigs,
   NewStoreRow,
   StoreActivity,
+  AuditSummary,
 } from "./types";
 
 interface StoreWhereInput {
@@ -46,6 +51,35 @@ const STORE_CONFIG_SELECT = {
   auditComplete: true,
   updatedAt: true,
 } as const;
+
+function storeDetailConfigSelect(): Record<string, true> {
+  const select: Record<string, true> = {
+    ...STORE_CONFIG_SELECT,
+    auditDeferArray: true,
+    auditHideSelectors: true,
+    staticDeferDefaults: true,
+    firstUserDelayScripts: true,
+    auditDeferArrayEnabled: true,
+    auditHideSelectorsEnabled: true,
+    staticDeferDefaultsEnabled: true,
+    firstUserDelayScriptsEnabled: true,
+    auditDeferArrayPreserved: true,
+    auditHideSelectorsPreserved: true,
+    staticDeferDefaultsPreserved: true,
+    firstUserDelayScriptsPreserved: true,
+    firstUserDelayMs: true,
+    everyTimeDelayMs: true,
+    lastAuditAt: true,
+    auditRunning: true,
+    auditFailed: true,
+    auditComplete: true,
+    auditError: true,
+    appEnabled: true,
+  };
+  for (const key of templateListFormKeys()) select[key] = true;
+  for (const key of templateDelayFormKeys()) select[key] = true;
+  return select;
+}
 
 const SORTABLE_FIELDS = [
   "shopName",
@@ -308,23 +342,69 @@ export async function getStores(options?: {
   };
 }
 
+function summarizeAuditLog(
+  row: { timestamp: Date; audit_data: unknown } | null,
+): AuditSummary | null {
+  if (!row) return null;
+  const data = row.audit_data;
+  let variantCount: number | null = null;
+  let baseCount: number | null = null;
+  if (data && typeof data === "object" && data !== null) {
+    const d = data as Record<string, unknown>;
+    const patterns = d.pagePatterns;
+    if (patterns && typeof patterns === "object") {
+      variantCount = Object.keys(patterns as object).length;
+    }
+    const base = d.deferArrayBase;
+    if (Array.isArray(base)) {
+      baseCount = base.filter((x) => typeof x === "string").length;
+    }
+  }
+  return {
+    completedAt: row.timestamp,
+    variantCount,
+    baseCount,
+  };
+}
+
 export async function getStoreByDomain(
   domain: string,
 ): Promise<StoreWithDetails | null> {
   const demoMode = await getDemoMode();
 
-  const real = await prisma.store.findUnique({
-    where: { shopDomain: domain },
-    include: {
-      configs: true,
-      activities: {
-        orderBy: { createdAt: "desc" },
-        take: 100,
+  const [real, auditLog] = await Promise.all([
+    prisma.store.findUnique({
+      where: { shopDomain: domain },
+      include: {
+        configs: {
+          select: storeDetailConfigSelect(),
+          orderBy: { updatedAt: "desc" },
+          take: 1,
+        },
+        performanceScript: {
+          select: {
+            scriptHash: true,
+            scriptBuiltAt: true,
+            metafieldSyncedAt: true,
+          },
+        },
+        activities: {
+          orderBy: { createdAt: "desc" },
+          take: 100,
+        },
       },
-    },
-  });
+    }),
+    prisma.auditLog.findFirst({
+      where: { domain, status: "completed" },
+      orderBy: { timestamp: "desc" },
+      select: { timestamp: true, audit_data: true },
+    }),
+  ]);
 
-  if (real) return real;
+  if (real) {
+    const auditSummary = summarizeAuditLog(auditLog);
+    return { ...real, auditSummary };
+  }
 
   if (demoMode === "on") {
     return getDummyStoreByDomain(domain);
