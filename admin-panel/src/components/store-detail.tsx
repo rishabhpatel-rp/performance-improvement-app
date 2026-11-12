@@ -2,7 +2,6 @@
 
 import { useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
 import { cn, formatDate } from "@/lib/utils";
 import ConfigViewer from "@/components/config-viewer";
 import StoreScriptEditor from "@/components/store-script-editor";
