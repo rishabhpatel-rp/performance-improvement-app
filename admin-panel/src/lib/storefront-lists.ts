@@ -9,7 +9,7 @@ export const SCOPE_META: Record<
     label: "Global",
     short: "Global",
     suffix: "Global",
-    note: "Every page also uses the Global lists.",
+    note: "Defer/hide: names here apply on every template. Delay boxes: saving here also sets Home, PLP, and PDP until you edit those tabs.",
   },
   home: {
     label: "Home",

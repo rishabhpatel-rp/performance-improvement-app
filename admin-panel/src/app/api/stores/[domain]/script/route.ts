@@ -1,49 +1,47 @@
 import { NextResponse } from "next/server";
 import type { Prisma } from "@prisma/client";
-import { requireRole } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
-import { getDemoMode } from "@/lib/demo-mode";
+import {
+  demoWriteBlocked,
+  isRecord,
+  jsonNetworkFailure,
+  merchantError,
+  postMerchant,
+  requireMerchantSession,
+} from "@/lib/merchant-route";
+import { checkRateLimit, recordFailure } from "@/lib/rate-limit";
 
-const INTENTS = ["save-lists", "toggle", "script-token-action"] as const;
+const INTENTS = ["save-lists", "toggle", "script-token-action", "resync"] as const;
 type ScriptIntent = (typeof INTENTS)[number];
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 function isScriptIntent(value: unknown): value is ScriptIntent {
   return typeof value === "string" && (INTENTS as readonly string[]).includes(value);
-}
-
-type UpstreamResult = {
-  ok: boolean;
-  error?: string;
-  metafieldStatus?: string;
-};
-
-function readUpstream(value: unknown): UpstreamResult {
-  if (!isRecord(value)) return { ok: false, error: "No JSON" };
-  return {
-    ok: value.ok === true,
-    error: typeof value.error === "string" ? value.error : undefined,
-    metafieldStatus:
-      typeof value.metafieldStatus === "string" ? value.metafieldStatus : undefined,
-  };
 }
 
 export async function POST(
   request: Request,
   ctx: { params: Promise<{ domain: string }> },
 ) {
-  const session = await requireRole("admin");
-  if (!session) {
-    return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
-  }
+  const { session, unauthorized } = await requireMerchantSession("admin");
+  if (unauthorized) return unauthorized;
 
-  const demoMode = await getDemoMode();
-  if (demoMode === "on") {
-    return NextResponse.json({ ok: false, error: "Demo mode: writes disabled." }, { status: 403 });
+  const demoBlock = await demoWriteBlocked();
+  if (demoBlock) return demoBlock;
+
+  const writeLimit = checkRateLimit(`script-write:${session!.email}`, Date.now(), {
+    max: 30,
+    windowMs: 60_000,
+  });
+  if (!writeLimit.allowed) {
+    return NextResponse.json(
+      { ok: false, error: `Too many writes. Retry in ${writeLimit.retryAfterSeconds}s.` },
+      { status: 429 },
+    );
   }
+  recordFailure(`script-write:${session!.email}`, Date.now(), {
+    max: 30,
+    windowMs: 60_000,
+  });
 
   const { domain } = await ctx.params;
   if (!domain) {
@@ -59,66 +57,44 @@ export async function POST(
     );
   }
 
-  const decodedDomain = decodeURIComponent(domain);
+  const shopDomain = decodeURIComponent(domain);
   const store = await prisma.store.findUnique({
-    where: { shopDomain: decodedDomain },
+    where: { shopDomain },
     select: { isActive: true, id: true },
   });
   if (!store?.isActive) {
     return NextResponse.json({ ok: false, error: "Store not found or inactive" }, { status: 404 });
   }
 
-  const internalUrl = process.env.PAGEPULSE_INTERNAL_URL;
-  if (!internalUrl) {
-    return NextResponse.json(
-      { ok: false, error: "PAGEPULSE_INTERNAL_URL is not configured." },
-      { status: 500 },
-    );
+  const { res, data: raw, error } = await postMerchant<Record<string, unknown>>(
+    "/api/internal/storefront-lists",
+    { ...body, shopDomain },
+  );
+  if (error) return jsonNetworkFailure(error);
+  if (!res!.ok || !isRecord(raw) || raw.ok !== true) {
+    const errMsg = isRecord(raw) && typeof raw.error === "string" ? raw.error : merchantError(raw, res!);
+    return NextResponse.json({ ok: false, error: errMsg }, { status: res!.status || 502 });
   }
 
-  const safeBody = { ...body, shopDomain: decodedDomain };
-
+  const metafieldStatus =
+    typeof raw.metafieldStatus === "string" ? raw.metafieldStatus : null;
+  const metadata: Prisma.InputJsonValue = {
+    metafieldStatus,
+    scope: typeof body.scope === "string" ? body.scope : null,
+    actor: session!.email,
+  };
   try {
-    const res = await fetch(`${internalUrl}/api/internal/storefront-lists`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-pagepulse-internal": process.env.INTERNAL_API_SECRET ?? "",
+    await prisma.storeActivity.create({
+      data: {
+        storeId: store.id,
+        eventType: "config_changed",
+        description: `storefront lists ${body.intent} on ${shopDomain}`,
+        metadata,
       },
-      body: JSON.stringify(safeBody),
-      cache: "no-store",
     });
-    const data = readUpstream(await res.json().catch(() => null));
-    if (!res.ok || !data.ok) {
-      return NextResponse.json(
-        { ok: false, error: data.error || `Upstream error (${res.status})` },
-        { status: res.status || 502 },
-      );
-    }
-
-    const metadata: Prisma.InputJsonValue = {
-      metafieldStatus: data.metafieldStatus ?? null,
-      scope: typeof body.scope === "string" ? body.scope : null,
-      actor: session.email,
-    };
-    try {
-      await prisma.storeActivity.create({
-        data: {
-          storeId: store.id,
-          eventType: "config_changed",
-          description: `storefront lists ${body.intent} on ${decodedDomain}`,
-          metadata,
-        },
-      });
-    } catch (logError) {
-      console.error("[script] activity log failed", logError);
-    }
-
-    return NextResponse.json({ ok: true, metafieldStatus: data.metafieldStatus });
-  } catch (err) {
-    return NextResponse.json(
-      { ok: false, error: err instanceof Error ? err.message : "Upstream request failed" },
-      { status: 502 },
-    );
+  } catch (logError) {
+    console.error("[script] activity log failed", logError);
   }
+
+  return NextResponse.json(raw);
 }

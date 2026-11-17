@@ -24,10 +24,7 @@ export default async function StoreDetailPage({
         <TopBar title={store.shopName} demoMode={demoMode} />
         <p className="text-muted-foreground">{store.shopDomain}</p>
       </div>
-      <StoreDetail
-        store={store}
-        demoMode={demoMode === "on"}
-      />
+      <StoreDetail store={store} demoMode={demoMode === "on"} />
     </div>
   );
 }

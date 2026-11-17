@@ -38,6 +38,8 @@ interface StoreWhereInput {
  */
 const STORE_CONFIG_SELECT = {
   appEnabled: true,
+  adminManaged: true,
+  adminHeadHtml: true,
   script1Enabled: true,
   script2Enabled: true,
   script3Enabled: true,

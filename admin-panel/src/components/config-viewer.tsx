@@ -1,9 +1,8 @@
 import { Badge } from "@/components/ui/badge";
 import { formatDate } from "@/lib/utils";
-import { readJsonStringArray } from "@/lib/audit-array-fields";
-
 interface ConfigLike {
   appEnabled: boolean;
+  adminManaged?: boolean;
   script1Enabled: boolean;
   script2Enabled: boolean;
   script3Enabled: boolean;
@@ -70,6 +69,10 @@ export default function ConfigViewer({ config }: { config: ConfigLike | null }) 
   return (
     <div className="space-y-1">
       <ToggleRow label="App Enabled" enabled={config.appEnabled} />
+      <ToggleRow
+        label="Admin-managed (merchant read-only)"
+        enabled={config.adminManaged === true}
+      />
       <ToggleRow label="Script 1" enabled={config.script1Enabled} />
       <ToggleRow label="Script 2" enabled={config.script2Enabled} />
       <ToggleRow label="Script 3 (Style)" enabled={config.script3Enabled} />
@@ -90,23 +93,6 @@ export default function ConfigViewer({ config }: { config: ConfigLike | null }) 
       <ToggleRow
         label="First-visit delay list"
         enabled={config.firstUserDelayScriptsEnabled !== false}
-      />
-
-      <ListField
-        label="Defer Heavy Scripts (active)"
-        items={readJsonStringArray(config.auditDeferArray)}
-      />
-      <ListField
-        label="Hide selectors (active)"
-        items={readJsonStringArray(config.auditHideSelectors)}
-      />
-      <ListField
-        label="Delay Scripts — every load"
-        items={readJsonStringArray(config.staticDeferDefaults)}
-      />
-      <ListField
-        label="Delay Scripts — first user"
-        items={readJsonStringArray(config.firstUserDelayScripts)}
       />
 
       <ListField label="Script Titles" items={scriptTitles} />

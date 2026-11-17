@@ -15,21 +15,28 @@ import {
 import { stopAuditForShop } from "./audit-watchdog.server";
 import { rebuildPerformanceScript } from "./performance-script.server";
 
-export async function handleToggleApp({ admin, session, formData }) {
+export async function handleToggleApp({
+  admin,
+  session,
+  formData,
+  forceAppOn = false,
+}) {
+const shop = session?.shop;
+if (!shop) return { ok: false, error: "missing_shop" };
 const appEnabled = formData.get("appEnabled") === "true";
 // Captured BEFORE the write, so the auto re-run below fires on OFF -> ON only.
 const wasEnabled = await prisma.storeConfig
   .findFirst({
-    where: { store: { shopDomain: session.shop } },
+    where: { store: { shopDomain: shop } },
     select: { appEnabled: true },
   })
   .then((r) => r?.appEnabled === true)
   .catch(() => false);
 
-if (appEnabled) {
+if (appEnabled && !forceAppOn) {
   // The embed must be on in the theme the merchant selected (live theme
   // when none is selected).
-  const selectedThemeId = await getSelectedThemeId(session.shop).catch(
+  const selectedThemeId = await getSelectedThemeId(shop).catch(
     () => null,
   );
   const embedCheck = await isAppEmbedEnabled(
@@ -43,7 +50,7 @@ if (appEnabled) {
       error: "extension_required",
       embedEnabled: false,
       embedActivateUrl: getAppEmbedDeepLink(
-        session.shop,
+        shop,
         undefined,
         undefined,
         selectedThemeId,
@@ -51,7 +58,9 @@ if (appEnabled) {
       config: { appEnabled: false },
     };
   }
+}
 
+if (appEnabled && !forceAppOn) {
   // Defense-in-depth: re-check password protection here too, even
   // though /api/toggle-validate already checked it client-side. This
   // guards against a bypassed/skipped client validation call or stale
@@ -61,14 +70,14 @@ if (appEnabled) {
     // Stored answer if there is one, otherwise a live check (up to 10 s;
     // the client shows its "validating" spinner meanwhile).
     const isPasswordProtected = await withShopifyTimeout(
-      getPasswordProtection(admin, session.shop),
+      getPasswordProtection(admin, shop),
       "passwordProtection",
       10000,
     );
 
     if (isPasswordProtected === true) {
       const store = await prisma.store.findUnique({
-        where: { shopDomain: session.shop },
+        where: { shopDomain: shop },
         select: { configs: { select: { storefrontPassword: true } } },
       });
       const savedPassword = store?.configs?.[0]?.storefrontPassword || "";
@@ -114,19 +123,19 @@ const config = await safeUpdateConfig(admin, {
 // `appEnabled`, and `api.storefront-scripts` re-checks it on every
 // request — so no audit state needs to be wiped for safety.
 
-await safeSyncConfig(session.shop, config);
+await safeSyncConfig(shop, config);
 // appEnabled just changed in the DB: rebuild the stored storefront script
 // (empty when OFF). The audit rebuilds it again once it completes.
-await rebuildPerformanceScript(session.shop);
+await rebuildPerformanceScript(shop);
 await safeLogActivity(
-  session.shop,
+  shop,
   "config_changed",
   `App ${appEnabled ? "enabled" : "disabled"}`,
   { changedFields: ["appEnabled"] },
 );
 
 if (!appEnabled) {
-  await stopAuditForShop(session.shop).catch((err) => {
+  await stopAuditForShop(shop).catch((err) => {
     console.warn(
       "[toggle-app] stop audit on disable:",
       err instanceof Error ? err.message : err,
@@ -146,7 +155,7 @@ if (!appEnabled) {
 let auditStarted = false;
 if (appEnabled && !wasEnabled) {
   try {
-    const { started } = await startAuditForStore(admin, session.shop);
+    const { started } = await startAuditForStore(admin, shop);
     auditStarted = started === true;
   } catch (err) {
     // Never fail the toggle because the audit could not start: the app is
@@ -157,7 +166,12 @@ if (appEnabled && !wasEnabled) {
 
 // Returned rather than inferred on the client, so the extension and password
 // checks above are never bypassed by an optimistic start.
-return { ok: true, config, auditStarted };
+return {
+  ok: true,
+  config,
+  auditStarted,
+  forcedOnWithoutEmbed: forceAppOn && appEnabled,
+};
 }
 
 export async function handleStopAudit({ session }) {

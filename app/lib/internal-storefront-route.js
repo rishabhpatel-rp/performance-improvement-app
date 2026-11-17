@@ -8,6 +8,8 @@ import fs from "node:fs";
 import path from "node:path";
 
 const SCOPES = new Set(["global", "home", "collection", "product"]);
+const MAX_LIST_ITEMS = 500;
+const MAX_ITEM_CHARS = 300;
 
 /** Process env first, then the project `.env`, so a running dev server sees a secret added after boot. */
 export function readInternalSecret(env = process.env, envFile = path.resolve(process.cwd(), ".env")) {
@@ -47,9 +49,21 @@ export async function decideInternalStorefrontRequest(request, secret) {
   }
 
   const shopDomain = String(body?.shopDomain || "");
-  const scope = String(body?.scope || "");
   const intent = String(body?.intent || "");
-  if (!shopDomain || !SCOPES.has(scope)) {
+  if (!shopDomain) {
+    return reject(400, "Invalid shop.");
+  }
+
+  if (intent === "resync") {
+    return {
+      status: 200,
+      body: null,
+      write: { kind: "resync", shopDomain },
+    };
+  }
+
+  const scope = String(body?.scope || "");
+  if (!SCOPES.has(scope)) {
     return reject(400, "Invalid shop or tab.");
   }
 
@@ -87,6 +101,12 @@ export async function decideInternalStorefrontRequest(request, secret) {
     if (patch[name] == null) continue;
     if (!Array.isArray(patch[name]) || patch[name].some((item) => typeof item !== "string")) {
       return reject(400, "Each field must be a JSON array of strings.");
+    }
+    if (patch[name].length > MAX_LIST_ITEMS) {
+      return reject(400, `Each list may contain at most ${MAX_LIST_ITEMS} items.`);
+    }
+    if (patch[name].some((item) => item.length > MAX_ITEM_CHARS)) {
+      return reject(400, `Each list item may be at most ${MAX_ITEM_CHARS} characters.`);
     }
     clean[name] = patch[name];
   }

@@ -142,6 +142,8 @@ model StoreConfig {
 
   // Script toggles
   appEnabled         Boolean  @default(false)
+  adminManaged       Boolean  @default(false) // Merchant UI read-only when ops control from admin
+  adminHeadHtml      String?  @db.Text // Ops-only head HTML; admin panel only
   script1Enabled     Boolean  @default(false) // Audit script
   script2Enabled     Boolean  @default(false) // Defer script
   script3Enabled     Boolean  @default(false) // Hide CSS script

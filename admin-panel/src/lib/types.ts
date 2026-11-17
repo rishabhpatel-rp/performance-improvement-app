@@ -10,6 +10,7 @@
  */
 export interface StoreConfig {
   appEnabled: boolean;
+  adminManaged?: boolean;
   script1Enabled: boolean;
   script2Enabled: boolean;
   script3Enabled: boolean;

@@ -508,9 +508,7 @@ export default function AuditReportPanel({
   }
 
   if (!summary) {
-    return (
-      <s-banner tone="info">Complete a scan from Step 1 to see results.</s-banner>
-    );
+    return null;
   }
 
   const { foldAssertionOk, foldViolations } = summary;

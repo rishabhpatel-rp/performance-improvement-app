@@ -99,6 +99,38 @@ export type ScopeListPatch = {
   everyMs?: number;
 };
 
+const TEMPLATE_SCOPES_EXCEPT_GLOBAL: TemplateScope[] = ["home", "collection", "product"];
+
+/** Delay boxes only: Global save mirrors lists + ms to Home / PLP / PDP until a tab is edited. */
+function propagateGlobalDelayPatch(
+  next: Record<string, unknown>,
+  row: Record<string, unknown>,
+  patch: ScopeListPatch,
+): void {
+  if (patch.first != null) {
+    const value = familyEnabled(row, "first") ? patch.first : [];
+    for (const scope of TEMPLATE_SCOPES_EXCEPT_GLOBAL) {
+      next[scopeListColumn("first", scope)] = value;
+    }
+  }
+  if (patch.every != null) {
+    const value = familyEnabled(row, "every") ? patch.every : [];
+    for (const scope of TEMPLATE_SCOPES_EXCEPT_GLOBAL) {
+      next[scopeListColumn("every", scope)] = value;
+    }
+  }
+  if (patch.firstMs != null) {
+    for (const scope of TEMPLATE_SCOPES_EXCEPT_GLOBAL) {
+      next[scopeMsColumn("first", scope)] = patch.firstMs;
+    }
+  }
+  if (patch.everyMs != null) {
+    for (const scope of TEMPLATE_SCOPES_EXCEPT_GLOBAL) {
+      next[scopeMsColumn("every", scope)] = patch.everyMs;
+    }
+  }
+}
+
 function familyEnabled(row: Record<string, unknown>, family: ListFamily): boolean {
   const flag = row[ENABLED_FIELD[family]];
   return flag !== false;
@@ -131,6 +163,10 @@ export function applyScopePatch(
   if (patch.everyMs != null) {
     next[scopeMsColumn("every", scope)] = patch.everyMs;
     if (scope === "global") next.everyTimeDelayMs = patch.everyMs;
+  }
+
+  if (scope === "global") {
+    propagateGlobalDelayPatch(next, { ...row, ...next }, patch);
   }
 
   const merged = { ...row, ...next };

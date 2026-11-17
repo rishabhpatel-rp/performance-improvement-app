@@ -24,6 +24,7 @@ import {
   normalizeCustomUrlList,
 } from "../lib/page-urls.server";
 import { rebuildPerformanceScript } from "../lib/performance-script.server";
+import { assertMerchantCanMutate } from "../lib/admin-managed.server.js";
 import {
   getPasswordProtection,
   refreshPasswordProtection,
@@ -52,6 +53,10 @@ import {
   scopeMsColumn,
 } from "../lib/storefront-lists";
 import { templateConfigFromRow } from "../lib/template-script-config";
+import {
+  buildStep2Version,
+  loadStep2WriteEcho,
+} from "../lib/step2-config.server";
 import WizardNavigation from "../components/WizardNavigation";
 import FooterBranding from "../components/FooterBranding";
 
@@ -580,6 +585,7 @@ let shopResult = { shopData: null, isNewStore: false };
       // Check the length explicitly to get the schema default.
     firstUserDelayMs: sc?.firstUserDelayMs ?? 12000,
     everyTimeDelayMs: sc?.everyTimeDelayMs ?? 6000,
+    adminManaged: sc?.adminManaged === true,
     ...templateConfigFromRow(sc),
   };
 
@@ -589,21 +595,53 @@ let shopResult = { shopData: null, isNewStore: false };
     )} embed=${embedStatus} autoDisabled=${autoDisabled} fastPath=${!needsShopifyRefresh} pwProtected=${passwordProtected} endpointMatch=${sc?.cachedAppEndpoint === endpoint}`,
   );
 
+  const storeRow = await prisma.store.findUnique({
+    where: { shopDomain: session.shop },
+    select: {
+      isActive: true,
+      performanceScript: { select: { scriptHash: true, metafieldSyncedAt: true } },
+    },
+  });
+
   return {
     config: finalConfig,
+    adminManaged: sc?.adminManaged === true,
     auditStatus,
     embedEnabled,
     embedStatus,
     embedActivateUrl,
     selectedThemeId,
     passwordProtected,
+    configVersion: buildStep2Version(
+      storeRow,
+      sc,
+      storeRow?.performanceScript ?? null,
+    ),
   };
 };
+
+const MERCHANT_MUTATION_INTENTS = new Set([
+  "toggle-app",
+  "toggle-script",
+  "toggle-audit-field",
+  "save-audit-arrays",
+  "save-storefront-password",
+  "save-custom-page-urls",
+  "script-token-action",
+  "select-theme",
+  "start-audit",
+  "stop-audit",
+]);
 
 export const action = async ({ request }) => {
   const { admin, session } = await authenticate.admin(request);
   const formData = await request.formData();
   const intent = formData.get("intent");
+
+  if (intent && MERCHANT_MUTATION_INTENTS.has(String(intent))) {
+    const blocked = await assertMerchantCanMutate(session.shop);
+    if (blocked) return blocked;
+  }
 
   if (intent === "toggle-app") {
     const appEnabled = formData.get("appEnabled") === "true";
@@ -928,7 +966,14 @@ export const action = async ({ request }) => {
       { changedFields: [field] },
     );
 
-    return { ok: true, field, enabled, metafieldStatus: result.metafieldStatus };
+    const echo = await loadStep2WriteEcho(session.shop);
+    return {
+      ok: true,
+      field,
+      enabled,
+      metafieldStatus: result.metafieldStatus,
+      ...(echo ?? {}),
+    };
   }
 
   
@@ -1008,7 +1053,8 @@ export const action = async ({ request }) => {
       if (patch.every) echoed[scopeListColumn("every", scopeRaw)] = patch.every;
       if (patch.firstMs != null) echoed[scopeMsColumn("first", scopeRaw)] = patch.firstMs;
       if (patch.everyMs != null) echoed[scopeMsColumn("every", scopeRaw)] = patch.everyMs;
-      return { ok: true, ...echoed };
+      const echo = await loadStep2WriteEcho(session.shop);
+      return { ok: true, ...echoed, ...(echo ?? {}) };
     } catch (err) {
       console.error(
         "[Dashboard] Failed to save audit arrays:",
@@ -1176,7 +1222,15 @@ export const action = async ({ request }) => {
       `script action ${actionName} on ${token}`,
       { token, action: actionName },
     );
-    return { ok: true, token, action: actionName, scope: "global", ...patch };
+    const echo = await loadStep2WriteEcho(session.shop);
+    return {
+      ok: true,
+      token,
+      action: actionName,
+      scope: scopeRaw,
+      ...patch,
+      ...(echo ?? {}),
+    };
   }
 
   return { ok: false };
@@ -1185,12 +1239,14 @@ export const action = async ({ request }) => {
 export default function Dashboard() {
   const {
     config,
+    configVersion,
     auditStatus: initialAuditStatus,
     embedEnabled = false,
     embedStatus = "unknown",
     embedActivateUrl = "",
     selectedThemeId = null,
     passwordProtected: loaderPasswordProtected = null,
+    adminManaged = false,
   } = useLoaderData();
   const revalidator = useRevalidator();
   const [currentStep, setCurrentStep] = useState(1);
@@ -1394,11 +1450,18 @@ export default function Dashboard() {
 
   return (
     <s-page heading="Performance Improvement">
+      {adminManaged && (
+        <s-banner tone="warning">
+          This store is configured by the PagePulse team. Changes here are
+          disabled — contact support if you need an update.
+        </s-banner>
+      )}
       <WizardProgress currentStep={currentStep} maxStep={maxStep} onStepClick={goToStep} />
 
       {currentStep === 1 && (
         <Step1Activate
           config={config}
+          readOnly={adminManaged}
           auditStatus={auditStatus}
           embedEnabled={embedEnabled}
           embedStatus={embedStatus}
@@ -1414,6 +1477,8 @@ export default function Dashboard() {
             config={liveConfig}
             auditStatus={auditStatus}
             appEnabled={appEnabled}
+            configVersion={configVersion}
+            readOnly={adminManaged}
           />
         </>
       )}

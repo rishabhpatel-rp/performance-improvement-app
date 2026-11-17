@@ -1,5 +1,5 @@
 /* eslint-disable react/prop-types */
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useFetcher, useRevalidator } from "react-router";
 
 const SCOPE_SUFFIX = {
@@ -85,7 +85,7 @@ function validateArray(text) {
  * beside the toggle when that box is dirty and valid. Invalid JSON replaces
  * the hint and tints the card critical. Invalid content is never saved.
  */
-export default function Step3Titles({ config, scope = "global" }) {
+export default function Step3Titles({ config, scope = "global", readOnly = false }) {
   const fetcher = useFetcher();
   const revalidator = useRevalidator();
   const saveData = fetcher.data;
@@ -103,6 +103,7 @@ export default function Step3Titles({ config, scope = "global" }) {
   // updated optimistically from the toggle fetcher response.
   const [toggles, setToggles] = useState({});
   const [savingKey, setSavingKey] = useState(null);
+  const [externalChangeNotice, setExternalChangeNotice] = useState(false);
 
   useEffect(() => {
     setToggles({
@@ -122,22 +123,25 @@ export default function Step3Titles({ config, scope = "global" }) {
     }));
   }, [fetcher.data]);
 
-  // Initialize delay values from config
+  const prevScopeRef = useRef(scope);
+  const draftsRef = useRef(drafts);
+  const originalsRef = useRef(originals);
+  const delayDraftsRef = useRef(delayDrafts);
+  const delayOriginalsRef = useRef(delayOriginals);
+
   useEffect(() => {
-    const nextDelayDrafts = {};
-    const nextDelayOriginals = {};
-    FIELDS.forEach(({ delayKey, delayDefault }) => {
-      if (delayKey) {
-        // Convert milliseconds to seconds for display
-        const ms = config?.[delayKey] ?? delayDefault;
-        const seconds = Math.floor(ms / 1000);
-        nextDelayDrafts[delayKey] = seconds;
-        nextDelayOriginals[delayKey] = seconds;
-      }
-    });
-    setDelayDrafts(nextDelayDrafts);
-    setDelayOriginals(nextDelayOriginals);
-  }, [config, scope]);
+    draftsRef.current = drafts;
+  }, [drafts]);
+  useEffect(() => {
+    originalsRef.current = originals;
+  }, [originals]);
+  useEffect(() => {
+    delayDraftsRef.current = delayDrafts;
+  }, [delayDrafts]);
+  useEffect(() => {
+    delayOriginalsRef.current = delayOriginals;
+  }, [delayOriginals]);
+
 
   const handleDelayChange = (delayKey, value) => {
     // Only allow positive integers
@@ -186,18 +190,44 @@ export default function Step3Titles({ config, scope = "global" }) {
     );
   };
 
-  // (Re)derive drafts + originals from the config whenever it arrives or
-  // changes (initial loader data or a completed save).
+  // Merge list + delay drafts from config — full reset on tab change; keep dirty boxes on refresh.
   useEffect(() => {
-    const nextDrafts = {};
-    const nextOriginals = {};
+    const scopeChanged = prevScopeRef.current !== scope;
+    prevScopeRef.current = scope;
+
+    const prevListDrafts = draftsRef.current;
+    const prevListOriginals = originalsRef.current;
+    const nextListOriginals = { ...prevListOriginals };
+    const nextListDrafts = { ...prevListDrafts };
+    let external = false;
     FIELDS.forEach(({ key }) => {
       const text = toEditable(config?.[key] ?? []);
-      nextDrafts[key] = text;
-      nextOriginals[key] = text;
+      nextListOriginals[key] = text;
+      const dirty = !scopeChanged && prevListDrafts[key] !== prevListOriginals[key];
+      if (!scopeChanged && dirty && text !== prevListOriginals[key]) {
+        external = true;
+      }
+      if (!dirty) nextListDrafts[key] = text;
     });
-    setDrafts(nextDrafts);
-    setOriginals(nextOriginals);
+    if (external) setExternalChangeNotice(true);
+    setOriginals(nextListOriginals);
+    setDrafts(nextListDrafts);
+
+    const prevDelayDrafts = delayDraftsRef.current;
+    const prevDelayOriginals = delayOriginalsRef.current;
+    const nextDelayOriginals = { ...prevDelayOriginals };
+    const nextDelayDrafts = { ...prevDelayDrafts };
+    FIELDS.forEach(({ delayKey, delayDefault }) => {
+      if (!delayKey) return;
+      const ms = config?.[delayKey] ?? delayDefault;
+      const seconds = Math.floor(ms / 1000);
+      nextDelayOriginals[delayKey] = seconds;
+      const dirty =
+        !scopeChanged && prevDelayDrafts[delayKey] !== prevDelayOriginals[delayKey];
+      if (!dirty) nextDelayDrafts[delayKey] = seconds;
+    });
+    setDelayOriginals(nextDelayOriginals);
+    setDelayDrafts(nextDelayDrafts);
   }, [config, scope]);
 
   const handleChange = (key, text) => {
@@ -315,7 +345,7 @@ export default function Step3Titles({ config, scope = "global" }) {
               <s-button
                 variant="secondary"
                 size="small"
-                disabled={!showSave || isSaving}
+                disabled={readOnly || !showSave || isSaving}
                 onClick={() => handleSave(field)}
               >
                 {isSaving ? "Saving…" : "Save"}
@@ -324,6 +354,7 @@ export default function Step3Titles({ config, scope = "global" }) {
             <s-switch
               label=""
               checked={enabled}
+              disabled={readOnly}
               onChange={(e) => handleToggle(field, e.target.checked)}
             />
           </div>
@@ -529,15 +560,13 @@ export default function Step3Titles({ config, scope = "global" }) {
         }
       `}</style>
       <div className="pp-audit-fields">
+        {externalChangeNotice && (
+          <s-banner tone="info" style={{ marginBottom: 16 }}>
+            This list was changed elsewhere. Your unsaved edit is kept.
+          </s-banner>
+        )}
         {/* <s-text> is display:contents (no box), so offsets must go on a real
             element. Shifts only the text up 20px; the cards below stay put. */}
-        <div style={{ position: "relative", top: -20 }}>
-          <s-text tone="subdued">
-            These arrays feed your storefront optimization. Add or remove
-            script names (and selectors) in any list below.
-          </s-text>
-        </div>
-
         {saveData && !saveData.ok && (
           <s-banner tone="critical" style={{ marginBottom: 16 }}>
             Save failed: {saveData.error || "Unknown error"}
