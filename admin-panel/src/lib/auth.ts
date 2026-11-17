@@ -135,7 +135,10 @@ export async function requireAdmin() {
 export async function requireRole(required: "admin" | "viewer" = "admin") {
   const session = await requireAdmin();
   if (!session) return null;
-  if (session.role !== required) return null;
+  if (required === "admin" && session.role !== "admin") return null;
+  if (required === "viewer" && session.role !== "admin" && session.role !== "viewer") {
+    return null;
+  }
   return session;
 }
 

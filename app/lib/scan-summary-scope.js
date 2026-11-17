@@ -8,10 +8,16 @@ export function tabDropdownAction(tabLists, token) {
   return "protected";
 }
 
+import crypto from "node:crypto";
+
 /** Whether a header matches the shared internal secret. Missing secret never matches. */
 export function internalAuthOk(headerValue, secret) {
   if (typeof secret !== "string" || secret.length === 0) return false;
-  return headerValue === secret;
+  if (typeof headerValue !== "string") return false;
+  const a = Buffer.from(headerValue, "utf8");
+  const b = Buffer.from(secret, "utf8");
+  if (a.length !== b.length) return false;
+  return crypto.timingSafeEqual(a, b);
 }
 
 /** Which scan-summary rows belong on one tab. */

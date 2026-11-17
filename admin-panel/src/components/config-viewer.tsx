@@ -1,8 +1,8 @@
 import { Badge } from "@/components/ui/badge";
 import { formatDate } from "@/lib/utils";
-
 interface ConfigLike {
   appEnabled: boolean;
+  adminManaged?: boolean;
   script1Enabled: boolean;
   script2Enabled: boolean;
   script3Enabled: boolean;
@@ -10,6 +10,14 @@ interface ConfigLike {
   scriptTitles: unknown;
   metaobjectId: string | null;
   updatedAt: Date | string;
+  auditDeferArrayEnabled?: boolean;
+  auditHideSelectorsEnabled?: boolean;
+  staticDeferDefaultsEnabled?: boolean;
+  firstUserDelayScriptsEnabled?: boolean;
+  auditDeferArray?: unknown;
+  auditHideSelectors?: unknown;
+  staticDeferDefaults?: unknown;
+  firstUserDelayScripts?: unknown;
 }
 
 function toStringArray(value: unknown): string[] {
@@ -61,10 +69,31 @@ export default function ConfigViewer({ config }: { config: ConfigLike | null }) 
   return (
     <div className="space-y-1">
       <ToggleRow label="App Enabled" enabled={config.appEnabled} />
+      <ToggleRow
+        label="Admin-managed (merchant read-only)"
+        enabled={config.adminManaged === true}
+      />
       <ToggleRow label="Script 1" enabled={config.script1Enabled} />
       <ToggleRow label="Script 2" enabled={config.script2Enabled} />
       <ToggleRow label="Script 3 (Style)" enabled={config.script3Enabled} />
       <ToggleRow label="Debug Mode" enabled={config.debugMode} />
+
+      <ToggleRow
+        label="Defer array (Step 2)"
+        enabled={config.auditDeferArrayEnabled !== false}
+      />
+      <ToggleRow
+        label="Hide selectors (Step 2)"
+        enabled={config.auditHideSelectorsEnabled !== false}
+      />
+      <ToggleRow
+        label="Every-load delay list"
+        enabled={config.staticDeferDefaultsEnabled !== false}
+      />
+      <ToggleRow
+        label="First-visit delay list"
+        enabled={config.firstUserDelayScriptsEnabled !== false}
+      />
 
       <ListField label="Script Titles" items={scriptTitles} />
 

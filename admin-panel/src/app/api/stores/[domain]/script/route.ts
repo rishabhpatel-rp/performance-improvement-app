@@ -1,59 +1,100 @@
 import { NextResponse } from "next/server";
-import fs from "node:fs";
-import path from "node:path";
-import { requireAdmin } from "@/lib/auth";
+import type { Prisma } from "@prisma/client";
+import { prisma } from "@/lib/prisma";
+import {
+  demoWriteBlocked,
+  isRecord,
+  jsonNetworkFailure,
+  merchantError,
+  postMerchant,
+  requireMerchantSession,
+} from "@/lib/merchant-route";
+import { checkRateLimit, recordFailure } from "@/lib/rate-limit";
 
-function envValue(name: string): string {
-  const current = process.env[name];
-  if (typeof current === "string" && current.length > 0) return current;
-  try {
-    const text = fs.readFileSync(path.join(process.cwd(), ".env"), "utf8");
-    const line = text.split("\n").find((row) => row.startsWith(`${name}=`));
-    if (!line) return "";
-    return line.slice(name.length + 1).trim().replace(/^"|"$/g, "");
-  } catch {
-    return "";
-  }
+const INTENTS = ["save-lists", "toggle", "script-token-action", "resync"] as const;
+type ScriptIntent = (typeof INTENTS)[number];
+
+function isScriptIntent(value: unknown): value is ScriptIntent {
+  return typeof value === "string" && (INTENTS as readonly string[]).includes(value);
 }
 
 export async function POST(
   request: Request,
   ctx: { params: Promise<{ domain: string }> },
 ) {
-  const session = await requireAdmin();
-  if (!session) {
-    return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
+  const { session, unauthorized } = await requireMerchantSession("admin");
+  if (unauthorized) return unauthorized;
+
+  const demoBlock = await demoWriteBlocked();
+  if (demoBlock) return demoBlock;
+
+  const writeLimit = checkRateLimit(`script-write:${session!.email}`, Date.now(), {
+    max: 30,
+    windowMs: 60_000,
+  });
+  if (!writeLimit.allowed) {
+    return NextResponse.json(
+      { ok: false, error: `Too many writes. Retry in ${writeLimit.retryAfterSeconds}s.` },
+      { status: 429 },
+    );
+  }
+  recordFailure(`script-write:${session!.email}`, Date.now(), {
+    max: 30,
+    windowMs: 60_000,
+  });
+
+  const { domain } = await ctx.params;
+  if (!domain) {
+    return NextResponse.json({ ok: false, error: "Missing domain" }, { status: 400 });
   }
 
-  const secret = envValue("INTERNAL_API_SECRET");
-  const base = envValue("PAGEPULSE_INTERNAL_URL");
-  if (!secret || !base) {
+  const body: unknown = await request.json().catch(() => null);
+  if (!isRecord(body) || !isScriptIntent(body.intent)) {
+    const intent = isRecord(body) ? body.intent : undefined;
     return NextResponse.json(
-      {
-        ok: false,
-        error: "Set INTERNAL_API_SECRET and PAGEPULSE_INTERNAL_URL on the admin panel.",
-      },
-      { status: 500 },
+      { ok: false, error: `Unsupported intent: ${String(intent ?? "")}` },
+      { status: 400 },
     );
   }
 
-  const { domain } = await ctx.params;
-  const body = await request.json().catch(() => null);
-  if (!body || typeof body !== "object") {
-    return NextResponse.json({ ok: false, error: "Invalid JSON" }, { status: 400 });
+  const shopDomain = decodeURIComponent(domain);
+  const store = await prisma.store.findUnique({
+    where: { shopDomain },
+    select: { isActive: true, id: true },
+  });
+  if (!store?.isActive) {
+    return NextResponse.json({ ok: false, error: "Store not found or inactive" }, { status: 404 });
   }
 
-  const res = await fetch(`${base.replace(/\/$/, "")}/api/internal/storefront-lists`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-pagepulse-internal": secret,
-    },
-    body: JSON.stringify({ ...body, shopDomain: decodeURIComponent(domain) }),
-  });
-  const payload = await res.json().catch(() => ({
-    ok: false,
-    error: "Merchant app did not return JSON",
-  }));
-  return NextResponse.json(payload, { status: res.status });
+  const { res, data: raw, error } = await postMerchant<Record<string, unknown>>(
+    "/api/internal/storefront-lists",
+    { ...body, shopDomain },
+  );
+  if (error) return jsonNetworkFailure(error);
+  if (!res!.ok || !isRecord(raw) || raw.ok !== true) {
+    const errMsg = isRecord(raw) && typeof raw.error === "string" ? raw.error : merchantError(raw, res!);
+    return NextResponse.json({ ok: false, error: errMsg }, { status: res!.status || 502 });
+  }
+
+  const metafieldStatus =
+    typeof raw.metafieldStatus === "string" ? raw.metafieldStatus : null;
+  const metadata: Prisma.InputJsonValue = {
+    metafieldStatus,
+    scope: typeof body.scope === "string" ? body.scope : null,
+    actor: session!.email,
+  };
+  try {
+    await prisma.storeActivity.create({
+      data: {
+        storeId: store.id,
+        eventType: "config_changed",
+        description: `storefront lists ${body.intent} on ${shopDomain}`,
+        metadata,
+      },
+    });
+  } catch (logError) {
+    console.error("[script] activity log failed", logError);
+  }
+
+  return NextResponse.json(raw);
 }

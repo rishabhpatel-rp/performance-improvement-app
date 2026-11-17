@@ -40,6 +40,7 @@ export default function Step1Activate({
   selectedThemeId = null,
   passwordProtected = null, // true / false once confirmed, null = still checking
   onAuditRestarted = null,
+  readOnly = false,
 }) {
   const fetcher = useFetcher();
   const pwFetcher = useFetcher();
@@ -578,7 +579,7 @@ export default function Step1Activate({
             key={switchKey}
             label="Enable Performance Improvement App"
             checked={appEnabled}
-            disabled={mainToggleBlocked || validating}
+            disabled={readOnly || mainToggleBlocked || validating}
             onChange={(e) => handleToggle(e.target.checked)}
           />
 

@@ -17,10 +17,13 @@
 //       than root, but make that explicit with a comment per field group
 //       and a migration-checklist step on the root app ("does this need to
 //       reach admin-panel/prisma/schema.prisma?").
-// `AppTracking` and `AuditLog` (root schema) were intentionally NOT added
-// here — they aren't wired to Store via a foreign key and weren't in the
-// shared-model list this task named; flagging separately rather than
-// silently including them (see repo audit note on scope).
+// `AppTracking` (root schema) is not mirrored here. `AuditLog` is included
+// as a read-only model for store-detail audit summaries.
+//
+// MERGE NOTE: `main` and feature branches both added the same template-bucket
+// block to StoreConfig in different places. Git "auto-merges" that as duplicate
+// fields (P1012). After merging `main`, run `npx prisma validate` in this
+// directory and remove any second copy of auditDeferGlobal…everyTimeDelayMs*.
 
 generator client {
   provider = "prisma-client-js"
@@ -56,6 +59,21 @@ model Session {
   emailVerified       Boolean?  @default(false)
   refreshToken        String?
   refreshTokenExpires DateTime?
+}
+
+model AuditLog {
+  id         Int      @id @default(autoincrement())
+  domain     String
+  audit_type String   @default("general")
+  audit_data Json?
+  timestamp  DateTime @default(now())
+  status     String   @default("completed")
+  details    String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([domain])
+  @@index([timestamp])
 }
 
 // ============================================================
@@ -124,6 +142,8 @@ model StoreConfig {
 
   // Script toggles
   appEnabled         Boolean  @default(false)
+  adminManaged       Boolean  @default(false) // Merchant UI read-only when ops control from admin
+  adminHeadHtml      String?  @db.Text // Ops-only head HTML; admin panel only
   script1Enabled     Boolean  @default(false) // Audit script
   script2Enabled     Boolean  @default(false) // Defer script
   script3Enabled     Boolean  @default(false) // Hide CSS script
@@ -132,9 +152,9 @@ model StoreConfig {
 
   // Script data (stored as JSON arrays)
   scriptTitles       Json     @default("[]") // ["Title1","Title2","Title3"]
-  auditDeferArray    Json     @default("[]") // Defer/blocklist entries
-  auditHideSelectors Json     @default("[]") // CSS selectors to hide
-  staticDeferDefaults Json    @default("[\"wpm\",\"gtm\"]") // Static always-defer defaults e.g. ["wpm","gtm"]
+  auditDeferArray    Json     @default("[]") // Union fallback
+  auditHideSelectors Json     @default("[]")
+  staticDeferDefaults Json    @default("[\"wpm\",\"gtm\"]")
 
   auditDeferGlobal      Json @default("[]")
   auditDeferHome        Json @default("[]")
@@ -148,18 +168,6 @@ model StoreConfig {
   staticDeferDefaultsHome        Json @default("[]")
   staticDeferDefaultsCollection  Json @default("[]")
   staticDeferDefaultsProduct     Json @default("[]")
-  firstUserDelayScriptsGlobal      Json @default("[\"wpm\",\"gtm\"]")
-  firstUserDelayScriptsHome        Json @default("[]")
-  firstUserDelayScriptsCollection  Json @default("[]")
-  firstUserDelayScriptsProduct     Json @default("[]")
-  firstUserDelayMsGlobal      Int @default(12000)
-  firstUserDelayMsHome        Int @default(12000)
-  firstUserDelayMsCollection  Int @default(12000)
-  firstUserDelayMsProduct     Int @default(12000)
-  everyTimeDelayMsGlobal      Int @default(6000)
-  everyTimeDelayMsHome        Int @default(6000)
-  everyTimeDelayMsCollection  Int @default(6000)
-  everyTimeDelayMsProduct     Int @default(6000)
 
   // Audit field toggle states (on/off) — Step 3 "Audit Results" textareas
   auditDeferArrayEnabled      Boolean @default(true)
@@ -196,13 +204,22 @@ model StoreConfig {
   firstUserDelayScripts          Json    @default("[\"wpm\",\"gtm\"]")
   firstUserDelayScriptsEnabled   Boolean @default(true)
   firstUserDelayScriptsPreserved Json    @default("[]")
-  firstUserDelayMs               Int     @default(12000) // 12 seconds in milliseconds
+  firstUserDelayMs               Int     @default(12000)
 
-  // ============================================================
-  // Delay time for "Delay Scripts" box (EVERY_TIME_DELAY_SCRIPTS)
-  // This is the timeout at line 400 in script-generator.js
-  // ============================================================
-  everyTimeDelayMs               Int     @default(6000) // 6 seconds in milliseconds
+  firstUserDelayScriptsGlobal      Json @default("[\"wpm\",\"gtm\"]")
+  firstUserDelayScriptsHome        Json @default("[]")
+  firstUserDelayScriptsCollection  Json @default("[]")
+  firstUserDelayScriptsProduct     Json @default("[]")
+  firstUserDelayMsGlobal      Int @default(12000)
+  firstUserDelayMsHome        Int @default(12000)
+  firstUserDelayMsCollection  Int @default(12000)
+  firstUserDelayMsProduct     Int @default(12000)
+
+  everyTimeDelayMs               Int     @default(6000)
+  everyTimeDelayMsGlobal      Int @default(6000)
+  everyTimeDelayMsHome        Int @default(6000)
+  everyTimeDelayMsCollection  Int @default(6000)
+  everyTimeDelayMsProduct     Int @default(6000)
 
   // Audit status (hidden backend audit lifecycle)
   auditRunning Boolean @default(false)
@@ -301,20 +318,4 @@ model PerformanceScript {
 
   @@index([storeId])
   @@map("performance_scripts")
-}
-
-// Read model only. Rows are written by the merchant app. Do not migrate from admin-panel.
-model AuditLog {
-  id         Int      @id @default(autoincrement())
-  domain     String
-  audit_type String   @default("general")
-  audit_data Json?
-  timestamp  DateTime @default(now())
-  status     String   @default("completed")
-  details    String?
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
-
-  @@index([domain])
-  @@index([timestamp])
 }

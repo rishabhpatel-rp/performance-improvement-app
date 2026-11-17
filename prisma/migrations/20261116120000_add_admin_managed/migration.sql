@@ -1,0 +1,2 @@
+-- AlterTable
+ALTER TABLE "StoreConfig" ADD COLUMN IF NOT EXISTS "adminManaged" BOOLEAN NOT NULL DEFAULT false;

@@ -4,6 +4,8 @@ import {
   normalizeCustomUrl,
   normalizeCustomUrlList,
 } from "./page-urls.server";
+import { rebuildPerformanceScript } from "./performance-script.server";
+import { safeLogActivity } from "./dashboard-helpers.server.js";
 
 export async function handleSaveStorefrontPassword({ admin, session, formData }) {
 const storefrontPassword = (formData.get("storefrontPassword") || "").trim();
@@ -113,4 +115,22 @@ return {
   plpWarning: plp.warning || "",
   pdpWarning: pdp.warning || "",
 };
+}
+
+export async function handleSetDebugMode({ session, debugMode }) {
+  const store = await prisma.store.findUnique({
+    where: { shopDomain: session.shop },
+    select: { id: true },
+  });
+  if (!store) return { ok: false, error: "Store record not found." };
+  await prisma.storeConfig.update({
+    where: { storeId: store.id },
+    data: { debugMode: debugMode === true },
+  });
+  await rebuildPerformanceScript(session.shop);
+  await safeLogActivity(session.shop, "config_changed", `Debug mode ${debugMode ? "on" : "off"}`, {
+    by: "admin-panel",
+    debugMode: debugMode === true,
+  });
+  return { ok: true, debugMode: debugMode === true };
 }

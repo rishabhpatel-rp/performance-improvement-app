@@ -103,6 +103,52 @@ test("a one-name product tab is kept on the variant list", () => {
   assert.deepEqual(variants[0].add, ["only.js"]);
 });
 
+test("saving global delay lists and ms mirrors Home, PLP, and PDP columns", () => {
+  const next = applyScopePatch(
+    {
+      firstUserDelayScriptsGlobal: ["a"],
+      firstUserDelayScriptsHome: [],
+      firstUserDelayScriptsCollection: ["old"],
+      firstUserDelayScriptsProduct: [],
+      staticDeferDefaultsGlobal: ["b"],
+      staticDeferDefaultsHome: [],
+      staticDeferDefaultsCollection: [],
+      staticDeferDefaultsProduct: ["old-e"],
+      firstUserDelayMsGlobal: 1000,
+      firstUserDelayMsHome: 12000,
+      firstUserDelayMsCollection: 12000,
+      firstUserDelayMsProduct: 12000,
+      everyTimeDelayMsGlobal: 2000,
+      everyTimeDelayMsHome: 6000,
+      everyTimeDelayMsCollection: 6000,
+      everyTimeDelayMsProduct: 6000,
+    },
+    "global",
+    { first: ["gtm"], every: ["wpm"], firstMs: 120000, everyMs: 120000 },
+  );
+  assert.deepEqual(next.firstUserDelayScriptsHome, ["gtm"]);
+  assert.deepEqual(next.firstUserDelayScriptsCollection, ["gtm"]);
+  assert.deepEqual(next.firstUserDelayScriptsProduct, ["gtm"]);
+  assert.deepEqual(next.staticDeferDefaultsProduct, ["wpm"]);
+  assert.equal(next.firstUserDelayMsProduct, 120000);
+  assert.equal(next.everyTimeDelayMsHome, 120000);
+});
+
+test("saving the home first-delay list does not change the product list", () => {
+  const next = applyScopePatch(
+    {
+      firstUserDelayScriptsGlobal: ["g.js"],
+      firstUserDelayScriptsHome: ["g.js"],
+      firstUserDelayScriptsCollection: ["g.js"],
+      firstUserDelayScriptsProduct: ["g.js"],
+    },
+    "home",
+    { first: ["home-only.js"] },
+  );
+  assert.deepEqual(next.firstUserDelayScriptsHome, ["home-only.js"]);
+  assert.equal(next.firstUserDelayScriptsProduct, undefined);
+});
+
 test("saving the home defer list does not change the product list", () => {
   const next = applyScopePatch(
     {
@@ -271,6 +317,7 @@ test("a missing internal secret never authorizes", () => {
   assert.equal(internalAuthOk("anything", undefined), false);
   assert.equal(internalAuthOk("secret", "other"), false);
   assert.equal(internalAuthOk("secret", "secret"), true);
+  assert.equal(internalAuthOk("secret", "secret\x00"), false);
 });
 
 test("scan summary tabs keep a product-only script off the home tab", () => {

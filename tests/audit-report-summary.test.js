@@ -2,12 +2,16 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { buildAuditReportSummary } from "../app/lib/audit-report-summary.server.ts";
 
+/** Within the 30-day stale window used by buildAuditReportSummary. */
+function completedAtDaysAgo(days) {
+  return new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+}
+
 const baseReport = {
   deferArray: ["clarity"],
   hideSelectors: ["#x"],
   popupSelectors: [".popup"],
   pagesAudited: ["/", "/collections/a"],
-  completedAt: "2026-10-12T00:00:00.000Z",
   foldAssertion: { ok: true, violations: [], pagesChecked: 2 },
   funnel: [
     {
@@ -57,7 +61,10 @@ const baseReport = {
 };
 
 test("buildAuditReportSummary aggregates funnel and stats", () => {
-  const s = buildAuditReportSummary(baseReport);
+  const s = buildAuditReportSummary({
+    ...baseReport,
+    completedAt: completedAtDaysAgo(7),
+  });
   assert.equal(s.stats.deferred, 1);
   assert.equal(s.stats.hiddenSelectors, 1);
   assert.equal(s.stats.popups, 1);

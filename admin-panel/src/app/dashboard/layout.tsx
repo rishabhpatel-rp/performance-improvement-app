@@ -1,6 +1,7 @@
 import { requireAdmin } from "@/lib/auth";
 import { redirect } from "next/navigation";
 import Sidebar from "@/components/sidebar";
+import BridgeHint from "@/components/bridge-hint";
 
 export default async function DashboardLayout({
   children,
@@ -25,7 +26,10 @@ export default async function DashboardLayout({
   return (
     <div className="min-h-screen flex">
       <Sidebar user={user} />
-      <main className="flex-1 p-8 bg-gray-50">{children}</main>
+      <main style={{ width: "calc(100% - 16rem)" }} className="flex-1 p-8 bg-gray-50">
+        <BridgeHint />
+        {children}
+      </main>
     </div>
   );
 }

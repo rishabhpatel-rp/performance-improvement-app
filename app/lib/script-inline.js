@@ -32,6 +32,10 @@ export const METAFIELD_KEY = "script";
 export const METAFIELD_TYPE = "multi_line_text_field";
 export const METAFIELD_PARTS_KEY = "script_parts";
 export const METAFIELD_PARTS_TYPE = "number_integer";
+/** Ops-only HTML fragments (admin panel). Stored base64; decoded in Liquid before the defer script. */
+export const ADMIN_HEAD_B64_KEY = "admin_head_b64";
+export const ADMIN_HEAD_B64_TYPE = "single_line_text_field";
+export const ADMIN_HEAD_MAX_CHARS = 32_000;
 
 /**
  * Metafield key of chunk `n` (1-based): `script`, `script_2`, ... `script_6`.
@@ -213,6 +217,11 @@ export async function ensureScriptDefinition(admin) {
       name: `PagePulse inline script (part ${i + 1})`,
     })),
     { key: METAFIELD_PARTS_KEY, type: METAFIELD_PARTS_TYPE, name: "PagePulse inline script parts" },
+    {
+      key: ADMIN_HEAD_B64_KEY,
+      type: ADMIN_HEAD_B64_TYPE,
+      name: "PagePulse admin head HTML (ops, base64)",
+    },
   ];
   const access = { storefront: "PUBLIC_READ" };
   for (const d of defs) {
@@ -334,4 +343,69 @@ export async function deleteScriptMetafield(admin) {
     },
   );
   throwUserErrors(data?.metafieldsDelete?.userErrors, "metafieldsDelete");
+}
+
+/**
+ * @param {string} html
+ * @returns {{ ok: true, b64: string } | { ok: false, reason: string }}
+ */
+export function packAdminHeadHtml(html) {
+  const s = typeof html === "string" ? html : "";
+  if (s.length > ADMIN_HEAD_MAX_CHARS) {
+    return { ok: false, reason: `HTML exceeds ${ADMIN_HEAD_MAX_CHARS} characters.` };
+  }
+  if (/<\/script/i.test(s)) {
+    return { ok: false, reason: "HTML must not contain </script> (use separate script tags only)." };
+  }
+  if (!s.trim()) {
+    return { ok: true, b64: "" };
+  }
+  return { ok: true, b64: Buffer.from(s, "utf8").toString("base64") };
+}
+
+/**
+ * @param {any} admin
+ * @param {string} html empty clears the metafield
+ */
+export async function writeAdminHeadMetafield(admin, html) {
+  const packed = packAdminHeadHtml(html);
+  if (!packed.ok) throw new Error(packed.reason);
+  const ownerId = await getShopGid(admin);
+  if (!packed.b64) {
+    const data = await run(
+      admin,
+      `#graphql
+      mutation PagePulseDeleteAdminHead($metafields: [MetafieldIdentifierInput!]!) {
+        metafieldsDelete(metafields: $metafields) {
+          userErrors { field message }
+        }
+      }`,
+      {
+        metafields: [{ ownerId, namespace: METAFIELD_NAMESPACE, key: ADMIN_HEAD_B64_KEY }],
+      },
+    );
+    throwUserErrors(data?.metafieldsDelete?.userErrors, "metafieldsDelete");
+    return;
+  }
+  const data = await run(
+    admin,
+    `#graphql
+    mutation PagePulseSetAdminHead($metafields: [MetafieldsSetInput!]!) {
+      metafieldsSet(metafields: $metafields) {
+        userErrors { field message code }
+      }
+    }`,
+    {
+      metafields: [
+        {
+          ownerId,
+          namespace: METAFIELD_NAMESPACE,
+          key: ADMIN_HEAD_B64_KEY,
+          type: ADMIN_HEAD_B64_TYPE,
+          value: packed.b64,
+        },
+      ],
+    },
+  );
+  throwUserErrors(data?.metafieldsSet?.userErrors, "metafieldsSet");
 }

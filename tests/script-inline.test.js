@@ -16,7 +16,14 @@ import {
   seedFromShop,
   splitScript,
   writeScriptMetafield,
+  packAdminHeadHtml,
 } from "../app/lib/script-inline.js";
+
+test("packAdminHeadHtml rejects </script and oversize", () => {
+  assert.equal(packAdminHeadHtml('<meta x="1">').ok, true);
+  assert.equal(packAdminHeadHtml("</script>").ok, false);
+  assert.equal(packAdminHeadHtml("x".repeat(33_000)).ok, false);
+});
 
 test("isSafeForInline rejects empty, </script and <!--", () => {
   assert.equal(isSafeForInline("var a=1;").ok, true);

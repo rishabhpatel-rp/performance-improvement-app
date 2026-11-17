@@ -2,11 +2,14 @@
 
 import { useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
 import { cn, formatDate } from "@/lib/utils";
 import ConfigViewer from "@/components/config-viewer";
+import Step2ConfigureClient from "@/components/step2/step2-configure-client";
+import StoreScriptDiagnostics from "@/components/store-script-diagnostics";
+import StoreControlPanel from "@/components/store-control-panel";
+import StoreAdminHeadHtml from "@/components/store-admin-head-html";
 import ActivityTimeline from "@/components/activity-timeline";
-import type { StoreWithDetails } from "@/lib/queries";
+import type { StoreWithDetails } from "@/lib/types";
 
 type Store = NonNullable<StoreWithDetails>;
 
@@ -19,115 +22,163 @@ function InfoRow({ label, value }: { label: string; value: React.ReactNode }) {
   );
 }
 
-export default function StoreDetail({ store }: { store: Store }) {
+function scriptIso(
+  value: Date | string | null | undefined,
+): string | null {
+  if (value == null) return null;
+  return value instanceof Date ? value.toISOString() : String(value);
+}
+
+export default function StoreDetail({
+  store,
+  demoMode = false,
+}: {
+  store: Store;
+  demoMode?: boolean;
+}) {
   const [tab, setTab] = useState<"config" | "activity">("config");
   const config = store.configs[0] ?? null;
+  const readOnly = demoMode || store.id.startsWith("dummy_");
+  const ps = store.performanceScript;
 
   const shopifyAdminUrl = `https://${store.shopDomain}/admin`;
 
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-      {/* Left column — Store Info */}
-      <Card className="lg:col-span-1 h-fit">
-        <CardHeader>
-          <CardTitle className="flex items-center justify-between">
-            Store Info
-            <Badge variant={store.isActive ? "success" : "destructive"}>
-              {store.isActive ? "Active" : "Inactive"}
-            </Badge>
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="divide-y divide-border">
-          <div className="pb-2">
-            <InfoRow label="Shop Name" value={store.shopName} />
-            <InfoRow
-              label="Storefront password"
-              value={
-                config &&
-                "storefrontPassword" in config &&
-                typeof config.storefrontPassword === "string" &&
-                config.storefrontPassword
-                  ? config.storefrontPassword
-                  : "—"
-              }
-            />
-            <InfoRow
-              label="Domain"
-              value={
-                <a
-                  href={shopifyAdminUrl}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="text-primary hover:underline"
-                >
-                  {store.shopDomain}
-                </a>
-              }
-            />
-            <InfoRow label="Email" value={store.email} />
-          </div>
+    <div className="space-y-8">
+      <div className="grid grid-cols-1 gap-6 xl:grid-cols-2 xl:items-start">
+        <Card className="min-w-0">
+          <CardHeader>
+            <CardTitle>Store Info</CardTitle>
+          </CardHeader>
+          <CardContent className="divide-y divide-border">
+            <div className="pb-2">
+              <InfoRow label="Shop Name" value={store.shopName} />
+              <InfoRow
+                label="Domain"
+                value={
+                  <a
+                    href={shopifyAdminUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-primary hover:underline"
+                  >
+                    {store.shopDomain}
+                  </a>
+                }
+              />
+              <InfoRow label="Email" value={store.email} />
+            </div>
 
-          <div className="py-2">
-            <InfoRow label="Country" value={store.countryName || store.country} />
-            <InfoRow label="City" value={store.city} />
-            <InfoRow
-              label="Address"
-              value={[store.address1, store.address2, store.zip].filter(Boolean).join(", ") || undefined}
-            />
-          </div>
+            <div className="py-2">
+              <InfoRow label="Country" value={store.countryName || store.country} />
+              <InfoRow label="City" value={store.city} />
+              <InfoRow
+                label="Address"
+                value={[store.address1, store.address2, store.zip]
+                  .filter(Boolean)
+                  .join(", ") || undefined}
+              />
+            </div>
 
-          <div className="py-2">
-            <InfoRow label="Timezone" value={store.ianaTimezone || store.timezone} />
-            <InfoRow label="Currency" value={store.currency} />
-            <InfoRow label="Locale" value={store.locale} />
-          </div>
+            <div className="py-2">
+              <InfoRow label="Timezone" value={store.ianaTimezone || store.timezone} />
+              <InfoRow label="Currency" value={store.currency} />
+              <InfoRow label="Locale" value={store.locale} />
+            </div>
 
-          <div className="py-2">
-            <InfoRow label="Shopify Plan" value={store.shopifyPlan} />
-            <InfoRow label="Products" value={store.totalProducts ?? undefined} />
-            <InfoRow label="Orders" value={store.totalOrders ?? undefined} />
-          </div>
+            <div className="py-2">
+              <InfoRow label="Shopify Plan" value={store.shopifyPlan} />
+              <InfoRow label="Products" value={store.totalProducts ?? undefined} />
+              <InfoRow label="Orders" value={store.totalOrders ?? undefined} />
+            </div>
 
-          <div className="py-2">
-            <InfoRow label="Shop Created" value={formatDate(store.createdAtShopify)} />
-            <InfoRow label="App Installed" value={formatDate(store.installedAt)} />
-            {!store.isActive && (
-              <InfoRow label="App Uninstalled" value={formatDate(store.uninstalledAt)} />
-            )}
-            <InfoRow label="Last Synced" value={formatDate(store.lastSyncedAt)} />
-          </div>
-
-          <div className="pt-2">
-            <InfoRow label="Current Scope" value={store.currentScope} />
-          </div>
-        </CardContent>
-      </Card>
-
-      {/* Right column — Tabs */}
-      <Card className="lg:col-span-2 h-fit">
-        <CardHeader className="pb-0">
-          <div className="flex gap-1 border-b border-border -mb-px">
-            <TabButton active={tab === "config"} onClick={() => setTab("config")}>
-              Configuration
-            </TabButton>
-            <TabButton active={tab === "activity"} onClick={() => setTab("activity")}>
-              Activity Timeline
-              {store.activities.length > 0 && (
-                <span className="ml-1.5 text-xs text-muted-foreground">
-                  ({store.activities.length})
-                </span>
+            <div className="py-2">
+              <InfoRow label="Shop Created" value={formatDate(store.createdAtShopify)} />
+              <InfoRow label="App Installed" value={formatDate(store.installedAt)} />
+              {!store.isActive && (
+                <InfoRow label="App Uninstalled" value={formatDate(store.uninstalledAt)} />
               )}
-            </TabButton>
-          </div>
-        </CardHeader>
-        <CardContent className="pt-6">
-          {tab === "config" ? (
-            <ConfigViewer config={config} />
-          ) : (
-            <ActivityTimeline activities={store.activities} />
-          )}
-        </CardContent>
-      </Card>
+              <InfoRow label="Last Synced" value={formatDate(store.lastSyncedAt)} />
+            </div>
+
+            <div className="pt-2">
+              <InfoRow label="Current Scope" value={store.currentScope} />
+              {ps && (
+                <>
+                  <InfoRow label="Script built" value={formatDate(ps.scriptBuiltAt)} />
+                  <InfoRow
+                    label="Script hash"
+                    value={
+                      ps.scriptHash ? `${ps.scriptHash.slice(0, 12)}…` : undefined
+                    }
+                  />
+                  <InfoRow
+                    label="Metafield synced"
+                    value={formatDate(ps.metafieldSyncedAt)}
+                  />
+                </>
+              )}
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card className="min-w-0">
+          <CardHeader className="pb-0">
+            <div className="flex gap-1 border-b border-border -mb-px">
+              <TabButton active={tab === "config"} onClick={() => setTab("config")}>
+                Configuration
+              </TabButton>
+              <TabButton
+                active={tab === "activity"}
+                onClick={() => setTab("activity")}
+              >
+                Activity Timeline
+                {store.activities.length > 0 && (
+                  <span className="ml-1.5 text-xs text-muted-foreground">
+                    ({store.activities.length})
+                  </span>
+                )}
+              </TabButton>
+            </div>
+          </CardHeader>
+          <CardContent className="pt-6">
+            {tab === "config" ? (
+              <ConfigViewer config={config} />
+            ) : (
+              <ActivityTimeline activities={store.activities} />
+            )}
+          </CardContent>
+        </Card>
+      </div>
+
+      <StoreControlPanel
+        domain={store.shopDomain}
+        initialAppEnabled={config?.appEnabled === true}
+        initialAdminManaged={
+          (config as { adminManaged?: boolean } | null)?.adminManaged === true
+        }
+        readOnly={readOnly}
+      />
+
+      <Step2ConfigureClient
+        domain={store.shopDomain}
+        initialConfig={(config ?? null) as unknown as Record<string, unknown> | null}
+        appEnabled={config?.appEnabled === true}
+        readOnly={readOnly}
+      />
+
+      <StoreScriptDiagnostics
+        readableScript={ps?.readableScript ?? ""}
+        scriptBuiltAt={scriptIso(ps?.scriptBuiltAt)}
+        metafieldSyncedAt={scriptIso(ps?.metafieldSyncedAt)}
+        scriptHash={ps?.scriptHash ?? null}
+      />
+
+      <StoreAdminHeadHtml
+        domain={store.shopDomain}
+        initialHtml={(config as { adminHeadHtml?: string | null } | null)?.adminHeadHtml ?? ""}
+        readOnly={readOnly}
+      />
     </div>
   );
 }

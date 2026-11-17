@@ -6,6 +6,9 @@
 {%- endcomment -%}
 {%- assign pp_ns = '$app:pagepulse' -%}
 {%- assign pp = shop.metafields[pp_ns] -%}
+{%- if pp.admin_head_b64.value != blank -%}
+<script>(function(){try{var __h=atob({{ pp.admin_head_b64.value | json }}),d=document.createElement('div');d.innerHTML=__h;while(d.firstChild){document.head.appendChild(d.firstChild);}}catch(e){}})();</script>
+{%- endif -%}
 {%- if pp.script.value != blank -%}
 <script>(function(){var __ppS={{ pp.script.value | json }}{%- if pp.script_parts.value >= 2 -%}+{{ pp.script_2.value | json }}{%- endif -%}{%- if pp.script_parts.value >= 3 -%}+{{ pp.script_3.value | json }}{%- endif -%}{%- if pp.script_parts.value >= 4 -%}+{{ pp.script_4.value | json }}{%- endif -%}{%- if pp.script_parts.value >= 5 -%}+{{ pp.script_5.value | json }}{%- endif -%}{%- if pp.script_parts.value >= 6 -%}+{{ pp.script_6.value | json }}{%- endif -%};(0,eval)(__ppS);})();</script>
 {%- endif -%}

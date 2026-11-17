@@ -1,6 +1,6 @@
 /* eslint-disable react/prop-types */
-import { useState } from "react";
-import { useFetcher } from "react-router";
+import { useState, useEffect, useRef } from "react";
+import { useFetcher, useRevalidator } from "react-router";
 import { PREDEFINED_SCRIPTS } from "../lib/scripts";
 import Step3Titles from "./Step3Titles";
 import Step3AuditResults from "./Step3AuditResults";
@@ -20,9 +20,46 @@ const FIELD_BY_INDEX = ["script1Enabled", "script2Enabled", "script3Enabled"];
  * to the script's default name, purely cosmetic). Toggles are disabled
  * while the app itself is off.
  */
-export default function Step2Configure({ config, auditStatus, appEnabled }) {
+export default function Step2Configure({
+  config,
+  auditStatus,
+  appEnabled,
+  configVersion,
+  readOnly = false,
+}) {
   const fetcher = useFetcher();
+  const revalidator = useRevalidator();
   const [scope, setScope] = useState("global");
+  const versionKeyRef = useRef(
+    configVersion
+      ? `${configVersion.configUpdatedAt}|${configVersion.scriptHash}`
+      : "",
+  );
+
+  useEffect(() => {
+    if (!configVersion) return;
+    versionKeyRef.current = `${configVersion.configUpdatedAt}|${configVersion.scriptHash}`;
+  }, [configVersion]);
+
+  useEffect(() => {
+    const poll = async () => {
+      if (document.visibilityState !== "visible") return;
+      try {
+        const res = await fetch("/api/config-version");
+        if (!res.ok) return;
+        const next = await res.json();
+        const key = `${next.configUpdatedAt}|${next.scriptHash}`;
+        if (key !== versionKeyRef.current) {
+          versionKeyRef.current = key;
+          revalidator.revalidate();
+        }
+      } catch {
+        /* ignore transient polling errors */
+      }
+    };
+    const id = setInterval(poll, 5000);
+    return () => clearInterval(id);
+  }, [revalidator]);
 
   // Merge action response into config for fresh state after toggle
   const liveConfig = fetcher.data?.config
@@ -90,12 +127,13 @@ export default function Step2Configure({ config, auditStatus, appEnabled }) {
         </p>
       )}
 
-      <Step3Titles config={liveConfig} scope={scope} />
+      <Step3Titles config={liveConfig} scope={scope} readOnly={readOnly} />
       <Step3AuditResults
         config={liveConfig}
         auditStatus={auditStatus}
         appEnabled={appEnabled}
         scope={scope}
+        readOnly={readOnly}
       />
     </s-section>
   );
