@@ -316,6 +316,32 @@ model StoreActivity {
 }
 
 // ============================================================
+// MODEL: StoreArchive
+// Full (or thin/backfill) snapshot taken before live Store rows are
+// removed — shop/redact webhook or password-gated admin purge.
+// Multiple rows per shopDomain are allowed (reinstall → re-redact).
+// ============================================================
+model StoreArchive {
+  id             String   @id @default(cuid())
+  shopDomain     String
+  shopifyShopId  String?
+  shopName       String?
+  email          String?
+  snapshot       Json
+  reason         String // shop_redact | admin_manual | pm2_log_backfill
+  actorEmail     String?
+  sourceStoreId  String?
+  installedAt    DateTime?
+  uninstalledAt  DateTime?
+  redactedAt     DateTime @default(now())
+  createdAt      DateTime @default(now())
+
+  @@index([shopDomain])
+  @@index([redactedAt])
+  @@index([reason])
+}
+
+// ============================================================
 // MODEL 5: AdminUser
 // Admin panel login credentials. Passwords hashed with bcrypt.
 // ============================================================

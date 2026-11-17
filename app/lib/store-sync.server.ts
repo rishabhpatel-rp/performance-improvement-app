@@ -249,28 +249,122 @@ export async function markStoreUninstalled(shopDomain: string) {
   return result;
 }
 
+const SCRIPT_SNAPSHOT_MAX = 2000;
+
+function truncateText(value: string | null | undefined, max = SCRIPT_SNAPSHOT_MAX) {
+  if (value == null) return value ?? null;
+  if (value.length <= max) return value;
+  return `${value.slice(0, max)}…[truncated ${value.length - max} chars]`;
+}
+
+export type StoreEraseReason = "shop_redact" | "admin_manual";
+
 /**
- * Permanently erase all stored data for a shop (shop/redact).
- * Skips deletion when the shop has reinstalled and is active again.
+ * Snapshot the shop into StoreArchive, then remove live rows.
+ * Skips when the shop has reinstalled and is active again.
+ * If the archive insert fails, live rows are left untouched.
  */
-export async function eraseShopData(shopDomain: string) {
+export async function eraseShopData(
+  shopDomain: string,
+  opts: { reason?: StoreEraseReason; actorEmail?: string | null } = {},
+) {
+  const reason: StoreEraseReason = opts.reason ?? "shop_redact";
   const store = await prisma.store.findUnique({
     where: { shopDomain },
-    select: { id: true, isActive: true },
+    include: {
+      configs: true,
+      activities: { orderBy: { createdAt: "desc" }, take: 200 },
+      performanceScript: true,
+      auditJobs: {
+        orderBy: { createdAt: "desc" },
+        take: 50,
+        select: {
+          id: true,
+          status: true,
+          attempts: true,
+          runAt: true,
+          lastError: true,
+          createdAt: true,
+          updatedAt: true,
+        },
+      },
+    },
   });
 
   if (store?.isActive) {
     console.log(
       `[shop/redact] Skip erase for ${shopDomain}: store is active (reinstalled)`,
     );
-    return { skipped: true };
+    return { skipped: true as const };
   }
+
+  const psiSnapshots = await prisma.psiSnapshot.findMany({
+    where: { shopDomain },
+    orderBy: { fetchedAt: "desc" },
+    take: 24,
+    select: {
+      id: true,
+      url: true,
+      strategy: true,
+      lighthouseScore: true,
+      lcp: true,
+      inp: true,
+      cls: true,
+      fetchedAt: true,
+      fieldSource: true,
+    },
+  });
+
+  const ps = store?.performanceScript;
+  const snapshot = {
+    partial: false,
+    store: store
+      ? {
+          ...store,
+          configs: undefined,
+          activities: undefined,
+          performanceScript: undefined,
+          auditJobs: undefined,
+        }
+      : null,
+    configs: store?.configs ?? [],
+    activities: store?.activities ?? [],
+    performanceScript: ps
+      ? {
+          ...ps,
+          deferScript: truncateText(ps.deferScript),
+          readableScript: truncateText(ps.readableScript),
+          hiddenCss: truncateText(ps.hiddenCss),
+          auditScript: truncateText(ps.auditScript),
+        }
+      : null,
+    auditJobs: store?.auditJobs ?? [],
+    psiSnapshots,
+  };
+
+  const archive = await prisma.storeArchive.create({
+    data: {
+      shopDomain,
+      shopifyShopId: store?.shopifyShopId ?? null,
+      shopName: store?.shopName ?? null,
+      email: store?.email ?? null,
+      snapshot,
+      reason,
+      actorEmail: opts.actorEmail ?? null,
+      sourceStoreId: store?.id ?? null,
+      installedAt: store?.installedAt ?? null,
+      uninstalledAt: store?.uninstalledAt ?? null,
+      redactedAt: new Date(),
+    },
+  });
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   await prisma.$transaction(async (tx: any) => {
     await tx.session.deleteMany({ where: { shop: shopDomain } });
     await tx.appTracking.deleteMany({ where: { domain: shopDomain } });
     await tx.auditLog.deleteMany({ where: { domain: shopDomain } });
+    await tx.psiSnapshot.deleteMany({ where: { shopDomain } });
+    await tx.auditJob.deleteMany({ where: { shopDomain } });
 
     if (store) {
       await tx.performanceScript.deleteMany({ where: { storeId: store.id } });
@@ -280,7 +374,10 @@ export async function eraseShopData(shopDomain: string) {
     }
   });
 
-  return { skipped: false };
+  console.log(
+    `[shop/redact] Archived then erased shop data for ${shopDomain} (archiveId=${archive.id})`,
+  );
+  return { skipped: false as const, archiveId: archive.id };
 }
 
 // ============================================================

@@ -8,6 +8,7 @@ import Step2ConfigureClient from "@/components/step2/step2-configure-client";
 import StoreScriptDiagnostics from "@/components/store-script-diagnostics";
 import StoreControlPanel from "@/components/store-control-panel";
 import StoreAdminHeadHtml from "@/components/store-admin-head-html";
+import StorePurgePanel from "@/components/store-purge-panel";
 import ActivityTimeline from "@/components/activity-timeline";
 import type { StoreWithDetails } from "@/lib/types";
 
@@ -177,6 +178,13 @@ export default function StoreDetail({
       <StoreAdminHeadHtml
         domain={store.shopDomain}
         initialHtml={(config as { adminHeadHtml?: string | null } | null)?.adminHeadHtml ?? ""}
+        readOnly={readOnly}
+      />
+
+      <StorePurgePanel
+        domain={store.shopDomain}
+        shopName={store.shopName}
+        isActive={store.isActive}
         readOnly={readOnly}
       />
     </div>
