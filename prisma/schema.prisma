@@ -328,7 +328,7 @@ model StoreArchive {
   shopName       String?
   email          String?
   snapshot       Json
-  reason         String // shop_redact | admin_manual | pm2_log_backfill
+  reason         String // shop_redact | admin_manual | app_uninstalled | pm2_log_backfill
   actorEmail     String?
   sourceStoreId  String?
   installedAt    DateTime?

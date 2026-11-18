@@ -39,11 +39,20 @@ export const action = async ({ request }) => {
 
     case "shop/redact":
       try {
-        await eraseShopData(shopDomain);
-        console.log(`[shop/redact] Erased shop data for ${shopDomain}`);
+        const result = await eraseShopData(shopDomain);
+        if (result.skipped) {
+          console.log(
+            `[shop/redact] Skipped erase for ${shopDomain} (store active/reinstalled)`,
+          );
+        } else {
+          console.log(
+            `[shop/redact] Archived then erased shop data for ${shopDomain} (archiveId=${result.archiveId})`,
+          );
+        }
       } catch (err) {
+        // Fail closed: eraseShopData only deletes after StoreArchive insert succeeds.
         console.error(
-          `[shop/redact] Failed to erase data for ${shopDomain}:`,
+          `[shop/redact] Failed to archive/erase data for ${shopDomain}:`,
           err instanceof Error ? err.message : err,
         );
       }
