@@ -246,6 +246,23 @@ export async function markStoreUninstalled(shopDomain: string) {
   });
   // Inactive store => empty script.
   await rebuildPerformanceScript(shopDomain);
+  // Early backup: keep a StoreArchive copy immediately on uninstall so we
+  // never depend solely on Shopify's later shop/redact (~48h) to preserve data.
+  if (result.count > 0) {
+    try {
+      const archive = await archiveStoreSnapshot(shopDomain, {
+        reason: "app_uninstalled",
+      });
+      console.log(
+        `[uninstalled] Archived store snapshot for ${shopDomain} (archiveId=${archive.id})`,
+      );
+    } catch (err) {
+      console.error(
+        `[uninstalled] Failed to archive snapshot for ${shopDomain}:`,
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
   return result;
 }
 
@@ -257,19 +274,16 @@ function truncateText(value: string | null | undefined, max = SCRIPT_SNAPSHOT_MA
   return `${value.slice(0, max)}…[truncated ${value.length - max} chars]`;
 }
 
+export type StoreArchiveReason =
+  | "shop_redact"
+  | "admin_manual"
+  | "app_uninstalled"
+  | "pm2_log_backfill";
+
 export type StoreEraseReason = "shop_redact" | "admin_manual";
 
-/**
- * Snapshot the shop into StoreArchive, then remove live rows.
- * Skips when the shop has reinstalled and is active again.
- * If the archive insert fails, live rows are left untouched.
- */
-export async function eraseShopData(
-  shopDomain: string,
-  opts: { reason?: StoreEraseReason; actorEmail?: string | null } = {},
-) {
-  const reason: StoreEraseReason = opts.reason ?? "shop_redact";
-  const store = await prisma.store.findUnique({
+async function loadStoreForArchive(shopDomain: string) {
+  return prisma.store.findUnique({
     where: { shopDomain },
     include: {
       configs: true,
@@ -290,13 +304,21 @@ export async function eraseShopData(
       },
     },
   });
+}
 
-  if (store?.isActive) {
-    console.log(
-      `[shop/redact] Skip erase for ${shopDomain}: store is active (reinstalled)`,
-    );
-    return { skipped: true as const };
-  }
+/**
+ * Write a StoreArchive row for the shop. Does NOT delete live rows.
+ * Used on uninstall (early backup) and as the first step of eraseShopData.
+ */
+export async function archiveStoreSnapshot(
+  shopDomain: string,
+  opts: {
+    reason: StoreArchiveReason;
+    actorEmail?: string | null;
+    store?: Awaited<ReturnType<typeof loadStoreForArchive>>;
+  },
+) {
+  const store = opts.store ?? (await loadStoreForArchive(shopDomain));
 
   const psiSnapshots = await prisma.psiSnapshot.findMany({
     where: { shopDomain },
@@ -342,20 +364,46 @@ export async function eraseShopData(
     psiSnapshots,
   };
 
-  const archive = await prisma.storeArchive.create({
+  return prisma.storeArchive.create({
     data: {
       shopDomain,
       shopifyShopId: store?.shopifyShopId ?? null,
       shopName: store?.shopName ?? null,
       email: store?.email ?? null,
       snapshot,
-      reason,
+      reason: opts.reason,
       actorEmail: opts.actorEmail ?? null,
       sourceStoreId: store?.id ?? null,
       installedAt: store?.installedAt ?? null,
       uninstalledAt: store?.uninstalledAt ?? null,
       redactedAt: new Date(),
     },
+  });
+}
+
+/**
+ * Snapshot the shop into StoreArchive, then remove live rows.
+ * Skips when the shop has reinstalled and is active again.
+ * If the archive insert fails, live rows are left untouched.
+ */
+export async function eraseShopData(
+  shopDomain: string,
+  opts: { reason?: StoreEraseReason; actorEmail?: string | null } = {},
+) {
+  const reason: StoreEraseReason = opts.reason ?? "shop_redact";
+  const store = await loadStoreForArchive(shopDomain);
+
+  if (store?.isActive) {
+    console.log(
+      `[shop/redact] Skip erase for ${shopDomain}: store is active (reinstalled)`,
+    );
+    return { skipped: true as const };
+  }
+
+  const archive = await archiveStoreSnapshot(shopDomain, {
+    reason,
+    actorEmail: opts.actorEmail,
+    store,
   });
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
