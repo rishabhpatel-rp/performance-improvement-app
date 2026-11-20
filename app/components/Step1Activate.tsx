@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-explicit-any -- gradual TS migration of legacy components */
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useFetcher } from "react-router";
 import Step1AuditRunning from "./step1/Step1AuditRunning.tsx";
 import Step1Header from "./step1/Step1Header.tsx";
@@ -65,6 +65,8 @@ export default function Step1Activate({
   const validationFetcher = useFetcher();
   const themesFetcher = useFetcher();
   const selectFetcher = useFetcher();
+  const activateFetcher = useFetcher();
+  const activationAttemptedRef = useRef(false);
 
   // --- Theme picker -------------------------------------------------------
   // The app extension (theme app embed) is installed in ONE theme. The list is
@@ -237,8 +239,25 @@ export default function Step1Activate({
     // be stored in React state. The "Password saved ✓" indicator uses
     // hasSavedPassword (boolean from the action response) instead.
     setPwDraft("");
-    if (pwFetcher.data.auditRestarted === true) onAuditRestarted?.();
+    if (
+      pwFetcher.data.auditRestarted === true ||
+      pwFetcher.data.firstActivation?.auditStarted === true
+    ) {
+      onAuditRestarted?.();
+    }
   }, [pwFetcher.data, onAuditRestarted]);
+
+  useEffect(() => {
+    if (selectFetcher.data?.firstActivation?.auditStarted === true) {
+      onAuditRestarted?.();
+    }
+  }, [selectFetcher.data, onAuditRestarted]);
+
+  useEffect(() => {
+    if (activateFetcher.data?.activated === true && activateFetcher.data?.auditStarted === true) {
+      onAuditRestarted?.();
+    }
+  }, [activateFetcher.data, onAuditRestarted]);
 
   const addExtraRow = () => setExtraDrafts((prev: any) => [...prev, ""]);
   const removeExtraRow = (index: any) =>
@@ -262,12 +281,39 @@ export default function Step1Activate({
     void urlFetcher.submit(fd, { method: "POST" });
   };
 
-  // Priority: action response > optimistic formData > loader data.
+  // Priority: first-activation / toggle action response > optimistic formData > loader.
   // The master switch cannot stay ON until the theme app embed is enabled.
   const rawEnabled =
+    activateFetcher.data?.config?.appEnabled ??
+    (activateFetcher.data?.activated === true ? true : undefined) ??
+    selectFetcher.data?.firstActivation?.config?.appEnabled ??
+    (selectFetcher.data?.firstActivation?.activated === true ? true : undefined) ??
+    pwFetcher.data?.firstActivation?.config?.appEnabled ??
+    (pwFetcher.data?.firstActivation?.activated === true ? true : undefined) ??
     fetcher.data?.config?.appEnabled ??
     (fetcher.formData ? fetcher.formData.get("appEnabled") === "true" : config.appEnabled);
   const appEnabled = embedEnabled ? rawEnabled : false;
+
+  // One-shot first activation after embed unlock (non-password path). Password
+  // path goes through save-storefront-password → maybeFirstActivation instead.
+  useEffect(() => {
+    if (readOnly) return;
+    if (!setupUnlocked) return;
+    if (config.onboardingActivated === true) return;
+    if (passwordRequired) return;
+    if (activationAttemptedRef.current) return;
+    if (activateFetcher.state !== "idle") return;
+    if (appEnabled) return;
+    activationAttemptedRef.current = true;
+    void activateFetcher.submit({ intent: "maybe-first-activation" }, { method: "POST" });
+  }, [
+    readOnly,
+    setupUnlocked,
+    config.onboardingActivated,
+    passwordRequired,
+    activateFetcher,
+    appEnabled,
+  ]);
 
   // Loader/countdown only while the main toggle is ON. If the switch is
   // off (embed missing, password block, or merchant turned it off), keep
@@ -301,11 +347,15 @@ export default function Step1Activate({
     validating || (fetcher.state !== "idle" && fetcher.formData?.get("appEnabled") === "true");
   const waitingForAudit =
     appEnabled &&
-    fetcher.data?.auditStarted === true &&
+    (fetcher.data?.auditStarted === true ||
+      activateFetcher.data?.auditStarted === true ||
+      selectFetcher.data?.firstActivation?.auditStarted === true ||
+      pwFetcher.data?.firstActivation?.auditStarted === true ||
+      pwFetcher.data?.auditRestarted === true) &&
     !running &&
     !failed &&
     auditStatus?.complete !== true;
-  const showStartLoader = toggleTurningOn || waitingForAudit;
+  const showStartLoader = toggleTurningOn || waitingForAudit || activateFetcher.state !== "idle";
   const progressPct =
     phase === "queued"
       ? 2
