@@ -125,9 +125,37 @@ model Store {
   configs           StoreConfig[]
   activities        StoreActivity[]
   performanceScript PerformanceScript?
+  auditJobs         AuditJob[]
 
   @@index([isActive])
   @@index([installedAt])
+}
+
+model AuditJob {
+  id            String    @id @default(cuid())
+  storeId       String
+  store         Store     @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  shopDomain    String
+  status        String    @default("queued")
+  attempts      Int       @default(0)
+  maxAttempts   Int       @default(2)
+  priority      Int       @default(0)
+  workerId      String?
+  startedAt     DateTime?
+  finishedAt    DateTime?
+  errorCode     String?
+  trigger       String?
+  runAt         DateTime  @default(now())
+  lockedAt      DateTime?
+  stopRequested Boolean   @default(false)
+  lastError     String?
+  payload       Json?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@index([status, runAt])
+  @@index([status, priority, createdAt])
+  @@index([shopDomain])
 }
 
 // ============================================================
@@ -143,6 +171,7 @@ model StoreConfig {
   // Script toggles
   appEnabled         Boolean  @default(false)
   adminManaged       Boolean  @default(false) // Merchant UI read-only when ops control from admin
+  onboardingActivated Boolean @default(false) // First auto/manual enable completed; never auto-enable again
   adminHeadHtml      String?  @db.Text // Ops-only head HTML; admin panel only
   script1Enabled     Boolean  @default(false) // Audit script
   script2Enabled     Boolean  @default(false) // Defer script
@@ -343,4 +372,13 @@ model PerformanceScript {
 
   @@index([storeId])
   @@map("performance_scripts")
+}
+
+model RateLimitBucket {
+  key        String   @id
+  count      Int      @default(0)
+  windowEnds DateTime
+  updatedAt  DateTime @updatedAt
+
+  @@index([windowEnds])
 }
