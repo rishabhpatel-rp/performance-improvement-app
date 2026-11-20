@@ -4,6 +4,7 @@ import {
   isEligibleForFirstActivation,
   shouldUnlockStep1Setup,
 } from "../app/lib/first-activation.ts";
+import { step1Visibility } from "../app/lib/step1-visibility.ts";
 
 const base = {
   onboardingActivated: false,
@@ -65,4 +66,25 @@ test("passwordProtected null does not block (inconclusive)", () => {
 
 test("already appEnabled is not eligible for first-activation helper", () => {
   assert.equal(isEligibleForFirstActivation({ ...base, appEnabled: true }), false);
+});
+
+test("phase0: no install, no setup", () => {
+  assert.deepEqual(step1Visibility({ themeSaved: false, setupUnlocked: false }), {
+    showInstall: false,
+    showSetupControls: false,
+  });
+});
+
+test("phase1: install only", () => {
+  assert.deepEqual(step1Visibility({ themeSaved: true, setupUnlocked: false }), {
+    showInstall: true,
+    showSetupControls: false,
+  });
+});
+
+test("phase2: install + setup", () => {
+  assert.deepEqual(step1Visibility({ themeSaved: true, setupUnlocked: true }), {
+    showInstall: true,
+    showSetupControls: true,
+  });
 });
