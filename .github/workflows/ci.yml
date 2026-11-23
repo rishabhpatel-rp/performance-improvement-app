@@ -36,7 +36,10 @@ jobs:
       - name: CQ-17 — migrations must match schema.prisma
         run: npx prisma migrate diff --from-url "$DATABASE_URL" --to-schema-datamodel prisma/schema.prisma --exit-code
       - run: npm test
+      # Integration claims test expects headroom above the 4 GB host default (1).
       - run: npm run test:integration
+        env:
+          AUDIT_MAX_CONCURRENT_SHOPS: "4"
       # Lint/typecheck/format stay non-blocking until the backlog is cleared;
       # tests + schema/migrate checks are the merge gate.
       - run: npm run lint

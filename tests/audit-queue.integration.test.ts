@@ -53,37 +53,46 @@ if (canRun) {
   });
 }
 
-void test("up to four jobs claim in parallel when global cap is 4", { skip: !canRun }, async () => {
-  if (!canRun) return;
-  const stores = await prisma.store.findMany({
-    where: { id: { in: storeIds } },
-  });
-  await prisma.auditJob.deleteMany({ where: { storeId: { in: storeIds } } });
-
-  for (const s of stores) {
-    await prisma.auditJob.create({
-      data: {
-        storeId: s.id,
-        shopDomain: s.shopDomain,
-        status: "queued",
-        priority: 0,
-      },
+void test(
+  "multiple shops claim in parallel when AUDIT_MAX_CONCURRENT_SHOPS allows it",
+  { skip: !canRun },
+  async () => {
+    if (!canRun) return;
+    // Production default is 1 (4 GB host). This suite sets AUDIT_MAX_CONCURRENT_SHOPS=4 via npm script / CI.
+    assert.ok(
+      Number(process.env.AUDIT_MAX_CONCURRENT_SHOPS || 0) >= 2,
+      "set AUDIT_MAX_CONCURRENT_SHOPS>=2 for this integration case",
+    );
+    const stores = await prisma.store.findMany({
+      where: { id: { in: storeIds } },
     });
-  }
+    await prisma.auditJob.deleteMany({ where: { storeId: { in: storeIds } } });
 
-  const claimed: string[] = [];
-  for (let i = 0; i < 6; i++) {
-    const job = await claimNextAuditJob();
-    if (job?.id) claimed.push(job.id);
-  }
-  assert.ok(claimed.length >= 2, `expected parallel claims, got ${claimed.length}`);
-  assert.ok(claimed.length <= 4, `expected cap of 4, got ${claimed.length}`);
+    for (const s of stores) {
+      await prisma.auditJob.create({
+        data: {
+          storeId: s.id,
+          shopDomain: s.shopDomain,
+          status: "queued",
+          priority: 0,
+        },
+      });
+    }
 
-  await prisma.auditJob.updateMany({
-    where: { id: { in: claimed } },
-    data: { status: "failed", lockedAt: null },
-  });
-});
+    const claimed: string[] = [];
+    for (let i = 0; i < 6; i++) {
+      const job = await claimNextAuditJob();
+      if (job?.id) claimed.push(job.id);
+    }
+    assert.ok(claimed.length >= 2, `expected parallel claims across shops, got ${claimed.length}`);
+    assert.ok(claimed.length <= 4, `expected cap of 4, got ${claimed.length}`);
+
+    await prisma.auditJob.updateMany({
+      where: { id: { in: claimed } },
+      data: { status: "failed", lockedAt: null },
+    });
+  },
+);
 
 void test("recoverAuditJobsOnBoot requeues stale running job", { skip: !canRun }, async () => {
   if (!canRun) return;
