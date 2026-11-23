@@ -550,13 +550,15 @@ export default function Step1Activate({
                     ))}
                   </s-select>
                 </div>
-                <s-button
-                  variant="primary"
-                  disabled={!themeDraftId || !themeDirty || savingTheme || readOnly}
-                  onClick={handleSaveTheme}
-                >
-                  Save
-                </s-button>
+                {themeDirty && (
+                  <s-button
+                    variant="primary"
+                    disabled={!themeDraftId || savingTheme || readOnly}
+                    onClick={handleSaveTheme}
+                  >
+                    Save
+                  </s-button>
+                )}
                 {showInstall && (
                   <s-button
                     variant={embedStatus === "enabled" ? "secondary" : "primary"}

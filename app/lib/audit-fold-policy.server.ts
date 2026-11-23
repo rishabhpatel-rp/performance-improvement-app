@@ -21,10 +21,7 @@ export function applyFoldPolicy(
     return { ok: true, hideSelectors, warnings: [] };
   }
   const violations = foldAssertion.violations ?? [];
-  const warnings = [
-    FOLD_ASSERTION_STRIPPED_HIDE,
-    ...violations.map((v) => `fold-violation:${v}`),
-  ];
+  const warnings = [FOLD_ASSERTION_STRIPPED_HIDE, ...violations.map((v) => `fold-violation:${v}`)];
   return {
     ok: false,
     hideSelectors: [],

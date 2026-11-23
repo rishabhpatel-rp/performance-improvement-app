@@ -8,9 +8,9 @@ import Step2ConfigureClient from "@/components/step2/step2-configure-client";
 import StoreScriptDiagnostics from "@/components/store-script-diagnostics";
 import StoreControlPanel from "@/components/store-control-panel";
 import StoreAdminHeadHtml from "@/components/store-admin-head-html";
-import StorePurgePanel from "@/components/store-purge-panel";
 import ActivityTimeline from "@/components/activity-timeline";
 import type { StoreWithDetails } from "@/lib/types";
+import type { AuditSummaryPayload } from "@/components/step2/step2-audit-table";
 
 type Store = NonNullable<StoreWithDetails>;
 
@@ -23,9 +23,7 @@ function InfoRow({ label, value }: { label: string; value: React.ReactNode }) {
   );
 }
 
-function scriptIso(
-  value: Date | string | null | undefined,
-): string | null {
+function scriptIso(value: Date | string | null | undefined): string | null {
   if (value == null) return null;
   return value instanceof Date ? value.toISOString() : String(value);
 }
@@ -33,9 +31,11 @@ function scriptIso(
 export default function StoreDetail({
   store,
   demoMode = false,
+  initialScanSummary = null,
 }: {
   store: Store;
   demoMode?: boolean;
+  initialScanSummary?: AuditSummaryPayload | null;
 }) {
   const [tab, setTab] = useState<"config" | "activity">("config");
   const config = store.configs[0] ?? null;
@@ -75,9 +75,10 @@ export default function StoreDetail({
               <InfoRow label="City" value={store.city} />
               <InfoRow
                 label="Address"
-                value={[store.address1, store.address2, store.zip]
-                  .filter(Boolean)
-                  .join(", ") || undefined}
+                value={
+                  [store.address1, store.address2, store.zip].filter(Boolean).join(", ") ||
+                  undefined
+                }
               />
             </div>
 
@@ -109,14 +110,9 @@ export default function StoreDetail({
                   <InfoRow label="Script built" value={formatDate(ps.scriptBuiltAt)} />
                   <InfoRow
                     label="Script hash"
-                    value={
-                      ps.scriptHash ? `${ps.scriptHash.slice(0, 12)}…` : undefined
-                    }
+                    value={ps.scriptHash ? `${ps.scriptHash.slice(0, 12)}…` : undefined}
                   />
-                  <InfoRow
-                    label="Metafield synced"
-                    value={formatDate(ps.metafieldSyncedAt)}
-                  />
+                  <InfoRow label="Metafield synced" value={formatDate(ps.metafieldSyncedAt)} />
                 </>
               )}
             </div>
@@ -129,10 +125,7 @@ export default function StoreDetail({
               <TabButton active={tab === "config"} onClick={() => setTab("config")}>
                 Configuration
               </TabButton>
-              <TabButton
-                active={tab === "activity"}
-                onClick={() => setTab("activity")}
-              >
+              <TabButton active={tab === "activity"} onClick={() => setTab("activity")}>
                 Activity Timeline
                 {store.activities.length > 0 && (
                   <span className="ml-1.5 text-xs text-muted-foreground">
@@ -155,15 +148,14 @@ export default function StoreDetail({
       <StoreControlPanel
         domain={store.shopDomain}
         initialAppEnabled={config?.appEnabled === true}
-        initialAdminManaged={
-          (config as { adminManaged?: boolean } | null)?.adminManaged === true
-        }
+        initialAdminManaged={(config as { adminManaged?: boolean } | null)?.adminManaged === true}
         readOnly={readOnly}
       />
 
       <Step2ConfigureClient
         domain={store.shopDomain}
         initialConfig={(config ?? null) as unknown as Record<string, unknown> | null}
+        initialAuditReportSummary={initialScanSummary}
         appEnabled={config?.appEnabled === true}
         readOnly={readOnly}
       />
@@ -178,13 +170,6 @@ export default function StoreDetail({
       <StoreAdminHeadHtml
         domain={store.shopDomain}
         initialHtml={(config as { adminHeadHtml?: string | null } | null)?.adminHeadHtml ?? ""}
-        readOnly={readOnly}
-      />
-
-      <StorePurgePanel
-        domain={store.shopDomain}
-        shopName={store.shopName}
-        isActive={store.isActive}
         readOnly={readOnly}
       />
     </div>

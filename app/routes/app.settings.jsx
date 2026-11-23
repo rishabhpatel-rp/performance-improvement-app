@@ -5,7 +5,10 @@ import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../shopify.server";
 import { getConfig, updateConfig, deleteConfig } from "../lib/metaobjects";
 import { syncConfigToDatabase, logActivity } from "../lib/store-sync.server";
+import { assertMerchantCanMutate } from "../lib/admin-managed.server.ts";
 
+import { logger } from "../lib/logger.ts";
+import RouteErrorBoundary from "../components/RouteErrorBoundary.jsx";
 // Persists the merged metaobject config into PostgreSQL for the given shop
 // and swallows/logs any failure so a DB hiccup never breaks Settings.
 async function safeSyncConfig(shop, config) {
@@ -19,10 +22,7 @@ async function safeSyncConfig(shop, config) {
       scriptTitles: config.scriptTitles,
     });
   } catch (err) {
-    console.error(
-      "[Settings] DB sync failed:",
-      err instanceof Error ? err.message : err,
-    );
+    logger.error("[Settings] DB sync failed:", err instanceof Error ? err.message : err);
   }
 }
 
@@ -30,10 +30,7 @@ async function safeLogActivity(shop, eventType, description, metadata) {
   try {
     await logActivity(shop, eventType, description, metadata);
   } catch (err) {
-    console.error(
-      "[Settings] Failed to log activity:",
-      err instanceof Error ? err.message : err,
-    );
+    logger.error("[Settings] Failed to log activity:", err instanceof Error ? err.message : err);
   }
 }
 
@@ -52,6 +49,11 @@ export const action = async ({ request }) => {
   const formData = await request.formData();
   const intent = formData.get("intent");
 
+  // Both "reset" and the debug toggle write shop state, so admin-managed
+  // shops are refused here as well as in the dashboard action.
+  const blocked = await assertMerchantCanMutate(session.shop);
+  if (blocked) return blocked;
+
   if (intent === "reset") {
     try {
       await deleteConfig(admin);
@@ -69,49 +71,47 @@ export const action = async ({ request }) => {
     };
     await safeSyncConfig(session.shop, resetConfig);
 
-      // The button is labelled "Reset all data" and its copy promises to
-      // "permanently delete all scripts and settings for this shop", so it has
-      // to actually delete them. Previously it only zeroed 6 columns and left
-      // the compiled bundle and the whole audit history on disk.
-      const prisma = (await import("../db.server")).default;
-      await prisma.$transaction([
-        // Drop the compiled storefront script so nothing stale is served.
-        prisma.performanceScript.deleteMany({
-          where: { store: { shopDomain: session.shop } },
-        }),
-        // Drop the audit history and the per-step audit state.
-        prisma.auditLog.deleteMany({ where: { domain: session.shop } }),
-        prisma.storeConfig.updateMany({
-          where: { store: { shopDomain: session.shop } },
-          data: {
-            auditComplete: false,
-            auditRunning: false,
-            auditFailed: false,
-            auditError: null,
-            lastAuditAt: null,
-            auditPageIndex: null,
-            auditTotalPages: null,
-            auditPages: null,
-            auditPageStartedAt: null,
-            auditPhase: null,
-            auditDeferArray: [],
-            auditHideSelectors: [],
-            staticDeferDefaults: [],
-            auditDeferArrayPreserved: [],
-            auditHideSelectorsPreserved: [],
-            staticDeferDefaultsPreserved: [],
-            firstUserDelayScripts: [],
-            firstUserDelayScriptsPreserved: [],
-            firstUserDelayMs: 12000,
-            everyTimeDelayMs: 6000,
-            storefrontPassword: null,
-            isPasswordProtected: null,
-            customPlpUrl: null,
-            customPdpUrl: null,
-            selectedThemeId: null,
-          },
-        }),
-      ]);
+    // "Reset all data" must delete the compiled bundle and audit history too,
+    // not just zero a few config columns.
+    const prisma = (await import("../db.server")).default;
+    await prisma.$transaction([
+      // Drop the compiled storefront script so nothing stale is served.
+      prisma.performanceScript.deleteMany({
+        where: { store: { shopDomain: session.shop } },
+      }),
+      // Drop the audit history and the per-step audit state.
+      prisma.auditLog.deleteMany({ where: { domain: session.shop } }),
+      prisma.storeConfig.updateMany({
+        where: { store: { shopDomain: session.shop } },
+        data: {
+          auditComplete: false,
+          auditRunning: false,
+          auditFailed: false,
+          auditError: null,
+          lastAuditAt: null,
+          auditPageIndex: null,
+          auditTotalPages: null,
+          auditPages: null,
+          auditPageStartedAt: null,
+          auditPhase: null,
+          auditDeferArray: [],
+          auditHideSelectors: [],
+          staticDeferDefaults: [],
+          auditDeferArrayPreserved: [],
+          auditHideSelectorsPreserved: [],
+          staticDeferDefaultsPreserved: [],
+          firstUserDelayScripts: [],
+          firstUserDelayScriptsPreserved: [],
+          firstUserDelayMs: 12000,
+          everyTimeDelayMs: 6000,
+          storefrontPassword: null,
+          isPasswordProtected: null,
+          customPlpUrl: null,
+          customPdpUrl: null,
+          selectedThemeId: null,
+        },
+      }),
+    ]);
     await safeLogActivity(session.shop, "config_changed", "All data reset", {
       changedFields: ["all"],
     });
@@ -157,9 +157,7 @@ export default function Settings() {
 
   useEffect(() => {
     if (fetcher.data?.ok) {
-      shopify.toast.show(
-        fetcher.data.reset ? "All data reset" : "Settings saved",
-      );
+      shopify.toast.show(fetcher.data.reset ? "All data reset" : "Settings saved");
     }
   }, [fetcher.data, shopify]);
 
@@ -173,12 +171,7 @@ export default function Settings() {
   };
 
   const handleReset = () => {
-    if (
-      !confirm(
-        "Delete all scripts and settings for this shop? This cannot be undone.",
-      )
-    )
-      return;
+    if (!confirm("Delete all scripts and settings for this shop? This cannot be undone.")) return;
     fetcher.submit({ intent: "reset" }, { method: "POST" });
   };
 
@@ -196,18 +189,12 @@ export default function Settings() {
       </s-section>
 
       <s-section heading="Theme app extension">
-        <s-paragraph>
-          Enable the Performance Script Loader embed in the theme editor.
-        </s-paragraph>
-        <s-button href="/app/extension">
-          Open app extension page
-        </s-button>
+        <s-paragraph>Enable the Performance Script Loader embed in the theme editor.</s-paragraph>
+        <s-button href="/app/extension">Open app extension page</s-button>
       </s-section>
 
       <s-section heading="Danger zone">
-        <s-paragraph>
-          Permanently delete all scripts and settings for this shop.
-        </s-paragraph>
+        <s-paragraph>Permanently delete all scripts and settings for this shop.</s-paragraph>
         <s-button tone="critical" onClick={handleReset}>
           Reset all data
         </s-button>
@@ -217,7 +204,7 @@ export default function Settings() {
 }
 
 export function ErrorBoundary() {
-  return boundary.error(useRouteError());
+  return <RouteErrorBoundary error={useRouteError()} />;
 }
 
 export const headers = (headersArgs) => {

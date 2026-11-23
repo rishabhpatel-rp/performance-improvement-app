@@ -78,10 +78,7 @@ export default function ConfigViewer({ config }: { config: ConfigLike | null }) 
       <ToggleRow label="Script 3 (Style)" enabled={config.script3Enabled} />
       <ToggleRow label="Debug Mode" enabled={config.debugMode} />
 
-      <ToggleRow
-        label="Defer array (Step 2)"
-        enabled={config.auditDeferArrayEnabled !== false}
-      />
+      <ToggleRow label="Defer array (Step 2)" enabled={config.auditDeferArrayEnabled !== false} />
       <ToggleRow
         label="Hide selectors (Step 2)"
         enabled={config.auditHideSelectorsEnabled !== false}
@@ -99,9 +96,7 @@ export default function ConfigViewer({ config }: { config: ConfigLike | null }) 
 
       <div className="py-2 border-b border-border last:border-0">
         <p className="text-sm font-medium mb-1">Metaobject ID</p>
-        <p className="text-sm text-muted-foreground truncate">
-          {config.metaobjectId || "—"}
-        </p>
+        <p className="text-sm text-muted-foreground truncate">{config.metaobjectId || "—"}</p>
       </div>
 
       <div className="py-2">

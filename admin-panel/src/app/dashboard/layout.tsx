@@ -3,11 +3,7 @@ import { redirect } from "next/navigation";
 import Sidebar from "@/components/sidebar";
 import BridgeHint from "@/components/bridge-hint";
 
-export default async function DashboardLayout({
-  children,
-}: {
-  children: React.ReactNode;
-}) {
+export default async function DashboardLayout({ children }: { children: React.ReactNode }) {
   const session = await requireAdmin();
   if (!session) redirect("/login");
 

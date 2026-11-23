@@ -42,14 +42,38 @@ function randInt(rng: () => number, min: number, max: number): number {
 // Reference data pools
 // ---------------------------------------------------------------------------
 const STORE_NAMES = [
-  "Aurora Apparel", "Bloom Botanics", "Peak Performance Co.", "Northwind Coffee",
-  "Pebble Toys", "Cedar & Sage", "Lunarwave Electronics", "Harbor Home Goods",
-  "Velvet Thread Studio", "Ironclad Fitness", "Sundrop Skincare", "Maple & Moss",
-  "Coastal Kite Co.", "Granite Peak Outfitters", "Willow Lane Candles", "Nimbus Sportswear",
-  "Copper Kettle Kitchenware", "Fernwood Furnishings", "Solace Sleep Co.", "Marigold Market",
-  "Driftwood Denim", "Everstone Jewelry", "Little Acorn Kids", "Palmetto Provisions",
-  "Nova Audio", "Rustic Root Bakery", "Bluebird Stationery", "Alpine Gear Supply",
-  "Terracotta Home", "Wanderlux Travel Goods", "Sable & Stone", "Prairie Wind Textiles",
+  "Aurora Apparel",
+  "Bloom Botanics",
+  "Peak Performance Co.",
+  "Northwind Coffee",
+  "Pebble Toys",
+  "Cedar & Sage",
+  "Lunarwave Electronics",
+  "Harbor Home Goods",
+  "Velvet Thread Studio",
+  "Ironclad Fitness",
+  "Sundrop Skincare",
+  "Maple & Moss",
+  "Coastal Kite Co.",
+  "Granite Peak Outfitters",
+  "Willow Lane Candles",
+  "Nimbus Sportswear",
+  "Copper Kettle Kitchenware",
+  "Fernwood Furnishings",
+  "Solace Sleep Co.",
+  "Marigold Market",
+  "Driftwood Denim",
+  "Everstone Jewelry",
+  "Little Acorn Kids",
+  "Palmetto Provisions",
+  "Nova Audio",
+  "Rustic Root Bakery",
+  "Bluebird Stationery",
+  "Alpine Gear Supply",
+  "Terracotta Home",
+  "Wanderlux Travel Goods",
+  "Sable & Stone",
+  "Prairie Wind Textiles",
 ];
 
 const COUNTRIES: Array<{
@@ -61,17 +85,92 @@ const COUNTRIES: Array<{
   ianaTimezone: string;
   locale: string;
 }> = [
-  { code: "US", name: "United States", currency: "USD", cities: ["Austin", "Portland", "Denver", "Chicago", "Miami"], timezone: "(GMT-05:00) Eastern Time", ianaTimezone: "America/New_York", locale: "en" },
-  { code: "CA", name: "Canada", currency: "CAD", cities: ["Vancouver", "Toronto", "Montreal", "Calgary"], timezone: "(GMT-05:00) Eastern Time", ianaTimezone: "America/Toronto", locale: "en-CA" },
-  { code: "GB", name: "United Kingdom", currency: "GBP", cities: ["London", "Manchester", "Bristol", "Leeds"], timezone: "(GMT+00:00) London", ianaTimezone: "Europe/London", locale: "en-GB" },
-  { code: "DE", name: "Germany", currency: "EUR", cities: ["Berlin", "Munich", "Hamburg"], timezone: "(GMT+01:00) Berlin", ianaTimezone: "Europe/Berlin", locale: "de" },
-  { code: "AU", name: "Australia", currency: "AUD", cities: ["Sydney", "Melbourne", "Brisbane"], timezone: "(GMT+10:00) Sydney", ianaTimezone: "Australia/Sydney", locale: "en-AU" },
-  { code: "IN", name: "India", currency: "INR", cities: ["Ahmedabad", "Mumbai", "Bengaluru"], timezone: "(GMT+05:30) India Standard Time", ianaTimezone: "Asia/Kolkata", locale: "en-IN" },
-  { code: "FR", name: "France", currency: "EUR", cities: ["Paris", "Lyon", "Marseille"], timezone: "(GMT+01:00) Paris", ianaTimezone: "Europe/Paris", locale: "fr" },
-  { code: "NL", name: "Netherlands", currency: "EUR", cities: ["Amsterdam", "Rotterdam"], timezone: "(GMT+01:00) Amsterdam", ianaTimezone: "Europe/Amsterdam", locale: "nl" },
+  {
+    code: "US",
+    name: "United States",
+    currency: "USD",
+    cities: ["Austin", "Portland", "Denver", "Chicago", "Miami"],
+    timezone: "(GMT-05:00) Eastern Time",
+    ianaTimezone: "America/New_York",
+    locale: "en",
+  },
+  {
+    code: "CA",
+    name: "Canada",
+    currency: "CAD",
+    cities: ["Vancouver", "Toronto", "Montreal", "Calgary"],
+    timezone: "(GMT-05:00) Eastern Time",
+    ianaTimezone: "America/Toronto",
+    locale: "en-CA",
+  },
+  {
+    code: "GB",
+    name: "United Kingdom",
+    currency: "GBP",
+    cities: ["London", "Manchester", "Bristol", "Leeds"],
+    timezone: "(GMT+00:00) London",
+    ianaTimezone: "Europe/London",
+    locale: "en-GB",
+  },
+  {
+    code: "DE",
+    name: "Germany",
+    currency: "EUR",
+    cities: ["Berlin", "Munich", "Hamburg"],
+    timezone: "(GMT+01:00) Berlin",
+    ianaTimezone: "Europe/Berlin",
+    locale: "de",
+  },
+  {
+    code: "AU",
+    name: "Australia",
+    currency: "AUD",
+    cities: ["Sydney", "Melbourne", "Brisbane"],
+    timezone: "(GMT+10:00) Sydney",
+    ianaTimezone: "Australia/Sydney",
+    locale: "en-AU",
+  },
+  {
+    code: "IN",
+    name: "India",
+    currency: "INR",
+    cities: ["Ahmedabad", "Mumbai", "Bengaluru"],
+    timezone: "(GMT+05:30) India Standard Time",
+    ianaTimezone: "Asia/Kolkata",
+    locale: "en-IN",
+  },
+  {
+    code: "FR",
+    name: "France",
+    currency: "EUR",
+    cities: ["Paris", "Lyon", "Marseille"],
+    timezone: "(GMT+01:00) Paris",
+    ianaTimezone: "Europe/Paris",
+    locale: "fr",
+  },
+  {
+    code: "NL",
+    name: "Netherlands",
+    currency: "EUR",
+    cities: ["Amsterdam", "Rotterdam"],
+    timezone: "(GMT+01:00) Amsterdam",
+    ianaTimezone: "Europe/Amsterdam",
+    locale: "nl",
+  },
 ];
 
-const STREET_NAMES = ["Main St", "Harbour Rd", "Elm Ave", "5th St", "Britannia St", "Oak Lane", "King's Rd", "Market St", "River Walk", "Highland Dr"];
+const STREET_NAMES = [
+  "Main St",
+  "Harbour Rd",
+  "Elm Ave",
+  "5th St",
+  "Britannia St",
+  "Oak Lane",
+  "King's Rd",
+  "Market St",
+  "River Walk",
+  "Highland Dr",
+];
 const UNIT_LABELS = ["", "", "", "Suite 100", "Unit 4B", "Floor 2"];
 const PLANS = ["Basic Shopify", "Shopify", "Advanced Shopify", "Shopify Plus"];
 const SCOPES = [
@@ -88,8 +187,12 @@ const AUDIT_DEFER_SCRIPTS = [
   "https://cdn.example.com/scripts/social-proof.js",
 ];
 const AUDIT_HIDE_SELECTORS = [
-  "#sticky-banner", ".announcement-bar", ".third-party-popup",
-  "#newsletter-modal", ".cookie-consent-old", ".legacy-widget",
+  "#sticky-banner",
+  ".announcement-bar",
+  ".third-party-popup",
+  "#newsletter-modal",
+  ".cookie-consent-old",
+  ".legacy-widget",
 ];
 const EVENT_TYPES = [
   "installed",
@@ -139,9 +242,7 @@ function generateActivities(
       EVENT_TYPES.filter((e) => e !== "installed" && e !== "uninstalled"),
     );
     const offsetDays = randInt(rng, 1, 60);
-    const createdAt = new Date(
-      Math.min(now, installedAt.getTime() + offsetDays * day),
-    );
+    const createdAt = new Date(Math.min(now, installedAt.getTime() + offsetDays * day));
     const descriptions: Record<string, string> = {
       config_changed: "Updated script configuration",
       scope_updated: "OAuth scope updated after re-authorization",
@@ -200,21 +301,12 @@ function generateDummyStores(count = 32): DummyStore[] {
       : new Date(now - randInt(rng, 8, 540) * day);
 
     const uninstalledAt = !isActive
-      ? new Date(
-          Math.min(
-            now,
-            installedAt.getTime() + randInt(rng, 5, 400) * day,
-          ),
-        )
+      ? new Date(Math.min(now, installedAt.getTime() + randInt(rng, 5, 400) * day))
       : null;
 
-    const lastSyncedAt = isActive
-      ? new Date(now - randInt(rng, 0, 5) * day)
-      : uninstalledAt;
+    const lastSyncedAt = isActive ? new Date(now - randInt(rng, 0, 5) * day) : uninstalledAt;
 
-    const createdAtShopify = new Date(
-      installedAt.getTime() - randInt(rng, 100, 1200) * day,
-    );
+    const createdAtShopify = new Date(installedAt.getTime() - randInt(rng, 100, 1200) * day);
 
     const storeId = `dummy_store_${i + 1}`;
     const shopifyShopId = String(9000000 + i * 37);

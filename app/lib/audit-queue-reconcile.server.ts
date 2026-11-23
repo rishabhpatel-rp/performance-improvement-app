@@ -15,10 +15,7 @@ export async function touchAuditJobHeartbeat(jobId: string): Promise<void> {
   });
 }
 
-export async function setStoreActiveAuditJob(
-  storeId: string,
-  jobId: string,
-): Promise<void> {
+export async function setStoreActiveAuditJob(storeId: string, jobId: string): Promise<void> {
   await prisma.storeConfig.update({
     where: { storeId },
     data: { activeAuditJobId: jobId },
@@ -94,9 +91,7 @@ export async function prepareStoreForNewAudit(
   return { storeId: store.id };
 }
 
-export async function reconcileOrphanedStoreAuditState(
-  shopDomain: string,
-): Promise<void> {
+export async function reconcileOrphanedStoreAuditState(shopDomain: string): Promise<void> {
   const store = await prisma.store.findUnique({
     where: { shopDomain },
     select: {
@@ -159,11 +154,7 @@ export async function reconcileOrphanedStoreAuditState(
     where: { id: jobId },
     select: { status: true, lastError: true, createdAt: true },
   });
-  if (
-    job?.status === "queued" &&
-    job.createdAt &&
-    queuedJobStale(job.createdAt)
-  ) {
+  if (job?.status === "queued" && job.createdAt && queuedJobStale(job.createdAt)) {
     await prisma.auditJob.update({
       where: { id: jobId },
       data: {
@@ -189,10 +180,7 @@ export async function reconcileOrphanedStoreAuditState(
       auditPhase: null,
       activeAuditJobId: null,
       auditFailed: job.status === "failed",
-      auditError:
-        job.status === "failed"
-          ? job.lastError || "audit job failed"
-          : null,
+      auditError: job.status === "failed" ? job.lastError || "audit job failed" : null,
       auditComplete: job.status === "succeeded",
     },
   });

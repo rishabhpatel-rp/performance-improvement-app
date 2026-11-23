@@ -1,28 +1,15 @@
-import { NextResponse } from "next/server";
-import {
-  isRecord,
-  jsonNetworkFailure,
-  jsonUpstreamFailure,
-  postMerchant,
-  requireMerchantSession,
-} from "@/lib/merchant-route";
+import { getDemoMode } from "@/lib/demo-mode";
+import { readMerchantState } from "@/lib/merchant-route";
+import { demoStateForDomain } from "@/lib/demo-state";
+import { parseShopDomain } from "@/lib/shop-domain";
 
-export async function GET(
-  _request: Request,
-  ctx: { params: Promise<{ domain: string }> },
-) {
-  const { unauthorized } = await requireMerchantSession("viewer");
-  if (unauthorized) return unauthorized;
-
-  const { domain } = await ctx.params;
-  const shopDomain = decodeURIComponent(domain);
-
-  const { res, data, error } = await postMerchant("/api/internal/storefront-state", {
-    shopDomain,
-  });
-  if (error) return jsonNetworkFailure(error);
-  if (!isRecord(data) || data.ok !== true) {
-    return jsonUpstreamFailure(data, res!);
+export async function GET(request: Request, ctx: { params: Promise<{ domain: string }> }) {
+  if ((await getDemoMode()) === "on") {
+    const domain = parseShopDomain((await ctx.params).domain);
+    const demo = domain ? demoStateForDomain(domain) : null;
+    return Response.json(demo ?? { ok: false, error: "No demo state for this store." }, {
+      status: demo ? 200 : 404,
+    });
   }
-  return NextResponse.json(data);
+  return readMerchantState(ctx);
 }

@@ -1,3 +1,4 @@
+import { decryptStorefrontPassword } from "./storefront-password.server.ts";
 import prisma from "../db.server";
 import {
   appendStorefrontPassword,
@@ -8,6 +9,7 @@ import {
 } from "./psi.server";
 import type { FieldVitalsSummary, PageSpeedPageView } from "./audit-report-types";
 
+import { logger } from "./logger.ts";
 const MIN_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000;
 const psiInFlight = new Set<string>();
 
@@ -40,7 +42,7 @@ export function schedulePsiAfterAudit(
       psiInFlight.delete(shopDomain);
     }
   })().catch((err) => {
-    console.warn("[psi] job failed:", err instanceof Error ? err.message : err);
+    logger.warn("[psi] job failed:", err instanceof Error ? err.message : err);
   });
 }
 
@@ -85,10 +87,10 @@ async function runPsiJob(
     },
   });
   const sc = store?.configs?.[0];
-  const password = storefrontPassword ?? sc?.storefrontPassword ?? null;
+  const password = decryptStorefrontPassword(storefrontPassword ?? sc?.storefrontPassword ?? null);
 
   if (shouldSkipPsiFetch(sc?.isPasswordProtected)) {
-    console.log(`[psi] skipped for ${shopDomain} — password-protected storefront`);
+    logger.info(`[psi] skipped for ${shopDomain} — password-protected storefront`);
     await persistFieldVitals(shopDomain, {
       source: "none",
       note: PSI_SKIP_PASSWORD_STORE_NOTE,
@@ -150,10 +152,12 @@ async function runPsiJob(
 }
 
 async function persistFieldVitals(shopDomain: string, field: FieldVitalsSummary) {
-  const store = await prisma.store.findUnique({ where: { shopDomain } });
+  const store = await prisma.store.findUnique({
+    where: { shopDomain },
+    include: { configs: { take: 1 } },
+  });
   if (!store) return;
   const backoff = field.backoffUntil ? new Date(field.backoffUntil) : null;
-
   await prisma.storeConfig.updateMany({
     where: { storeId: store.id },
     data: {
@@ -207,7 +211,7 @@ function normalizePath(path: string) {
   return path || "/";
 }
 
-function rowToLh(row?: (Awaited<ReturnType<typeof loadPsiSnapshotsForShop>>)[0]) {
+function rowToLh(row?: Awaited<ReturnType<typeof loadPsiSnapshotsForShop>>[0]) {
   if (!row?.rawJson || typeof row.rawJson !== "object") {
     if (!row) return undefined;
     return {

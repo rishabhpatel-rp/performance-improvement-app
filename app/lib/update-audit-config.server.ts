@@ -1,24 +1,18 @@
+import { DEFAULT_DELAY_SCRIPTS, FIRST_USER_DELAY_MS, EVERY_TIME_DELAY_MS } from "./constants.ts";
 import prisma from "../db.server";
 import { rebuildPerformanceScript, readStringArray } from "./performance-script.server";
 import {
   type AuditArrayPatch,
   type AuditField,
-  buildTemplateSavePatch,
   isAllowedPatchKey,
-  recomputeUnionColumns,
 } from "./update-audit-config-pure";
-import {
-  templateDelayFormKeys,
-  templateListFormKeys,
-} from "./template-script-config.ts";
+import { templateDelayFormKeys, templateListFormKeys } from "./template-script-config.ts";
 
-export const DEFAULT_STATIC_DEFER = ["wpm", "gtm"];
+import { logger } from "./logger.ts";
+export const DEFAULT_STATIC_DEFER = [...DEFAULT_DELAY_SCRIPTS];
 
 export type { AuditArrayPatch, AuditField } from "./update-audit-config-pure";
-export {
-  buildTemplateSavePatch,
-  recomputeUnionColumns,
-} from "./update-audit-config-pure";
+export {} from "./update-audit-config-pure";
 
 const LIST_KEYS = new Set(templateListFormKeys());
 const UNION_KEYS = [
@@ -29,9 +23,7 @@ const UNION_KEYS = [
 ] as const;
 
 function isStringArray(value: unknown): value is string[] {
-  return (
-    Array.isArray(value) && value.every((x) => typeof x === "string")
-  );
+  return Array.isArray(value) && value.every((x) => typeof x === "string");
 }
 
 function sanitizePatch(patch: AuditArrayPatch): AuditArrayPatch {
@@ -57,10 +49,7 @@ function sanitizePatch(patch: AuditArrayPatch): AuditArrayPatch {
   return out;
 }
 
-export async function updateAuditArrays(
-  shopDomain: string,
-  patch: AuditArrayPatch,
-) {
+export async function updateAuditArrays(shopDomain: string, patch: AuditArrayPatch) {
   const sanitized = sanitizePatch(patch);
   if (Object.keys(sanitized).length === 0) {
     throw new Error("No fields to save.");
@@ -70,20 +59,17 @@ export async function updateAuditArrays(
     where: { shopDomain },
   });
   if (!store) {
-    console.warn(
-      `[updateAuditArrays] No store found for ${shopDomain}. Skipped.`,
-    );
+    logger.warn(`[updateAuditArrays] No store found for ${shopDomain}. Skipped.`);
     return null;
   }
 
   const createData: AuditArrayPatch = {
     auditDeferArray: sanitized.auditDeferArray ?? [],
     auditHideSelectors: sanitized.auditHideSelectors ?? [],
-    staticDeferDefaults:
-      sanitized.staticDeferDefaults ?? DEFAULT_STATIC_DEFER,
-    firstUserDelayScripts: sanitized.firstUserDelayScripts ?? ["wpm", "gtm"],
-    firstUserDelayMs: sanitized.firstUserDelayMs ?? 12000,
-    everyTimeDelayMs: sanitized.everyTimeDelayMs ?? 6000,
+    staticDeferDefaults: sanitized.staticDeferDefaults ?? DEFAULT_STATIC_DEFER,
+    firstUserDelayScripts: sanitized.firstUserDelayScripts ?? [...DEFAULT_DELAY_SCRIPTS],
+    firstUserDelayMs: sanitized.firstUserDelayMs ?? FIRST_USER_DELAY_MS,
+    everyTimeDelayMs: sanitized.everyTimeDelayMs ?? EVERY_TIME_DELAY_MS,
   };
 
   const result = await prisma.storeConfig.upsert({
@@ -97,13 +83,9 @@ export async function updateAuditArrays(
       debugMode: false,
       scriptTitles: [],
       ...createData,
-      ...Object.fromEntries(
-        Object.entries(sanitized).filter(([, v]) => v !== undefined),
-      ),
+      ...Object.fromEntries(Object.entries(sanitized).filter(([, v]) => v !== undefined)),
     },
-    update: Object.fromEntries(
-      Object.entries(sanitized).filter(([, v]) => v !== undefined),
-    ),
+    update: Object.fromEntries(Object.entries(sanitized).filter(([, v]) => v !== undefined)),
   });
 
   await rebuildPerformanceScript(shopDomain);
@@ -156,13 +138,9 @@ export async function updateAuditFieldToggle(
   });
 
   const { enabledKey, preservedKey } = TOGGLE_FIELD_MAP[field];
-  const active = readStringArray(
-    current ? (current as Record<string, unknown>)[field] : undefined,
-  );
+  const active = readStringArray(current ? (current as Record<string, unknown>)[field] : undefined);
   const preserved = readStringArray(
-    current
-      ? (current as Record<string, unknown>)[preservedKey]
-      : undefined,
+    current ? (current as Record<string, unknown>)[preservedKey] : undefined,
   );
 
   const nextActive = enabled ? (preserved.length > 0 ? preserved : active) : [];

@@ -28,17 +28,14 @@ export default function StoreAdminHeadHtml({
     setError(null);
     setNotice(null);
     try {
-      const res = await fetch(
-        `/api/stores/${encodeURIComponent(domain)}/admin-head`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            intent,
-            html: intent === "clear" ? "" : draft,
-          }),
-        },
-      );
+      const res = await fetch(`/api/stores/${encodeURIComponent(domain)}/admin-head`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          intent,
+          html: intent === "clear" ? "" : draft,
+        }),
+      });
       const data = (await res.json().catch(() => null)) as {
         ok?: boolean;
         error?: string;
@@ -72,12 +69,13 @@ export default function StoreAdminHeadHtml({
       </CardHeader>
       <CardContent className="space-y-3">
         <p className="text-sm text-muted-foreground">
-          Not available in the merchant app. Markup is stored on this shop only
-          and rendered as early as the PagePulse theme embed allows (before the
-          performance script). Use tags like <code className="text-xs">&lt;link&gt;</code>,{" "}
-          <code className="text-xs">&lt;meta&gt;</code>, or inline{" "}
-          <code className="text-xs">&lt;script&gt;</code>. Do not include{" "}
-          <code className="text-xs">&lt;/script&gt;</code> in the text.
+          Not available in the merchant app. Markup is stored on this shop only and rendered as
+          early as the PagePulse theme embed allows (before the performance script). Use tags like{" "}
+          <code className="text-xs">&lt;link&gt;</code>,{" "}
+          <code className="text-xs">&lt;meta&gt;</code> or{" "}
+          <code className="text-xs">&lt;style&gt;</code>.{" "}
+          <code className="text-xs">&lt;script&gt;</code> blocks are rejected because scripts
+          inserted this way never execute.
         </p>
         <textarea
           className="min-h-[140px] w-full rounded-md border border-input bg-background px-3 py-2 font-mono text-xs"

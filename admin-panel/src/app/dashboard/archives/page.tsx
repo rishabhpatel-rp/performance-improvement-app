@@ -20,8 +20,8 @@ export default async function ArchivesPage({
         <h1 className="text-2xl font-semibold">Archived stores</h1>
         <p className="text-sm text-muted-foreground mt-1">
           Snapshots kept when live DB rows were removed (Shopify{" "}
-          <code className="text-xs">shop/redact</code> or manual purge). Internal
-          ops retention — not a live install.
+          <code className="text-xs">shop/redact</code> or manual purge). Internal ops retention —
+          not a live install.
         </p>
       </div>
 
@@ -70,9 +70,7 @@ export default async function ArchivesPage({
                   <tr key={row.id} className="border-b border-border/60">
                     <td className="py-2 pr-3">
                       <div className="font-medium">{row.shopName || "—"}</div>
-                      <div className="text-xs text-muted-foreground">
-                        {row.shopDomain}
-                      </div>
+                      <div className="text-xs text-muted-foreground">{row.shopDomain}</div>
                     </td>
                     <td className="py-2 pr-3 break-all">{row.email || "—"}</td>
                     <td className="py-2 pr-3">

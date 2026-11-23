@@ -8,6 +8,10 @@ const nextConfig: NextConfig = {
 
   serverExternalPackages: ["@prisma/client", "prisma"],
 
+  // Allow opening the panel via LAN IP (e.g. http://192.168.x.x:3000) in dev
+  // without Next blocking /_next/* assets.
+  allowedDevOrigins: ["127.0.0.1", "localhost", "192.168.13.187"],
+
   poweredByHeader: false,
 
   // Baseline response headers. The panel serves merchant PII, so lock the
@@ -18,17 +22,20 @@ const nextConfig: NextConfig = {
       {
         source: "/:path*",
         headers: [
-          { key: "Content-Security-Policy", value:
-            "default-src 'self'; " +
-            "script-src 'self' 'unsafe-inline' 'unsafe-eval'; " +
-            "style-src 'self' 'unsafe-inline'; " +
-            "img-src 'self' data: blob:; " +
-            "font-src 'self' data:; " +
-            "connect-src 'self'; " +
-            "frame-ancestors 'none'; " +
-            "object-src 'none'; " +
-            "base-uri 'self'; " +
-            "form-action 'self'" },
+          {
+            key: "Content-Security-Policy",
+            value:
+              "default-src 'self'; " +
+              "script-src 'self' 'unsafe-inline' 'unsafe-eval'; " +
+              "style-src 'self' 'unsafe-inline'; " +
+              "img-src 'self' data: blob:; " +
+              "font-src 'self' data:; " +
+              "connect-src 'self'; " +
+              "frame-ancestors 'none'; " +
+              "object-src 'none'; " +
+              "base-uri 'self'; " +
+              "form-action 'self'",
+          },
           { key: "X-Content-Type-Options", value: "nosniff" },
           { key: "X-Frame-Options", value: "DENY" },
           { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },

@@ -4,10 +4,7 @@ import { requireAdmin, changeAdminPassword } from "@/lib/auth";
 export async function POST(request: Request) {
   const session = await requireAdmin();
   if (!session) {
-    return NextResponse.json(
-      { success: false, error: "Not authenticated" },
-      { status: 401 },
-    );
+    return NextResponse.json({ success: false, error: "Not authenticated" }, { status: 401 });
   }
 
   try {
@@ -38,9 +35,7 @@ export async function POST(request: Request) {
       "Email is already in use by another account",
     ]);
     const message =
-      error instanceof Error && SAFE.has(error.message)
-        ? error.message
-        : "An error occurred";
+      error instanceof Error && SAFE.has(error.message) ? error.message : "An error occurred";
     console.error("Change password error:", error);
     return NextResponse.json({ success: false, error: message }, { status: 400 });
   }

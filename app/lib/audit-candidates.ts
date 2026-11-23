@@ -34,6 +34,66 @@ export const P_EXCLUDED_HOSTS = new Set([
 export const NEVER_DEFER_PREFIXES = ["chunk."];
 export const NEVER_DEFER_SUBSTRINGS = ["storefront"];
 
+/** Third-party payment / identity hosts — never defer scripts from these. */
+export const NEVER_DEFER_HOSTS = new Set([
+  "pay.shopify.com",
+  "js.stripe.com",
+  "m.stripe.com",
+  "m.stripe.network",
+  "www.paypal.com",
+  "www.paypalobjects.com",
+  "c.paypal.com",
+  "js.klarna.com",
+  "x.klarnacdn.net",
+  "na.klarnacdn.net",
+  "cdn1.affirm.com",
+  "portal.afterpay.com",
+  "js.afterpay.com",
+  "widget.sezzle.com",
+  "www.gstatic.com",
+  "recaptcha.net",
+  "js.squareup.com",
+  "js.squareupsandbox.com",
+]);
+
+/** CMP / consent-manager script patterns — never defer these. */
+export const NEVER_DEFER_CMP_PATTERNS = [
+  "onetrust",
+  "cookiebot",
+  "trustarc",
+  "trustarcbar",
+  "osano",
+  "didomi",
+  "termly",
+  "iubenda",
+  "cookiefirst",
+  "cookieinformation",
+  "cookieconsent",
+  "consent-tracking",
+  "gdpr-cookie",
+  "cookie-law",
+];
+
+/** Pathnames where deferring ANY script is disallowed. */
+export const NEVER_DEFER_PATHNAMES = [
+  "/cart",
+  "/checkout",
+  "/account",
+  "/password",
+  "/wallets/checkouts",
+  "/apps/checkout",
+];
+
+export function isNeverDeferPathname(pathname: string): boolean {
+  const p = pathname.toLowerCase().split("?")[0];
+  return NEVER_DEFER_PATHNAMES.some((n) => p === n || p.startsWith(`${n}/`));
+}
+
+export type ScriptLoadingHint =
+  "blocking" | "async" | "defer" | "module" | "nomodule" | "inline" | "unknown";
+
+export type DeferTier = "interaction" | "delay-every" | "delay-first" | "never";
+
 /** Parent directory that identifies a token as the MERCHANT'S OWN THEME ASSET.
  *
  *  Shopify serves theme files from `/cdn/shop/t/<theme_id>/assets/<name>.js`,
@@ -53,7 +113,6 @@ export const NEVER_DEFER_SUBSTRINGS = ["storefront"];
  *  also excluded. That is the conservative direction: it can only ever defer
  *  less. */
 export const THEME_OWNED_DIRS = ["assets"];
-
 
 /** Genuine noise only. Kept deliberately narrow: these used to be broad
  *  substrings that also killed `storefront` and `chunk`. */
@@ -99,26 +158,39 @@ export function classifyCandidate(token: string): CandidateClass {
   const a = String(token).toLowerCase();
   const base = a.split("/").pop() || a;
   const stem = base.replace(/\.(min\.)?(js|mjs)$/i, "");
+  // Directory-qualified tokens (e.g. `storefront/standard-actions.js`) must
+  // honor NEVER rules on the full path, not only the basename.
+  if (NEVER_DEFER_SUBSTRINGS.some((s) => a.startsWith(`${s}/`) || a.includes(`/${s}/`))) {
+    return "never-defer";
+  }
   if (
     NEVER_DEFER_PREFIXES.some((p) => stem.indexOf(p) === 0) ||
-    NEVER_DEFER_SUBSTRINGS.some((s) => stem.indexOf(s) !== -1)
+    NEVER_DEFER_SUBSTRINGS.some((s) => stem.indexOf(s) !== -1) ||
+    NEVER_DEFER_CMP_PATTERNS.some((s) => a.indexOf(s) !== -1)
   ) {
     return "never-defer";
   }
-  // Theme-owned JS is never deferred (D4). Matched on the token's parent
-  // directory rather than on the stem, because the stem is only the basename
-  // and carries no directory information.
+  // ─── GATE 4-C  [COMMENTED OUT — under observation] ──────────────────────
+  // Theme-owned JS from the assets/ directory was previously never deferred.
+  // Commented out to test whether these scripts can safely be deferred/delayed.
+  // If stores break (Identifier already declared errors from theme JS), re-enable.
   //
-  // A prefix test, not equality: some themes nest their JS (`assets/js/x.js`),
-  // and that must be excluded too. Matching on the BASE NAME instead would
-  // over-reach — `files/theme.js` is an ordinary app file, not a theme asset.
-  const parentDir = a.includes("/") ? a.slice(0, a.lastIndexOf("/")) : "";
-  for (const d of THEME_OWNED_DIRS) {
-    if (parentDir === d || parentDir.startsWith(d + "/")) return "never-defer";
-  }
-  if (/^\d+$/.test(stem)) return "noise";
-  if ((stem.match(/\d/g) || []).length > MAX_DIGITS) return "noise";
-  if (NOISE_SUBSTRINGS.some((s) => a.indexOf(s) !== -1)) return "noise";
+  // const parentDir = a.includes("/") ? a.slice(0, a.lastIndexOf("/")) : "";
+  // for (const d of THEME_OWNED_DIRS) {
+  //   if (parentDir === d || parentDir.startsWith(d + "/")) return "never-defer";
+  // }
+  // ─────────────────────────────────────────────────────────────────────────
+
+  // ─── GATE 4-E  [COMMENTED OUT — under observation] ──────────────────────
+  // Digit-heavy / noise names were dropped as "unstable tokens".
+  // Commented out to test whether these scripts should be deferred instead.
+  // If the storefront regex starts matching wrong URLs, re-enable.
+  //
+  // if (/^\d+$/.test(stem)) return "noise";
+  // if ((stem.match(/\d/g) || []).length > MAX_DIGITS) return "noise";
+  // if (NOISE_SUBSTRINGS.some((s) => a.indexOf(s) !== -1)) return "noise";
+  // ─────────────────────────────────────────────────────────────────────────
+
   return "kept";
 }
 
@@ -168,10 +240,7 @@ export function urlToCandidates(rawUrl: string, pageUrl: string): CandidateBucke
     if (t) map.add(t);
   };
   const emit = (raw: string, bucket: CandidateClass) =>
-    put(
-      bucket === "never-defer" ? neverDefer : bucket === "noise" ? noise : kept,
-      raw,
-    );
+    put(bucket === "never-defer" ? neverDefer : bucket === "noise" ? noise : kept, raw);
 
   let ownHostname = "";
   try {
@@ -192,6 +261,14 @@ export function urlToCandidates(rawUrl: string, pageUrl: string): CandidateBucke
     return { kept: [], neverDefer: [], noise: [], self: [...self] };
   }
 
+  const host = u.hostname.toLowerCase();
+  if (NEVER_DEFER_HOSTS.has(host)) {
+    const hostToken = tokenForPath(u.pathname);
+    if (hostToken) put(neverDefer, hostToken);
+    put(neverDefer, host);
+    return { kept: [], neverDefer: [...neverDefer], noise: [], self: [] };
+  }
+
   u.hash = "";
   u.search = "";
   if (u.pathname.includes("/checkout-web/")) {
@@ -201,8 +278,8 @@ export function urlToCandidates(rawUrl: string, pageUrl: string): CandidateBucke
   const token = tokenForPath(u.pathname);
   if (token) emit(token, classifyCandidate(token));
 
-  const host = u.hostname.toLowerCase();
-  if (isThirdPartyHost(host, ownHostname)) emit(host, classifyCandidate(host));
+  const hostLower = u.hostname.toLowerCase();
+  if (isThirdPartyHost(hostLower, ownHostname)) emit(hostLower, classifyCandidate(hostLower));
 
   return {
     kept: [...kept],
@@ -248,13 +325,9 @@ export function coverageVerdict(entry: CoverageEntry): CoverageVerdict {
   const named = functions.filter(
     (fn) => !fn.isBlockCoverage && fn.functionName !== "" && fn.functionName !== undefined,
   );
-  const anyExecuted = functions.some((fn) =>
-    (fn.ranges || []).some((r) => (r.count || 0) > 0),
-  );
+  const anyExecuted = functions.some((fn) => (fn.ranges || []).some((r) => (r.count || 0) > 0));
   if (named.length === 0) return anyExecuted ? "unknown" : "idle";
-  return named.some((fn) => (fn.ranges || []).some((r) => (r.count || 0) > 0))
-    ? "ran"
-    : "idle";
+  return named.some((fn) => (fn.ranges || []).some((r) => (r.count || 0) > 0)) ? "ran" : "idle";
 }
 
 // ---------------------------------------------------------------------------
@@ -384,4 +457,54 @@ export function mergeSlugVariants(tokens: string[]): string[] {
     out.push(trimmed.length >= 3 ? trimmed : variants.sort()[0]);
   }
   return out;
+}
+
+/**
+ * Unknown coverage (pure IIFE): protect only when timing looks render-critical.
+ * Late-loading analytics/pixels can be deferred.
+ */
+export function shouldProtectUnknownCoverageScript(input: {
+  homeRequestOrder?: number;
+  homeStartMs?: number;
+  bytes?: number;
+}): boolean {
+  if (input.homeRequestOrder == null && input.homeStartMs == null) return true;
+  if ((input.homeRequestOrder ?? 999) <= 8) return true;
+  if ((input.homeStartMs ?? 9999) < 800) return true;
+  return false;
+}
+
+/** Cross-run prior-token matching key (strip query + trailing build hash). */
+export function normalizeTokenForCrossRun(token: string): string {
+  const withoutQuery = token.split("?")[0];
+  return withoutQuery
+    .replace(/[._-][a-f0-9A-Z_-]{7,}(\.(min\.)?(js|mjs))?$/i, "")
+    .replace(/\.(min\.)?(js|mjs)$/i, "");
+}
+
+export const SHOPIFY_TEMPLATE_MAP: Record<string, string> = {
+  "/products/": "product",
+  "/collections/": "collection",
+  "/pages/": "page",
+  "/blogs/": "blog",
+  "/search": "search",
+  "/cart": "cart",
+  "/account": "account",
+};
+
+/** Pathnames where a script must not enter the global defer union if it appears only here (D-1). */
+export const DEFER_BLOCK_ONLY_PATHNAMES = new Set(["/cart", "/search"]);
+
+export function tokenEligibleForGlobalDefer(pages: Iterable<string>): boolean {
+  const list = [...pages];
+  if (list.length === 0) return true;
+  return !list.every((p) => DEFER_BLOCK_ONLY_PATHNAMES.has(p));
+}
+
+export function describePageTemplate(pathname: string): string {
+  const p = pathname || "/";
+  for (const [prefix, template] of Object.entries(SHOPIFY_TEMPLATE_MAP)) {
+    if (p.startsWith(prefix) || p === prefix.slice(0, -1)) return template;
+  }
+  return "other";
 }

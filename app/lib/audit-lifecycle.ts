@@ -1,8 +1,8 @@
+import { getEnv } from "./env.server.ts";
 /** Pure audit run lifecycle rules (stale detection, user stop sentinel). */
 
 /** Wall-clock cap for a stuck run (override: `AUDIT_STALE_MINUTES`, default 15). */
-export const AUDIT_STALE_MS =
-  Math.max(5, Number(process.env.AUDIT_STALE_MINUTES || "15")) * 60 * 1000;
+export const AUDIT_STALE_MS = Math.max(5, getEnv().AUDIT_STALE_MINUTES) * 60 * 1000;
 
 /** Worker touches `AuditJob.lockedAt` this often during long page work. */
 export const AUDIT_HEARTBEAT_INTERVAL_MS = 2 * 60 * 1000;
@@ -10,10 +10,13 @@ export const AUDIT_HEARTBEAT_INTERVAL_MS = 2 * 60 * 1000;
 export const QUEUED_JOB_STALE_MS = 3 * 60 * 60 * 1000;
 export const AUDIT_STOPPED_BY_USER = "AUDIT_STOPPED_BY_USER";
 
+export type { AuditPhase } from "../../shared/pagepulse-types";
+
 export type StoreAuditRow = {
   auditRunning: boolean;
   auditPageStartedAt: Date | null;
   updatedAt: Date;
+  auditPhase?: string | null;
 };
 
 export type StoreAuditFlagsRow = {
@@ -36,28 +39,21 @@ export function lastSignOfLife(row: StoreAuditRow): number {
 }
 
 /** Why a store row should be swept while `auditRunning` is still true. */
-export function staleReason(
-  row: StoreAuditRow,
-  nowMs = Date.now(),
-): "stale_running" | null {
+export function staleReason(row: StoreAuditRow, nowMs = Date.now()): "stale_running" | null {
   if (!row.auditRunning) return null;
+  // Waiting for the in-process concurrency slot — heartbeats touch updatedAt.
+  if (row.auditPhase === "queued") return null;
   if (nowMs - lastSignOfLife(row) > AUDIT_STALE_MS) {
     return "stale_running";
   }
   return null;
 }
 
-export function queuedJobStale(
-  createdAt: Date,
-  nowMs = Date.now(),
-): boolean {
+export function queuedJobStale(createdAt: Date, nowMs = Date.now()): boolean {
   return nowMs - createdAt.getTime() > QUEUED_JOB_STALE_MS;
 }
 
-export function planStaleSweep(
-  rows: StoreAuditRow[],
-  nowMs = Date.now(),
-): number[] {
+export function planStaleSweep(rows: StoreAuditRow[], nowMs = Date.now()): number[] {
   const stale: number[] = [];
   for (let i = 0; i < rows.length; i++) {
     if (staleReason(rows[i], nowMs)) stale.push(i);
@@ -72,4 +68,9 @@ export function needsOrphanStaleClear(
 ): boolean {
   if (!row.auditRunning || row.activeAuditJobId) return false;
   return staleReason(row, nowMs) === "stale_running";
+}
+
+export function auditProgressPercent(pageIndex: number, totalPages: number): number {
+  if (!Number.isFinite(pageIndex) || !Number.isFinite(totalPages) || totalPages <= 0) return 0;
+  return Math.max(0, Math.min(100, Math.round((pageIndex / totalPages) * 100)));
 }

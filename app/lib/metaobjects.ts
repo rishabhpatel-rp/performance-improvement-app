@@ -1,6 +1,8 @@
+import { DEFAULT_DELAY_SCRIPTS, FIRST_USER_DELAY_MS, EVERY_TIME_DELAY_MS } from "./constants.ts";
 import { authenticate } from "../shopify.server";
 import type { AppConfig, AppConfigInput } from "../types/script";
 
+import { logger } from "./logger.ts";
 // The metaobject is declared in shopify.app.toml under
 // [metaobjects.app.script_injector_config], which Shopify namespaces with the
 // reserved `$app:` prefix at runtime. Without this prefix the Admin API can't
@@ -14,13 +16,8 @@ type AdminClient = any;
 // `authenticate.webhook`, which has no session token to re-authenticate).
 type RequestOrAdmin = Request | AdminClient;
 
-async function resolveAdmin(
-  requestOrAdmin: RequestOrAdmin,
-): Promise<AdminClient> {
-  if (
-    requestOrAdmin &&
-    typeof (requestOrAdmin as AdminClient).graphql === "function"
-  ) {
+async function resolveAdmin(requestOrAdmin: RequestOrAdmin): Promise<AdminClient> {
+  if (requestOrAdmin && typeof (requestOrAdmin as AdminClient).graphql === "function") {
     return requestOrAdmin as AdminClient;
   }
   const { admin } = await authenticate.admin(requestOrAdmin as Request);
@@ -57,15 +54,13 @@ function parseJsonArray(raw: unknown): string[] {
   if (typeof raw !== "string" || !raw) return [];
   try {
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? ((parsed as unknown[]) as string[]) : [];
+    return Array.isArray(parsed) ? (parsed as unknown[] as string[]) : [];
   } catch {
     return [];
   }
 }
 
-function mapConfigFields(
-  fields: Array<{ key: string; value: string }>,
-): AppConfig {
+function mapConfigFields(fields: Array<{ key: string; value: string }>): AppConfig {
   const result: Record<string, unknown> = {};
   for (const field of fields) {
     result[field.key] = field.value;
@@ -82,7 +77,7 @@ function mapConfigFields(
     staticDeferDefaults:
       parseJsonArray(result.static_defer_defaults).length > 0
         ? parseJsonArray(result.static_defer_defaults)
-        : ["wpm","gtm"],
+        : [...DEFAULT_DELAY_SCRIPTS],
     // Toggle states + preserved snapshots are DB-only (see
     // IMPLEMENTATION_PLAN_6.md) and are never read from or written to the
     // metaobject. These defaults exist only to satisfy the AppConfig type;
@@ -96,12 +91,12 @@ function mapConfigFields(
     auditComplete: result.audit_complete === "true",
     appEndpoint: typeof result.app_endpoint === "string" ? result.app_endpoint : "",
 
-    // NEW: First User Delay Scripts and Every Time Delay - DB-only, not in metaobject
-    firstUserDelayScripts: ["wpm","gtm"],
+    // Delay defaults are DB-only; the Shopify metaobject has no fields for them.
+    firstUserDelayScripts: [...DEFAULT_DELAY_SCRIPTS],
     firstUserDelayScriptsEnabled: true,
     firstUserDelayScriptsPreserved: [],
-    firstUserDelayMs: 12000,
-    everyTimeDelayMs: 6000,
+    firstUserDelayMs: FIRST_USER_DELAY_MS,
+    everyTimeDelayMs: EVERY_TIME_DELAY_MS,
   };
 }
 
@@ -117,7 +112,7 @@ export function defaultAppConfig(): AppConfig {
     debugMode: false,
     auditDeferArray: [],
     auditHideSelectors: [],
-    staticDeferDefaults: ["wpm","gtm"],
+    staticDeferDefaults: [...DEFAULT_DELAY_SCRIPTS],
     // DB-only (see IMPLEMENTATION_PLAN_6.md) — defaults here only satisfy the
     // AppConfig type; the loader always overlays the real DB values.
     auditDeferArrayEnabled: true,
@@ -129,18 +124,16 @@ export function defaultAppConfig(): AppConfig {
     auditComplete: false,
     appEndpoint: "",
 
-    // NEW: First User Delay Scripts and Every Time Delay - DB-only, not in metaobject
-    firstUserDelayScripts: ["wpm","gtm"],
+    // Delay defaults are DB-only; the Shopify metaobject has no fields for them.
+    firstUserDelayScripts: [...DEFAULT_DELAY_SCRIPTS],
     firstUserDelayScriptsEnabled: true,
     firstUserDelayScriptsPreserved: [],
-    firstUserDelayMs: 12000,
-    everyTimeDelayMs: 6000,
+    firstUserDelayMs: FIRST_USER_DELAY_MS,
+    everyTimeDelayMs: EVERY_TIME_DELAY_MS,
   };
 }
 
-function buildFields(
-  input: AppConfigInput,
-): Array<{ key: string; value: string }> {
+function buildFields(input: AppConfigInput): Array<{ key: string; value: string }> {
   const fields: Array<{ key: string; value: string }> = [];
   if (input.appEnabled !== undefined)
     fields.push({ key: "app_enabled", value: String(input.appEnabled) });
@@ -163,9 +156,7 @@ function buildFields(
   // string. Blank entries are rejected by Shopify validation ("Value can't be
   // blank"), so drop empty strings and store an empty array when there are none.
   if (input.scriptTitles !== undefined) {
-    const nonBlank = (input.scriptTitles ?? []).filter(
-      (t) => t && t.trim() !== "",
-    );
+    const nonBlank = (input.scriptTitles ?? []).filter((t) => t && t.trim() !== "");
     fields.push({ key: "script_titles", value: JSON.stringify(nonBlank) });
   }
   if (input.debugMode !== undefined)
@@ -283,9 +274,7 @@ export async function updateConfig(
   const data = await response.json();
   const result = data.data?.metaobjectUpdate ?? data.data?.metaobjectCreate;
   if (result?.userErrors?.length) {
-    throw new Error(
-      result.userErrors.map((e: { message: string }) => e.message).join(", "),
-    );
+    throw new Error(result.userErrors.map((e: { message: string }) => e.message).join(", "));
   }
 
   return mapConfigFields(result.metaobject.fields);
@@ -319,7 +308,7 @@ export async function ensureConfig(
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
     if (message.includes("No metaobject definition exists")) {
-      console.warn(
+      logger.warn(
         "[ensureConfig] Metaobject definition not deployed yet. " +
           "Run `shopify app config push` to create it. " +
           "Returning defaults for now.",
@@ -370,7 +359,7 @@ export async function ensureAppEndpoint(
   } catch (err: unknown) {
     if (err instanceof Response) throw err;
     const message = err instanceof Error ? err.message : String(err);
-    console.warn(
+    logger.warn(
       "[ensureAppEndpoint] Could not sync app_endpoint:",
       message,
       currentConfig ? "Keeping already-loaded config." : "Using defaults.",
@@ -384,9 +373,7 @@ export async function ensureAppEndpoint(
  * OFF->ON cycle. Sets audit_complete=false and clears both audit arrays.
  * Non-fatal — swaps any failure, so it never breaks the dashboard toggle.
  */
-export async function resetAudit(
-  requestOrAdmin: RequestOrAdmin,
-): Promise<AppConfig> {
+export async function resetAudit(requestOrAdmin: RequestOrAdmin): Promise<AppConfig> {
   const admin = await resolveAdmin(requestOrAdmin);
   try {
     return await updateConfig(admin, {
@@ -396,7 +383,7 @@ export async function resetAudit(
     });
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
-    console.warn("[resetAudit] Could not reset audit state:", message);
+    logger.warn("[resetAudit] Could not reset audit state:", message);
     return defaultAppConfig();
   }
 }

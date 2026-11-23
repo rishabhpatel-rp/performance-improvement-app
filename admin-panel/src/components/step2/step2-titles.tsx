@@ -43,12 +43,10 @@ export default function Step2Titles({
   const [delayOriginals, setDelayOriginals] = useState<Record<string, string | number>>({});
   const [toggles, setToggles] = useState<Record<string, boolean>>({});
 
-  const prevScopeRef = useRef(scope);
   const draftsRef = useRef(drafts);
   const originalsRef = useRef(originals);
   const delayDraftsRef = useRef(delayDrafts);
   const delayOriginalsRef = useRef(delayOriginals);
-  const priorOriginalsRef = useRef<Record<string, string>>({});
   const [externalChangeNotice, setExternalChangeNotice] = useState(false);
 
   useEffect(() => {
@@ -73,10 +71,11 @@ export default function Step2Titles({
     });
   }, [config]);
 
+  // Reconcile local drafts with the config the server last returned.
+  // A draft the user has edited is kept across polls and tab switches; it is
+  // only replaced once it matches the stored value (e.g. after our own save).
   useEffect(() => {
     const FIELDS = fieldsForScope(scope);
-    const scopeChanged = prevScopeRef.current !== scope;
-    prevScopeRef.current = scope;
 
     const prevListDrafts = draftsRef.current;
     const prevListOriginals = originalsRef.current;
@@ -84,22 +83,24 @@ export default function Step2Titles({
     const nextListDrafts = { ...prevListDrafts };
 
     let external = false;
+    let anyLocalEdit = false;
     FIELDS.forEach(({ key }) => {
-      const text = toEditable(config[key] ?? []);
-      nextListOriginals[key] = text;
-      const dirty =
-        !scopeChanged && prevListDrafts[key] !== prevListOriginals[key];
-      if (
-        !scopeChanged &&
-        dirty &&
-        text !== prevListOriginals[key]
-      ) {
-        external = true;
+      const stored = toEditable(config[key] ?? []);
+      const draft = prevListDrafts[key];
+      const original = prevListOriginals[key];
+      nextListOriginals[key] = stored;
+
+      const hasLocalEdit = draft !== undefined && draft !== original;
+      if (!hasLocalEdit || draft === stored) {
+        nextListDrafts[key] = stored;
+        return;
       }
-      if (!dirty) nextListDrafts[key] = text;
+      anyLocalEdit = true;
+      // Someone else changed the stored value while we hold unsaved edits.
+      if (original !== undefined && stored !== original) external = true;
     });
     if (external) setExternalChangeNotice(true);
-    priorOriginalsRef.current = { ...prevListOriginals };
+    else if (!anyLocalEdit) setExternalChangeNotice(false);
     setOriginals(nextListOriginals);
     setDrafts(nextListDrafts);
 
@@ -111,11 +112,10 @@ export default function Step2Titles({
       if (!delayKey) return;
       const ms = (config[delayKey] as number | undefined) ?? delayDefault ?? 0;
       const seconds = Math.floor(ms / 1000);
+      const draft = prevDelayDrafts[delayKey];
+      const hasLocalEdit = draft !== undefined && draft !== prevDelayOriginals[delayKey];
       nextDelayOriginals[delayKey] = seconds;
-      const dirty =
-        !scopeChanged &&
-        prevDelayDrafts[delayKey] !== prevDelayOriginals[delayKey];
-      if (!dirty) nextDelayDrafts[delayKey] = seconds;
+      if (!hasLocalEdit || draft === seconds) nextDelayDrafts[delayKey] = seconds;
     });
     setDelayOriginals(nextDelayOriginals);
     setDelayDrafts(nextDelayDrafts);
@@ -131,8 +131,7 @@ export default function Step2Titles({
     }
   };
 
-  const isDelayDirty = (delayKey: string) =>
-    delayDrafts[delayKey] !== delayOriginals[delayKey];
+  const isDelayDirty = (delayKey: string) => delayDrafts[delayKey] !== delayOriginals[delayKey];
 
   const isEnabled = (field: Step2FieldDef) =>
     toggles[field.toggleField] ?? config[field.enabledKey] !== false;
@@ -171,13 +170,10 @@ export default function Step2Titles({
     const delayDirty = Boolean(field.delayKey && isDelayDirty(field.delayKey));
     const hasJsonError = enabled && !valid;
     const showSave = enabled && valid && (dirty || delayDirty);
-    const isSaving = savingKey === field.key;
+    const isSaving = savingKey === field.key || savingKey === `toggle:${field.toggleField}`;
 
     return (
-      <div
-        key={field.key}
-        className={`pp-audit-card${hasJsonError ? " is-error" : ""}`}
-      >
+      <div key={field.key} className={`pp-audit-card${hasJsonError ? " is-error" : ""}`}>
         <div className="pp-audit-card__header">
           <div className="pp-audit-card__title">{field.label}</div>
           <div className="pp-audit-card__actions">
@@ -213,10 +209,7 @@ export default function Step2Titles({
               className="pp-audit-delay__input"
               value={
                 delayDrafts[field.delayKey] ??
-                Math.floor(
-                  ((config[field.delayKey] as number) ?? field.delayDefault ?? 0) /
-                    1000,
-                )
+                Math.floor(((config[field.delayKey] as number) ?? field.delayDefault ?? 0) / 1000)
               }
               onChange={(e) => handleDelayChange(field.delayKey!, e.target.value)}
               disabled={!enabled || readOnly}
@@ -248,8 +241,8 @@ export default function Step2Titles({
           />
         ) : (
           <PpBanner tone="info">
-            {field.label} is disabled. Its stored value is preserved and will be
-            restored when you toggle it on.
+            {field.label} is disabled. Its stored value is preserved and will be restored when you
+            toggle it on.
           </PpBanner>
         )}
       </div>
@@ -259,17 +252,13 @@ export default function Step2Titles({
   return (
     <div className="pp-audit-fields">
       {externalChangeNotice && (
-        <PpBanner tone="info">
-          This list was changed elsewhere. Your unsaved edit is kept.
-        </PpBanner>
+        <PpBanner tone="info">This list was changed elsewhere. Your unsaved edit is kept.</PpBanner>
       )}
-      {saveError && (
-        <PpBanner tone="critical">Save failed: {saveError}</PpBanner>
-      )}
+      {saveError && <PpBanner tone="critical">Save failed: {saveError}</PpBanner>}
       {metafieldWarning && (
         <PpBanner tone="warning">
-          Saved in the database. The shop is still running the previous script
-          because the metafield update failed.
+          Saved in the database. The shop is still running the previous script because the metafield
+          update failed.
         </PpBanner>
       )}
 

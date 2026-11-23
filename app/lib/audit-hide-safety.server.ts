@@ -2,13 +2,31 @@ import type { TemplateListBuckets } from "./template-script-config.ts";
 import { TEMPLATE_SCOPES, unionTemplateLists } from "./template-script-config.ts";
 
 /** Theme-wide classes that must never be hide-gated (lazy-load chrome, etc.). */
-const EXACT_UNSAFE_HIDE = new Set([
-  ".lazyload",
-  ".lazyloaded",
-  ".ls-is-cached",
-]);
+const EXACT_UNSAFE_HIDE = new Set([".lazyload", ".lazyloaded", ".ls-is-cached"]);
 
 const UNSAFE_HIDE_CLASS_TOKENS = new Set(["lazyload", "lazyloaded", "ls-is-cached"]);
+
+const UNSAFE_STRUCTURAL_PATTERNS = [
+  /^(header|nav|main|aside|footer)$/i,
+  /^\.shopify-section/i,
+  /^#header$/i,
+  /^#nav$/i,
+  /^\.header/i,
+  /^\.nav/i,
+  /^\.sticky/i,
+  /^\.announcement/i,
+  /^\.cart-/i,
+  /^#cart/i,
+  /\[data-cart/i,
+  /cookie|consent|gdpr/i,
+];
+
+export function isStructurallyUnsafeSelector(selector: string): boolean {
+  const t = String(selector || "")
+    .trim()
+    .toLowerCase();
+  return UNSAFE_STRUCTURAL_PATTERNS.some((p) => p.test(t));
+}
 
 /** Selectors too broad to use as hide rules — they match header/hero media. */
 export function isUnsafeHideSelector(selector: string): boolean {
@@ -17,6 +35,7 @@ export function isUnsafeHideSelector(selector: string): boolean {
   if (EXACT_UNSAFE_HIDE.has(s)) return true;
   const singleClass = /^\.([a-zA-Z0-9_-]+)$/.exec(s);
   if (singleClass && UNSAFE_HIDE_CLASS_TOKENS.has(singleClass[1])) return true;
+  if (isStructurallyUnsafeSelector(s)) return true;
   return false;
 }
 

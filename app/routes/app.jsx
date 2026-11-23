@@ -2,6 +2,8 @@ import { Outlet, useLoaderData, useRouteError } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { AppProvider } from "@shopify/shopify-app-react-router/react";
 import { authenticate } from "../shopify.server";
+import { getEnv } from "../lib/env.server.ts";
+import RouteErrorBoundary from "../components/RouteErrorBoundary.jsx";
 
 // Request-scoped key for caching auth result
 const AUTH_CACHE_KEY = "__pagepulse_admin_auth__";
@@ -10,8 +12,7 @@ export const loader = async ({ request }) => {
   // Check if auth was already done in this request (by a parent loader)
   const cached = request[AUTH_CACHE_KEY];
   if (cached) {
-    // eslint-disable-next-line no-undef
-    return { apiKey: process.env.SHOPIFY_API_KEY || "" };
+    return { apiKey: getEnv().SHOPIFY_API_KEY };
   }
 
   const { admin, session } = await authenticate.admin(request);
@@ -19,8 +20,7 @@ export const loader = async ({ request }) => {
   // Cache for child loaders in the same request
   request[AUTH_CACHE_KEY] = { admin, session };
 
-  // eslint-disable-next-line no-undef
-  return { apiKey: process.env.SHOPIFY_API_KEY || "" };
+  return { apiKey: getEnv().SHOPIFY_API_KEY };
 };
 
 export default function App() {
@@ -29,7 +29,9 @@ export default function App() {
   return (
     <AppProvider embedded apiKey={apiKey}>
       <s-app-nav>
-        <s-link href="/app" rel="home">Dashboard</s-link>
+        <s-link href="/app" rel="home">
+          Dashboard
+        </s-link>
         <s-link href="/app/extension">App extension</s-link>
         <s-link href="/app/settings">Settings</s-link>
       </s-app-nav>
@@ -40,7 +42,7 @@ export default function App() {
 
 // Shopify needs React Router to catch some thrown responses, so that their headers are included in the response.
 export function ErrorBoundary() {
-  return boundary.error(useRouteError());
+  return <RouteErrorBoundary error={useRouteError()} />;
 }
 
 export const headers = (headersArgs) => {

@@ -1,11 +1,10 @@
 import { authenticate } from "../shopify.server";
 import prisma from "../db.server";
 import { rebuildPerformanceScript } from "../lib/performance-script.server";
-import {
-  resolveVerifiedProxyShop,
-  verifyAppProxyShop,
-} from "../lib/proxy-shop";
+import { resolveVerifiedProxyShop, verifyAppProxyShop } from "../lib/proxy-shop";
 
+import { logger } from "../lib/logger.ts";
+import { getEnv } from "../lib/env.server.ts";
 // Storefront script endpoint, reached through the app proxy
 // (/apps/performance-scripts) by the blocking <script src> in the theme app
 // embed (extensions/script-injector/blocks/performance-loader.liquid).
@@ -96,8 +95,7 @@ export const loader = async ({ request }) => {
     // authenticated path, which is slower but authoritative. A canonicalisation
     // change at Shopify can therefore cost latency, never correctness.
     const shopDomain =
-      // eslint-disable-next-line no-undef
-      verifyAppProxyShop(request, process.env.SHOPIFY_API_SECRET) ??
+      verifyAppProxyShop(request, getEnv().SHOPIFY_API_SECRET) ??
       resolveVerifiedProxyShop(await authenticate.public.appProxy(request));
 
     // SECURITY: never fall back to an unsigned `shop` query param.
@@ -114,7 +112,7 @@ export const loader = async ({ request }) => {
 
     return await loadStorefrontScript(request, shopDomain);
   } catch (error) {
-    console.error("[api.storefront-scripts] loader failed:", error);
+    logger.error("[api.storefront-scripts] loader failed:", error);
     // A failing script tag must never break the storefront; don't cache it.
     return new Response("/* pp:error */", {
       status: 200,

@@ -4,10 +4,7 @@ import {
   type ThemeHeadInjectResult,
   type AdminGraphQL,
 } from "./theme-head-inject.server";
-import {
-  isThemeFilesExemptDenied,
-  THEME_HEAD_INJECT_STATUS,
-} from "./theme-head-inject-utils.js";
+import { isThemeFilesExemptDenied, THEME_HEAD_INJECT_STATUS } from "./theme-head-inject-utils.ts";
 
 export { isThemeFilesExemptDenied, THEME_HEAD_INJECT_STATUS };
 
@@ -87,11 +84,7 @@ export async function attemptThemeHeadInject(
   options: { force?: boolean } = {},
 ): Promise<ThemeHeadInjectResult> {
   const cfg = await getInjectState(shopDomain);
-  if (
-    !options.force &&
-    cfg &&
-    (await shouldSkipThemeHeadInject(shopDomain))
-  ) {
+  if (!options.force && cfg && (await shouldSkipThemeHeadInject(shopDomain))) {
     const reason =
       cfg.themeHeadInjectStatus === THEME_HEAD_INJECT_STATUS.INJECTED
         ? "already injected"

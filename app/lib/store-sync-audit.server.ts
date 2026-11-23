@@ -1,3 +1,4 @@
+import { DEFAULT_DELAY_SCRIPTS } from "./constants.ts";
 import prisma from "../db.server";
 import { rebuildPerformanceScript } from "./performance-script.server";
 import type { HiddenAuditResult } from "./audit.server";
@@ -15,7 +16,9 @@ import {
   type ListFamily,
   type ScopeListPatch,
 } from "./storefront-lists";
-const DEFAULT_STATIC_DEFER = ["wpm", "gtm"];
+import { logger } from "./logger.ts";
+import { decryptStorefrontPassword } from "./storefront-password.server.ts";
+const DEFAULT_STATIC_DEFER = [...DEFAULT_DELAY_SCRIPTS];
 
 export type AuditReport = HiddenAuditResult;
 
@@ -31,7 +34,7 @@ export async function saveAuditReport(
   });
 
   if (!store) {
-    console.warn(`[saveAuditReport] No store found for ${shopDomain}. Skipped.`);
+    logger.warn(`[saveAuditReport] No store found for ${shopDomain}. Skipped.`);
     return null;
   }
 
@@ -50,11 +53,7 @@ export async function saveAuditReport(
     report.foldAssertion ?? { ok: true, violations: [], pagesChecked: 0 },
   );
   const hideForStore = hideOn ? foldPolicy.hideSelectors : [];
-  const reportWarnings = [
-    ...(report.warnings ?? []),
-    ...hygiene.warnings,
-    ...foldPolicy.warnings,
-  ];
+  const reportWarnings = [...(report.warnings ?? []), ...hygiene.warnings, ...foldPolicy.warnings];
   const reportToPersist: AuditReport = {
     ...report,
     hideSelectors: hideForStore,
@@ -81,10 +80,7 @@ export async function saveAuditReport(
       hideOn && foldPolicy.ok
         ? filterHideTemplateBuckets(report.templateBuckets.hide, hideForStore)
         : emptyHideTemplateBuckets();
-    templatePatch = templateBucketsToStorePatch(
-      report.templateBuckets.defer,
-      hideBuckets,
-    );
+    templatePatch = templateBucketsToStorePatch(report.templateBuckets.defer, hideBuckets);
     if (!deferOn) {
       for (const key of Object.keys(templatePatch)) {
         if (key.startsWith("auditDefer")) templatePatch[key] = [];
@@ -97,11 +93,26 @@ export async function saveAuditReport(
     }
   }
 
+  const everyFromAudit = report.delayEveryArray ?? [];
+  const firstFromAudit = report.delayFirstArray ?? [];
+  const staticDeferMerged = [...new Set([...DEFAULT_STATIC_DEFER, ...everyFromAudit])];
+  const firstUserMerged = [...new Set([...DEFAULT_STATIC_DEFER, ...firstFromAudit])];
+
   const reportPatch = {
     ...runState,
     lastAuditAt: new Date(),
-    auditDeferArray: deferOn ? templatePatch.auditDeferArray ?? activeDefer : [],
-    auditHideSelectors: hideOn ? templatePatch.auditHideSelectors ?? hideForStore : [],
+    auditDeferArray: deferOn ? (templatePatch.auditDeferArray ?? activeDefer) : [],
+    auditHideSelectors: hideOn ? (templatePatch.auditHideSelectors ?? hideForStore) : [],
+    // Write to BOTH the legacy column (backward compat) AND the template-scoped
+    // "Global" column that rebuildPerformanceScript() actually reads.
+    // Without the template-scoped write, readBucketsFromRow() skips the legacy
+    // column whenever staticDeferDefaultsGlobal is non-empty, so all
+    // audit-driven delayEveryArray scripts were silently dropped from the
+    // generated storefront script.
+    staticDeferDefaults: staticDeferMerged,
+    staticDeferDefaultsGlobal: staticDeferMerged,
+    firstUserDelayScripts: firstUserMerged,
+    firstUserDelayScriptsGlobal: firstUserMerged,
     ...(deferOn ? {} : { auditDeferArrayPreserved: report.deferArray }),
     ...(hideOn ? {} : { auditHideSelectorsPreserved: report.hideSelectors }),
     ...templatePatch,
@@ -113,9 +124,7 @@ export async function saveAuditReport(
       data: reportPatch,
     });
     if (wrote.count === 0) {
-      console.warn(
-        `[saveAuditReport] skipped stale job ${activeJobId} for ${shopDomain}`,
-      );
+      logger.warn(`[saveAuditReport] skipped stale job ${activeJobId} for ${shopDomain}`);
       return null;
     }
   } else {
@@ -131,7 +140,6 @@ export async function saveAuditReport(
         scriptTitles: [],
         auditDeferArrayPreserved: deferOn ? [] : report.deferArray,
         auditHideSelectorsPreserved: hideOn ? [] : report.hideSelectors,
-        staticDeferDefaults: DEFAULT_STATIC_DEFER,
         ...reportPatch,
       },
       update: reportPatch,
@@ -168,11 +176,9 @@ export async function saveAuditReport(
     schedulePsiAfterAudit(
       shopDomain,
       pageUrls.length ? pageUrls : [`https://${shopDomain}/`],
-      current?.storefrontPassword ?? null,
+      decryptStorefrontPassword(current?.storefrontPassword ?? null),
     );
-    const { healStoreTemplateFromReport } = await import(
-      "./heal-template-config.server"
-    );
+    const { healStoreTemplateFromReport } = await import("./heal-template-config.server");
     void healStoreTemplateFromReport(shopDomain, report);
   }
 
@@ -180,15 +186,9 @@ export async function saveAuditReport(
 }
 
 export type { AuditArrayPatch } from "./update-audit-config.server";
-export {
-  updateAuditArrays,
-  updateAuditFieldToggle,
-} from "./update-audit-config.server";
+export { updateAuditArrays, updateAuditFieldToggle } from "./update-audit-config.server";
 
-async function writeStorefrontPatch(
-  shopDomain: string,
-  data: Record<string, unknown>,
-) {
+async function writeStorefrontPatch(shopDomain: string, data: Record<string, unknown>) {
   const store = await prisma.store.findUnique({ where: { shopDomain } });
   if (!store) return null;
   const existing = await prisma.storeConfig.findUnique({

@@ -1,10 +1,8 @@
 import { authenticate } from "../shopify.server";
 import { listThemes, getSelectedThemeId } from "../lib/theme-embed.server";
-import {
-  withShopifyTimeout,
-  rethrowAuthRedirect,
-} from "../lib/shopify-timeout.server";
+import { withShopifyTimeout, rethrowAuthRedirect } from "../lib/shopify-timeout.server";
 
+import { logger } from "../lib/logger.ts";
 /**
  * GET /api/themes
  * Themes the merchant can install the app extension in (live first), plus the
@@ -27,10 +25,7 @@ export const loader = async ({ request }) => {
     };
   } catch (err) {
     rethrowAuthRedirect(err);
-    console.error(
-      "[api.themes] Failed to load themes:",
-      err instanceof Error ? err.message : err,
-    );
+    logger.error("[api.themes] Failed to load themes:", err instanceof Error ? err.message : err);
     return {
       ok: false,
       themes: [],

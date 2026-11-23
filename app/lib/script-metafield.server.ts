@@ -9,6 +9,7 @@ import {
 } from "./script-inline";
 import { attemptThemeHeadInject } from "./theme-head-inject-status.server";
 
+import { logger } from "./logger.ts";
 /**
  * Keeps the shop metafield (rendered inline by the theme app embed) in step
  * with `PerformanceScript.deferScript`.
@@ -46,7 +47,7 @@ async function withRetry<T>(label: string, fn: () => Promise<T>): Promise<T> {
   try {
     return await withShopifyTimeout(fn(), label, SYNC_CALL_TIMEOUT_MS);
   } catch (first) {
-    console.warn(
+    logger.warn(
       `[script-metafield] ${label} failed, retrying once:`,
       first instanceof Error ? first.message : first,
     );
@@ -64,11 +65,9 @@ async function logThemeHeadInjectResult(
   result: Awaited<ReturnType<typeof attemptThemeHeadInject>>,
 ): Promise<void> {
   if (result.status === "injected") {
-    console.log(`[script-metafield] theme head inject ok for ${shopDomain}`);
+    logger.info(`[script-metafield] theme head inject ok for ${shopDomain}`);
   } else if (result.status === "failed") {
-    console.warn(
-      `[script-metafield] theme head inject for ${shopDomain}: ${result.reason}`,
-    );
+    logger.warn(`[script-metafield] theme head inject for ${shopDomain}: ${result.reason}`);
   }
 }
 
@@ -127,20 +126,15 @@ export function syncScriptMetafield(shopDomain: string): Promise<SyncResult> {
           "ensureScriptDefinition",
           SYNC_CALL_TIMEOUT_MS,
         ).catch(() => undefined);
-        await withRetry("writeScriptMetafield", () =>
-          writeScriptMetafield(admin, script),
-        );
+        await withRetry("writeScriptMetafield", () => writeScriptMetafield(admin, script));
         await prisma.performanceScript.updateMany({
           where: { storeId: store.id },
           data: { metafieldHash: plan.hash, metafieldSyncedAt: new Date() },
         });
-        console.log(
+        logger.info(
           `[script-metafield] wrote inline script for ${shopDomain} (${Buffer.byteLength(script)} bytes)`,
         );
-        await logThemeHeadInjectResult(
-          shopDomain,
-          await attemptThemeHeadInject(shopDomain, admin),
-        );
+        await logThemeHeadInjectResult(shopDomain, await attemptThemeHeadInject(shopDomain, admin));
         return { status: "written", hash: plan.hash };
       }
 
@@ -149,11 +143,11 @@ export function syncScriptMetafield(shopDomain: string): Promise<SyncResult> {
         where: { storeId: store.id },
         data: { metafieldHash: null, metafieldSyncedAt: new Date() },
       });
-      console.log(`[script-metafield] cleared for ${shopDomain}: ${plan.reason}`);
+      logger.info(`[script-metafield] cleared for ${shopDomain}: ${plan.reason}`);
       return { status: "cleared", reason: plan.reason };
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
-      console.error(`[script-metafield] sync failed for ${shopDomain}:`, reason);
+      logger.error(`[script-metafield] sync failed for ${shopDomain}:`, reason);
       return { status: "failed", reason };
     }
   });
@@ -171,7 +165,7 @@ export function clearScriptMetafield(shopDomain: string): Promise<SyncResult> {
       return { status: "cleared", reason: "explicit clear" };
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
-      console.error(`[script-metafield] clear failed for ${shopDomain}:`, reason);
+      logger.error(`[script-metafield] clear failed for ${shopDomain}:`, reason);
       return { status: "failed", reason };
     }
   });
@@ -218,12 +212,9 @@ export async function reconcileScriptMetafield(
     if (active && store.performanceScript?.deferScript) {
       try {
         const admin = await adminFor(shopDomain);
-        await logThemeHeadInjectResult(
-          shopDomain,
-          await attemptThemeHeadInject(shopDomain, admin),
-        );
+        await logThemeHeadInjectResult(shopDomain, await attemptThemeHeadInject(shopDomain, admin));
       } catch (err) {
-        console.warn(
+        logger.warn(
           `[script-metafield] theme head inject on reconcile for ${shopDomain}:`,
           err instanceof Error ? err.message : err,
         );
@@ -232,7 +223,7 @@ export async function reconcileScriptMetafield(
     return syncResult;
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);
-    console.error(`[script-metafield] reconcile failed for ${shopDomain}:`, reason);
+    logger.error(`[script-metafield] reconcile failed for ${shopDomain}:`, reason);
     return { status: "failed", reason };
   }
 }

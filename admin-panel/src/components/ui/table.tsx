@@ -9,7 +9,10 @@ export function Table({ className, ...props }: React.TableHTMLAttributes<HTMLTab
   );
 }
 
-export function TableHeader({ className, ...props }: React.HTMLAttributes<HTMLTableSectionElement>) {
+export function TableHeader({
+  className,
+  ...props
+}: React.HTMLAttributes<HTMLTableSectionElement>) {
   return <thead className={cn("[&_tr]:border-b", className)} {...props} />;
 }
 

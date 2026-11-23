@@ -1,12 +1,13 @@
+import { FIRST_USER_DELAY_MS, EVERY_TIME_DELAY_MS } from "./constants.ts";
 import { createHash } from "node:crypto";
 import prisma from "../db.server";
-import {
-  MIN_PER_PAGE_DELTA,
-  orderPagePatterns,
-  selectPerPageVariants,
-} from "./per-page";
+import { MIN_PER_PAGE_DELTA, orderPagePatterns, selectPerPageVariants } from "./per-page";
 import { sanitizeHideSelectorsForStore } from "./audit-hide-safety.server";
-import { buildHiddenCss, buildDeferredScriptSource, generateDeferredScript } from "./script-generator";
+import {
+  buildHiddenCss,
+  buildDeferredScriptSource,
+  generateDeferredScript,
+} from "./script-generator";
 import { templateScopedPageVariants } from "./audit-template-buckets";
 import {
   readBucketsFromRow,
@@ -17,6 +18,8 @@ import {
   unionTemplateLists,
 } from "./template-script-config";
 
+import { STOREFRONT_ERROR_MONITOR_SNIPPET } from "./storefront-error-monitor.ts";
+import { logger } from "./logger.ts";
 /**
  * Per-page data from the most recent completed audit.
  *
@@ -28,9 +31,7 @@ import {
  * single union in `StoreConfig`, which is exactly today's behaviour.
  */
 /** Kept for callers that still want the audit log's per-page split. The injected script does not use it. */
-export async function readPerPageAuditData(
-  shopDomain: string,
-): Promise<{
+export async function readPerPageAuditData(shopDomain: string): Promise<{
   baseScripts: string[];
   variants: Array<{ pattern: string; add: string[]; hide: string[] }>;
 } | null> {
@@ -55,12 +56,7 @@ export async function readPerPageAuditData(
     const adds = data.deferArrayAddByPage;
     const hides = data.hideSelectorsByPage;
     const patterns = data.pagePatterns;
-    if (
-      !adds ||
-      typeof adds !== "object" ||
-      !patterns ||
-      typeof patterns !== "object"
-    ) {
+    if (!adds || typeof adds !== "object" || !patterns || typeof patterns !== "object") {
       return null;
     }
     const addMap = adds as Record<string, unknown>;
@@ -90,9 +86,7 @@ export async function readPerPageAuditData(
       for (const page of Object.keys(patternMap)) {
         if (!readStringArray(patternMap[page]).includes(pattern)) continue;
         readStringArray(addMap[page]).forEach((x) => add.add(x));
-        sanitizeHideSelectorsForStore(readStringArray(hideMap[page])).forEach((x) =>
-          hide.add(x),
-        );
+        sanitizeHideSelectorsForStore(readStringArray(hideMap[page])).forEach((x) => hide.add(x));
       }
       return { pattern, add: [...add], hide: [...hide] };
     });
@@ -111,7 +105,7 @@ export async function readPerPageAuditData(
     // cannot express, and they are not part of the per-page script payload.
     const variants = selectPerPageVariants(candidates);
     if (variants.length !== candidates.length) {
-      console.log(
+      logger.info(
         `[perf] per-page threshold ${MIN_PER_PAGE_DELTA}: kept ${variants.length}/${candidates.length} ` +
           `variants, dropped ${candidates
             .filter((v) => !variants.includes(v))
@@ -153,7 +147,12 @@ function delayMs(row: Record<string, unknown>, key: string, fallback: number): n
 }
 
 function emptyBuckets() {
-  return { global: [] as string[], home: [] as string[], collection: [] as string[], product: [] as string[] };
+  return {
+    global: [] as string[],
+    home: [] as string[],
+    collection: [] as string[],
+    product: [] as string[],
+  };
 }
 
 /**
@@ -211,14 +210,38 @@ export async function rebuildPerformanceScript(
         : emptyBuckets();
 
       const firstMs = {
-        home: delayMs(row, "firstUserDelayMsHome", delayMs(row, "firstUserDelayMs", 12000)),
-        collection: delayMs(row, "firstUserDelayMsCollection", delayMs(row, "firstUserDelayMs", 12000)),
-        product: delayMs(row, "firstUserDelayMsProduct", delayMs(row, "firstUserDelayMs", 12000)),
+        home: delayMs(
+          row,
+          "firstUserDelayMsHome",
+          delayMs(row, "firstUserDelayMs", FIRST_USER_DELAY_MS),
+        ),
+        collection: delayMs(
+          row,
+          "firstUserDelayMsCollection",
+          delayMs(row, "firstUserDelayMs", FIRST_USER_DELAY_MS),
+        ),
+        product: delayMs(
+          row,
+          "firstUserDelayMsProduct",
+          delayMs(row, "firstUserDelayMs", FIRST_USER_DELAY_MS),
+        ),
       };
       const everyMs = {
-        home: delayMs(row, "everyTimeDelayMsHome", delayMs(row, "everyTimeDelayMs", 6000)),
-        collection: delayMs(row, "everyTimeDelayMsCollection", delayMs(row, "everyTimeDelayMs", 6000)),
-        product: delayMs(row, "everyTimeDelayMsProduct", delayMs(row, "everyTimeDelayMs", 6000)),
+        home: delayMs(
+          row,
+          "everyTimeDelayMsHome",
+          delayMs(row, "everyTimeDelayMs", EVERY_TIME_DELAY_MS),
+        ),
+        collection: delayMs(
+          row,
+          "everyTimeDelayMsCollection",
+          delayMs(row, "everyTimeDelayMs", EVERY_TIME_DELAY_MS),
+        ),
+        product: delayMs(
+          row,
+          "everyTimeDelayMsProduct",
+          delayMs(row, "everyTimeDelayMs", EVERY_TIME_DELAY_MS),
+        ),
       };
 
       const scriptInput = {
@@ -232,13 +255,21 @@ export async function rebuildPerformanceScript(
         hideSelectors: unionTemplateLists(hide),
         firstVisitDelayedScripts: [],
         everyLoadDelayedScripts: [],
-        firstVisitDelayMs: delayMs(row, "firstUserDelayMsGlobal", delayMs(row, "firstUserDelayMs", 12000)),
-        everyLoadDelayMs: delayMs(row, "everyTimeDelayMsGlobal", delayMs(row, "everyTimeDelayMs", 6000)),
+        firstVisitDelayMs: delayMs(
+          row,
+          "firstUserDelayMsGlobal",
+          delayMs(row, "firstUserDelayMs", FIRST_USER_DELAY_MS),
+        ),
+        everyLoadDelayMs: delayMs(
+          row,
+          "everyTimeDelayMsGlobal",
+          delayMs(row, "everyTimeDelayMs", EVERY_TIME_DELAY_MS),
+        ),
         debugMode: config.debugMode === true,
       };
 
-      readableScript = buildDeferredScriptSource(scriptInput);
-      deferScript = generateDeferredScript(scriptInput);
+      readableScript = buildDeferredScriptSource(scriptInput) + STOREFRONT_ERROR_MONITOR_SNIPPET;
+      deferScript = (await generateDeferredScript(scriptInput)) + STOREFRONT_ERROR_MONITOR_SNIPPET;
       hiddenCss = hideOn ? buildHiddenCss(unionTemplateLists(hide)) : "";
     }
 
@@ -270,7 +301,7 @@ export async function rebuildPerformanceScript(
 
     return built;
   } catch (err) {
-    console.error(
+    logger.error(
       `[performance-script] Rebuild failed for ${shopDomain}:`,
       err instanceof Error ? err.message : err,
     );

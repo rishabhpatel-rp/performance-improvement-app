@@ -1,30 +1,21 @@
-// Fixed-window login throttle (REMEDIATION_PROMPT.md Task 9).
-//
-// TWO BUCKETS are enforced: per-account (email|ip) AND per-IP alone. Either
-// one alone is insufficient — see checkBoth()/recordFailureBoth().
-//
-// DECISION NEEDED: limits below (5 failures / 15 min per email+IP key) are a
-// conservative default, not a product decision — tune MAX_ATTEMPTS/WINDOW_MS.
-// State is in-process memory, so it resets on restart and is NOT shared
-// across multiple instances. If the admin panel runs on >1 instance, back
-// this with Redis/Postgres instead; the function signatures can stay the same.
+// DB-backed fixed-window login/write throttle. Buckets live in Postgres so the
+// limit survives restarts and is shared across instances. An in-process map is
+// used only as a fallback when the database is unreachable.
+import { prisma } from "@/lib/prisma";
 
 export const MAX_ATTEMPTS = 5;
 export const WINDOW_MS = 15 * 60 * 1000;
+export const MAX_ATTEMPTS_PER_IP = 20;
+export const WINDOW_MS_PER_IP = 15 * 60 * 1000;
 
 type Entry = { count: number; resetAt: number };
-const attempts = new Map<string, Entry>();
+const memory = new Map<string, Entry>();
 
-export function checkRateLimit(
-  key: string,
-  now: number = Date.now(),
-  opts: { max?: number; windowMs?: number } = {},
-): { allowed: boolean; retryAfterSeconds: number } {
-  const max = opts.max ?? MAX_ATTEMPTS;
-  const entry = attempts.get(key);
-  if (!entry || entry.resetAt <= now) {
-    return { allowed: true, retryAfterSeconds: 0 };
-  }
+type Opts = { max?: number; windowMs?: number };
+type Verdict = { allowed: boolean; retryAfterSeconds: number };
+
+function evaluate(entry: Entry | null, now: number, max: number): Verdict {
+  if (!entry || entry.resetAt <= now) return { allowed: true, retryAfterSeconds: 0 };
   if (entry.count >= max) {
     return {
       allowed: false,
@@ -34,73 +25,104 @@ export function checkRateLimit(
   return { allowed: true, retryAfterSeconds: 0 };
 }
 
-export function recordFailure(
-  key: string,
-  now: number = Date.now(),
-  opts: { max?: number; windowMs?: number } = {},
-): void {
-  const windowMs = opts.windowMs ?? WINDOW_MS;
-  const entry = attempts.get(key);
-  if (!entry || entry.resetAt <= now) {
-    attempts.set(key, { count: 1, resetAt: now + windowMs });
-  } else {
-    entry.count += 1;
-  }
-  // Opportunistic cleanup so the map can't grow without bound.
-  if (attempts.size > 10_000) {
-    for (const [k, v] of attempts) if (v.resetAt <= now) attempts.delete(k);
+async function read(key: string, now: number): Promise<Entry | null> {
+  try {
+    const row = await prisma.rateLimitBucket.findUnique({ where: { key } });
+    if (!row || row.windowEnds.getTime() <= now) return null;
+    return { count: row.count, resetAt: row.windowEnds.getTime() };
+  } catch {
+    const entry = memory.get(key);
+    if (!entry || entry.resetAt <= now) return null;
+    return entry;
   }
 }
 
-export function resetAttempts(key: string): void {
-  attempts.delete(key);
+async function write(key: string, entry: Entry): Promise<void> {
+  try {
+    await prisma.rateLimitBucket.upsert({
+      where: { key },
+      create: { key, count: entry.count, windowEnds: new Date(entry.resetAt) },
+      update: { count: entry.count, windowEnds: new Date(entry.resetAt) },
+    });
+  } catch {
+    memory.set(key, entry);
+    if (memory.size > 10_000) {
+      for (const [k, v] of memory) if (v.resetAt <= Date.now()) memory.delete(k);
+    }
+  }
+}
+
+export async function checkRateLimit(
+  key: string,
+  now: number = Date.now(),
+  opts: Opts = {},
+): Promise<Verdict> {
+  return evaluate(await read(key, now), now, opts.max ?? MAX_ATTEMPTS);
+}
+
+export async function recordFailure(
+  key: string,
+  now: number = Date.now(),
+  opts: Opts = {},
+): Promise<void> {
+  const windowMs = opts.windowMs ?? WINDOW_MS;
+  const current = await read(key, now);
+  const entry: Entry =
+    !current || current.resetAt <= now
+      ? { count: 1, resetAt: now + windowMs }
+      : { count: current.count + 1, resetAt: current.resetAt };
+  await write(key, entry);
+}
+
+export async function consumeRateLimit(
+  key: string,
+  opts: { max: number; windowMs: number },
+  now: number = Date.now(),
+): Promise<Verdict> {
+  const verdict = await checkRateLimit(key, now, opts);
+  if (verdict.allowed) await recordFailure(key, now, opts);
+  return verdict;
+}
+
+export async function resetAttempts(key: string): Promise<void> {
+  memory.delete(key);
+  try {
+    await prisma.rateLimitBucket.delete({ where: { key } });
+  } catch {
+    // no row to delete (or DB unreachable) — nothing to do
+  }
 }
 
 export function loginKey(email: string, ip: string): string {
-  return `${String(email).trim().toLowerCase()}|${ip}`;
+  return `login|${String(email).trim().toLowerCase()}|${ip}`;
 }
-
-/**
- * A second, IP-only bucket. The per-account key alone is not enough in either
- * direction: enumerating N candidate emails yields MAX_ATTEMPTS guesses on each
- * with no aggregate ceiling, and a single victim account can be attacked from N
- * different IPs at MAX_ATTEMPTS tries each. Both buckets must be satisfied.
- */
-export const MAX_ATTEMPTS_PER_IP = 20;
-export const WINDOW_MS_PER_IP = 15 * 60 * 1000;
 
 export function ipKey(ip: string): string {
   return `ip|${ip}`;
 }
 
-/** True when neither the per-account nor the per-IP bucket is exhausted. */
-export function checkBoth(
+export async function checkBoth(
   accountKey: string,
   ipAddress: string,
   now: number = Date.now(),
-): { allowed: boolean; retryAfterSeconds: number; scope: "account" | "ip" | null } {
-  const account = checkRateLimit(accountKey, now);
-  if (!account.allowed) {
-    return { ...account, scope: "account" };
-  }
-  const perIp = checkRateLimit(ipKey(ipAddress), now, {
+): Promise<Verdict & { scope: "account" | "ip" | null }> {
+  const account = await checkRateLimit(accountKey, now);
+  if (!account.allowed) return { ...account, scope: "account" };
+  const perIp = await checkRateLimit(ipKey(ipAddress), now, {
     max: MAX_ATTEMPTS_PER_IP,
     windowMs: WINDOW_MS_PER_IP,
   });
-  if (!perIp.allowed) {
-    return { ...perIp, scope: "ip" };
-  }
+  if (!perIp.allowed) return { ...perIp, scope: "ip" };
   return { allowed: true, retryAfterSeconds: 0, scope: null };
 }
 
-/** Records a failure against BOTH buckets. */
-export function recordFailureBoth(
+export async function recordFailureBoth(
   accountKey: string,
   ipAddress: string,
   now: number = Date.now(),
-): void {
-  recordFailure(accountKey, now);
-  recordFailure(ipKey(ipAddress), now, {
+): Promise<void> {
+  await recordFailure(accountKey, now);
+  await recordFailure(ipKey(ipAddress), now, {
     max: MAX_ATTEMPTS_PER_IP,
     windowMs: WINDOW_MS_PER_IP,
   });

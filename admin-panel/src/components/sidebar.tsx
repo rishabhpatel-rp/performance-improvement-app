@@ -32,9 +32,7 @@ export default function Sidebar({ user }: { user: AdminSession }) {
       <nav className="flex-1 p-4 space-y-1">
         {NAV_ITEMS.map((item) => {
           const isActive =
-            item.href === "/dashboard"
-              ? pathname === item.href
-              : pathname.startsWith(item.href);
+            item.href === "/dashboard" ? pathname === item.href : pathname.startsWith(item.href);
           return (
             <Link
               key={item.href}

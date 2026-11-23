@@ -40,8 +40,7 @@ const COOKIE_SECURE = process.env.ADMIN_SESSION_INSECURE_COOKIE !== "1";
 
 /** Compared against when no admin matches, so an unknown email costs the same
  *  as a known one and cannot be distinguished by response timing. */
-const DUMMY_PASSWORD_HASH =
-  "$2a$12$LEuOmXC2Mbyhr3Ve6mPsXeB3Z3Tm9UqdW7ihXPXKYp/Sx/N8x0136";
+const DUMMY_PASSWORD_HASH = "$2a$12$LEuOmXC2Mbyhr3Ve6mPsXeB3Z3Tm9UqdW7ihXPXKYp/Sx/N8x0136";
 
 /** `AdminUser.email` is a case-sensitive TEXT @unique, so "Admin@x.com" and
  *  "admin@x.com" would otherwise be two separate accounts. */
@@ -75,10 +74,7 @@ export async function loginAdmin(email: string, password: string) {
 
   // Always pay the bcrypt cost, even for an unknown account, so response time
   // does not reveal whether the email exists.
-  const isValid = await bcrypt.compare(
-    password,
-    user ? user.passwordHash : DUMMY_PASSWORD_HASH,
-  );
+  const isValid = await bcrypt.compare(password, user ? user.passwordHash : DUMMY_PASSWORD_HASH);
   if (!user || !isValid) return null;
 
   await prisma.adminUser.update({
@@ -173,10 +169,7 @@ export async function createAdminUser(
  * refreshes the session cookie so the sidebar/etc reflect the change
  * immediately without requiring a re-login.
  */
-export async function updateAdminProfile(
-  userId: string,
-  input: { name?: string; email: string },
-) {
+export async function updateAdminProfile(userId: string, input: { name?: string; email: string }) {
   const existing = await prisma.adminUser.findUnique({
     where: { email: normalizeEmail(input.email) },
   });

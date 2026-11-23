@@ -1,4 +1,20 @@
-/** Structured audit progress (AUDIT-SYSTEM-OCT-12 §11.3). */
+/** Structured audit events (audit-system-health-plan Phase 5). */
+
+export type AuditLogEvent =
+  | "audit_enqueue"
+  | "audit_claim"
+  | "audit_progress"
+  | "audit_complete"
+  | "audit_fail"
+  | "audit_page_done"
+  | "audit_drain_tick"
+  | "audit_claim_skipped"
+  | "storefront_runtime_errors";
+
+export function logAuditEvent(event: AuditLogEvent, fields: Record<string, unknown>): void {
+  const rssMb = Math.round(process.memoryUsage().rss / 1024 / 1024);
+  console.log(JSON.stringify({ event, rssMb, ts: Date.now(), ...fields }));
+}
 
 export function logAuditPageDone(fields: {
   shop: string;
@@ -9,10 +25,5 @@ export function logAuditPageDone(fields: {
   emitted: number;
   foldOk: boolean;
 }) {
-  console.log(
-    JSON.stringify({
-      event: "audit_page_done",
-      ...fields,
-    }),
-  );
+  logAuditEvent("audit_page_done", fields);
 }

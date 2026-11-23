@@ -1,0 +1,30 @@
+# Runs the merchant app as two containers from one image: web + audit worker.
+# Usage: docker compose -f docker-compose.yml -f docker-compose.app.yml up --build
+# Put real values in .env (see .env.audit.example); DATABASE_URL must point at
+# the postgres service, e.g. postgresql://admin:devpassword123@postgres:5432/performance_app
+services:
+  web:
+    build: .
+    env_file: .env
+    environment:
+      AUDIT_USE_DB_QUEUE: "true"
+      AUDIT_WORKER_ENABLED: "false"
+    ports:
+      - "3000:3000"
+    depends_on:
+      - postgres
+    restart: unless-stopped
+
+  audit-worker:
+    build: .
+    command: ["npm", "run", "docker-start-worker"]
+    env_file: .env
+    environment:
+      AUDIT_USE_DB_QUEUE: "true"
+      AUDIT_WORKER_ENABLED: "true"
+      AUDIT_WORKER_ID: pagepulse-audit-1
+    depends_on:
+      - web
+    stop_grace_period: 120s
+    shm_size: "1gb"
+    restart: unless-stopped

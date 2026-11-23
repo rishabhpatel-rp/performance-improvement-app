@@ -1,3 +1,4 @@
+// @ts-check -- retained as JS: embedded verbatim in the storefront bundle.
 // Inline-script helpers: everything that does NOT touch the database or the
 // Shopify session, so it can be unit-tested with plain `node --test`.
 //
@@ -47,14 +48,11 @@ export function chunkKey(n) {
 
 /** Every key this feature owns (all chunks plus the parts marker). */
 export function allMetafieldKeys() {
-  return [
-    ...Array.from({ length: MAX_CHUNKS }, (_, i) => chunkKey(i + 1)),
-    METAFIELD_PARTS_KEY,
-  ];
+  return [...Array.from({ length: MAX_CHUNKS }, (_, i) => chunkKey(i + 1)), METAFIELD_PARTS_KEY];
 }
 
 /** A cut between s[i-1] and s[i] is safe when it is not next to whitespace nor inside a surrogate pair. */
-function isSafeCut(s, i) {
+function isSafeCut(/** @type {any} */ s, /** @type {any} */ i) {
   if (/\s/.test(s[i - 1]) || /\s/.test(s[i])) return false;
   const a = s.charCodeAt(i - 1);
   const b = s.charCodeAt(i);
@@ -176,21 +174,25 @@ export function planMetafieldSync({ script, scriptHash, metafieldHash }) {
 // so tests can pass a fake.
 // ---------------------------------------------------------------------------
 
-async function run(admin, query, variables) {
+async function run(
+  /** @type {any} */ admin,
+  /** @type {any} */ query,
+  /** @type {any} */ variables = undefined,
+) {
   const res = await admin.graphql(query, variables ? { variables } : undefined);
   const json = await res.json();
   if (json.errors?.length) {
     const msg = Array.isArray(json.errors)
-      ? json.errors.map((e) => e.message).join("; ")
+      ? json.errors.map((/** @type {any} */ e) => e.message).join("; ")
       : String(json.errors);
     throw new Error(msg);
   }
   return json.data;
 }
 
-function throwUserErrors(errors, label) {
+function throwUserErrors(/** @type {any} */ errors, /** @type {any} */ label) {
   if (errors?.length) {
-    throw new Error(`${label}: ${errors.map((e) => e.message).join("; ")}`);
+    throw new Error(`${label}: ${errors.map((/** @type {any} */ e) => e.message).join("; ")}`);
   }
 }
 
@@ -355,7 +357,11 @@ export function packAdminHeadHtml(html) {
     return { ok: false, reason: `HTML exceeds ${ADMIN_HEAD_MAX_CHARS} characters.` };
   }
   if (/<\/script/i.test(s)) {
-    return { ok: false, reason: "HTML must not contain </script> (use separate script tags only)." };
+    return {
+      ok: false,
+      reason:
+        "HTML must not contain <script> blocks: scripts inserted into the head do not run. Use meta, link, style or noscript tags.",
+    };
   }
   if (!s.trim()) {
     return { ok: true, b64: "" };

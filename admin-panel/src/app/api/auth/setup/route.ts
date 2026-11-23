@@ -62,9 +62,6 @@ export async function POST(request: Request) {
     return NextResponse.json({ success: true, user });
   } catch (error) {
     console.error("Setup error:", error);
-    return NextResponse.json(
-      { success: false, error: "An error occurred" },
-      { status: 500 },
-    );
+    return NextResponse.json({ success: false, error: "An error occurred" }, { status: 500 });
   }
 }

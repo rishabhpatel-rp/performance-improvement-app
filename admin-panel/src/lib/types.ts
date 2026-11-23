@@ -1,3 +1,10 @@
+export type {
+  TemplateScope,
+  AuditPhase,
+  AuditStatusShape,
+  StoreConfigShape,
+} from "../../../shared/pagepulse-types";
+
 // Shared data shapes for the admin panel. Both the database-backed queries
 // (lib/queries.ts) and the dummy-data source (lib/dummy-data.ts) resolve to
 // these structural types, and the UI components are typed against them.
@@ -136,16 +143,9 @@ export interface StoreWithConfigs extends StoreSummary {
   configs: StoreConfig[];
 }
 
-export interface AuditSummary {
-  completedAt: Date | string;
-  variantCount: number | null;
-  baseCount: number | null;
-}
-
 export interface StoreWithDetails extends StoreWithConfigs {
   activities: StoreActivity[];
   performanceScript?: PerformanceScriptSummary | null;
-  auditSummary?: AuditSummary | null;
 }
 
 export interface InstallsByDayPoint {
@@ -163,6 +163,14 @@ export interface PlanCount {
   count: number;
 }
 
+export type AuditFleetSummary = {
+  queued: number;
+  running: number;
+  failedLast24h: number;
+  oldestQueuedMinutes: number | null;
+  runningShops: { shopDomain: string; startedAt: string | null }[];
+};
+
 export interface DashboardStats {
   totalStores: number;
   activeStores: number;
@@ -173,6 +181,7 @@ export interface DashboardStats {
   totalProducts: number;
   totalOrders: number;
   auditsCompleted: number;
+  auditFleet: AuditFleetSummary;
   installsByDay: InstallsByDayPoint[];
   storesByCountry: CountryCount[];
   storesByPlan: PlanCount[];

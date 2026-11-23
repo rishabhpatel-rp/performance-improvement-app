@@ -9,6 +9,7 @@ import CountryChart from "@/components/country-chart";
 import PlanChart from "@/components/plan-chart";
 import { Badge } from "@/components/ui/badge";
 import { formatDate } from "@/lib/utils";
+import AuditFleetPanel from "@/components/audit-fleet-panel";
 
 type RecentInstall = DashboardStats["recentInstalls"][number];
 
@@ -19,6 +20,8 @@ export default async function DashboardPage() {
     <div className="space-y-8">
       <TopBar title="Dashboard" demoMode={demoMode} />
       <StatsCards stats={stats} />
+
+      <AuditFleetPanel fleet={stats.auditFleet} />
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
         <div className="lg:col-span-2">
