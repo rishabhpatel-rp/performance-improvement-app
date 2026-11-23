@@ -1,9 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import {
-  shouldSkipPsiFetch,
-  psiReportLooksLikePasswordGate,
-} from "../app/lib/psi.server.ts";
+import { shouldSkipPsiFetch, psiReportLooksLikePasswordGate } from "../app/lib/psi.server.ts";
 
 test("shouldSkipPsiFetch when storefront is password-protected", () => {
   assert.equal(shouldSkipPsiFetch(true), true);

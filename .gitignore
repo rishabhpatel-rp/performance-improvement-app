@@ -39,6 +39,9 @@ admin-panel/tsconfig.tsbuildinfo
 # Playwright MCP snapshot/screenshot dumps from ad-hoc page inspection
 .playwright-mcp/
 
+# Local dev verification only (verify-setup.sh, logs). Not part of deploy; keep on laptops only.
+local-test/
+
 # Test-only artefacts: verification suites and the generated catalogue.
 # Nothing here is imported by the app at runtime, so it is never deployed.
 # `npm test` still picks these up (see the "test" script in package.json).
@@ -57,3 +60,13 @@ admin-panel/admindata/
 
 # Machine-specific Ponytail hook paths (see docs/dev/agent-artifacts.md)
 .cursor/hooks.json
+
+# Local verification artifacts — never commit
+*.log
+*.csv
+*.tmp
+*.swp
+logs/
+test-results/
+playwright-report/
+coverage/

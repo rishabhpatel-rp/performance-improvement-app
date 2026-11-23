@@ -1,9 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import {
-  decideAdmission,
-  STALE_RUNNING_MS,
-} from "../app/lib/audit-queue-policy.ts";
+import { decideAdmission, STALE_RUNNING_MS } from "../app/lib/audit-queue-policy.ts";
 
 test("decideAdmission blocks duplicate shop job", () => {
   const d = decideAdmission(true, 0);
@@ -21,6 +18,6 @@ test("decideAdmission allows new shop when none active for this store", () => {
   assert.equal(d.allow, true);
 });
 
-test("STALE_RUNNING_MS is 15 minutes", () => {
-  assert.equal(STALE_RUNNING_MS, 15 * 60 * 1000);
+test("STALE_RUNNING_MS is 12 minutes", () => {
+  assert.equal(STALE_RUNNING_MS, 12 * 60 * 1000);
 });

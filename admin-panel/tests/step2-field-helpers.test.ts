@@ -1,10 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import {
-  toEditable,
-  validateArray,
-  fieldsForScope,
-} from "../src/lib/step2-field-helpers.ts";
+import { toEditable, validateArray, fieldsForScope } from "../src/lib/step2-field-helpers.ts";
 import { scriptsForScope, tabDropdownAction } from "../src/lib/scan-summary-scope.ts";
 
 test("toEditable pretty-prints arrays", () => {
