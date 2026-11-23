@@ -12,7 +12,7 @@
     "typecheck": "tsc --noEmit",
     "db:seed": "tsx prisma/seed.ts",
     "admin:ensure": "node scripts/ensure-admin.mjs",
-    "test": "tsx --test \"tests/*.test.ts\"",
+    "test": "ADMIN_SESSION_PASSWORD=\"${ADMIN_SESSION_PASSWORD:-ci-local-admin-session-password-min-32-chars}\" tsx --test \"tests/*.test.ts\"",
     "format": "prettier --write \"src/**/*.{ts,tsx,css}\" \"tests/**/*.ts\"",
     "format:check": "prettier --check \"src/**/*.{ts,tsx,css}\" \"tests/**/*.ts\""
   },

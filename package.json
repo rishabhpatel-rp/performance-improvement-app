@@ -25,7 +25,7 @@
     "format": "prettier --write \"app/**/*.{js,jsx,ts,tsx}\" \"tests/**/*.js\" \"scripts/**/*.{mjs,ts}\"",
     "format:check": "prettier --check \"app/**/*.{js,jsx,ts,tsx}\" \"tests/**/*.js\" \"scripts/**/*.{mjs,ts}\"",
     "test": "node --import tsx --test \"tests/*.test.js\" \"Test Data/*.test.js\"",
-    "test:integration": "node ./node_modules/tsx/dist/cli.mjs --env-file=.env --test tests/audit-queue.integration.test.ts",
+    "test:integration": "node ./node_modules/tsx/dist/cli.mjs --test tests/audit-queue.integration.test.ts",
     "test:storefront-smoke": "node scripts/storefront-smoke.mjs",
     "rollout:audit-queue": "bash scripts/rollout-audit-queue-local.sh",
     "prepare": "husky",

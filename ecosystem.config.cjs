@@ -11,6 +11,8 @@ module.exports = {
       script: "npm",
       args: "run start",
       env: {
+        // Must match nginx proxy_pass (127.0.0.1:9001); without this, react-router-serve binds :3000.
+        PORT: "9001",
         AUDIT_USE_DB_QUEUE: "true",
         AUDIT_WORKER_ENABLED: "false",
         // Keep web from competing with Chromium on a 4 GB box.
