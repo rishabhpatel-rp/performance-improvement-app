@@ -16,12 +16,33 @@ function readCgroupUseRatio(): number | null {
   }
 }
 
+/** Prefer MemAvailable so Linux page cache is not treated as pressure. */
+function readMemAvailableUseRatio(): number | null {
+  try {
+    const meminfo = fs.readFileSync("/proc/meminfo", "utf8");
+    const availMatch = meminfo.match(/^MemAvailable:\s+(\d+)\s+kB/m);
+    const totalMatch = meminfo.match(/^MemTotal:\s+(\d+)\s+kB/m);
+    if (!availMatch || !totalMatch) return null;
+    const available = Number(availMatch[1]) * 1024;
+    const total = Number(totalMatch[1]) * 1024;
+    if (!Number.isFinite(available) || !Number.isFinite(total) || total <= 0) {
+      return null;
+    }
+    return Math.min(1, Math.max(0, (total - available) / total));
+  } catch {
+    return null;
+  }
+}
+
 /** Host or cgroup memory use in [0, 1]. */
 export function hostMemoryUseRatio(): number {
   const cgroup = readCgroupUseRatio();
   if (cgroup != null) return Math.min(1, Math.max(0, cgroup));
+  const fromAvail = readMemAvailableUseRatio();
+  if (fromAvail != null) return fromAvail;
   const total = os.totalmem();
   if (total <= 0) return 0;
+  // Last resort: freemem under-counts reclaimable cache on Linux.
   return Math.min(1, Math.max(0, (total - os.freemem()) / total));
 }
 

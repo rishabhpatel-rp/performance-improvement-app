@@ -66,6 +66,7 @@ export default function Step1Activate({
   const themesFetcher = useFetcher();
   const selectFetcher = useFetcher();
   const activateFetcher = useFetcher();
+  const stopFetcher = useFetcher();
   const activationAttemptedRef = useRef(false);
 
   // --- Theme picker -------------------------------------------------------
@@ -739,6 +740,11 @@ export default function Step1Activate({
                 phase={auditStatus?.phase}
                 missingPlp={missingPlp}
                 missingPdp={missingPdp}
+                stoppingAudit={stopFetcher.state !== "idle"}
+                onStop={() => {
+                  if (stopFetcher.state !== "idle") return;
+                  void stopFetcher.submit({ intent: "stop-audit" }, { method: "POST" });
+                }}
               />
             )}
             {failed && !passwordBlockCode && (
