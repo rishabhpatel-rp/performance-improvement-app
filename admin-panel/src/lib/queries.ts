@@ -14,8 +14,9 @@ import type {
   StoreWithConfigs,
   NewStoreRow,
   StoreActivity,
-  AuditSummary,
+  AuditFleetSummary,
 } from "./types";
+import { getAuditFleetSummary } from "./audit-fleet";
 
 interface StoreWhereInput {
   isActive?: boolean;
@@ -203,19 +204,14 @@ export async function getDashboardStats(): Promise<DashboardStats> {
 
   const totalProducts = union.reduce((sum, s) => sum + (s.totalProducts ?? 0), 0);
   const totalOrders = union.reduce((sum, s) => sum + (s.totalOrders ?? 0), 0);
-  const auditsCompleted = union.filter((s) =>
-    s.configs.some((c) => c.auditComplete),
-  ).length;
+  const auditsCompleted = union.filter((s) => s.configs.some((c) => c.auditComplete)).length;
 
   const installsByDay = buildInstallsByDay(
     union.map((s) => s.installedAt),
     thirtyDaysAgo,
   );
 
-  const storesByCountry = buildCountByKey(
-    union,
-    (s) => s.countryName ?? s.country ?? "Unknown",
-  )
+  const storesByCountry = buildCountByKey(union, (s) => s.countryName ?? s.country ?? "Unknown")
     .map(({ key, count }) => ({ country: key, count }))
     .sort((a, b) => b.count - a.count)
     .slice(0, 10);
@@ -223,6 +219,23 @@ export async function getDashboardStats(): Promise<DashboardStats> {
   const storesByPlan = buildCountByKey(union, (s) => s.shopifyPlan ?? "Unknown").map(
     ({ key, count }) => ({ plan: key, count }),
   );
+
+  const emptyFleet: AuditFleetSummary = {
+    queued: 0,
+    running: 0,
+    failedLast24h: 0,
+    oldestQueuedMinutes: null,
+    runningShops: [],
+  };
+
+  let auditFleet = emptyFleet;
+  if (demoMode !== "on") {
+    try {
+      auditFleet = await getAuditFleetSummary();
+    } catch {
+      auditFleet = emptyFleet;
+    }
+  }
 
   return {
     totalStores,
@@ -234,6 +247,7 @@ export async function getDashboardStats(): Promise<DashboardStats> {
     totalProducts,
     totalOrders,
     auditsCompleted,
+    auditFleet,
     installsByDay,
     storesByCountry,
     storesByPlan,
@@ -330,9 +344,7 @@ export async function getStores(options?: {
     combined = combined.filter((s) => s.isActive === options.isActive);
   }
   if (options?.appEnabled !== undefined) {
-    combined = combined.filter(
-      (s) => (s.configs[0]?.appEnabled ?? false) === options.appEnabled,
-    );
+    combined = combined.filter((s) => (s.configs[0]?.appEnabled ?? false) === options.appEnabled);
   }
   if (options?.search) {
     const q = options.search.toLowerCase();
@@ -362,70 +374,35 @@ export async function getStores(options?: {
   };
 }
 
-function summarizeAuditLog(
-  row: { timestamp: Date; audit_data: unknown } | null,
-): AuditSummary | null {
-  if (!row) return null;
-  const data = row.audit_data;
-  let variantCount: number | null = null;
-  let baseCount: number | null = null;
-  if (data && typeof data === "object" && data !== null) {
-    const d = data as Record<string, unknown>;
-    const patterns = d.pagePatterns;
-    if (patterns && typeof patterns === "object") {
-      variantCount = Object.keys(patterns as object).length;
-    }
-    const base = d.deferArrayBase;
-    if (Array.isArray(base)) {
-      baseCount = base.filter((x) => typeof x === "string").length;
-    }
-  }
-  return {
-    completedAt: row.timestamp,
-    variantCount,
-    baseCount,
-  };
-}
-
-export async function getStoreByDomain(
-  domain: string,
-): Promise<StoreWithDetails | null> {
+export async function getStoreByDomain(domain: string): Promise<StoreWithDetails | null> {
   const demoMode = await getDemoMode();
 
-  const [real, auditLog] = await Promise.all([
-    prisma.store.findUnique({
-      where: { shopDomain: domain },
-      include: {
-        configs: {
-          select: storeDetailConfigSelect(),
-          orderBy: { updatedAt: "desc" },
-          take: 1,
-        },
-        performanceScript: {
-          select: {
-            scriptHash: true,
-            readableScript: true,
-            hiddenCss: true,
-            scriptBuiltAt: true,
-            metafieldSyncedAt: true,
-          },
-        },
-        activities: {
-          orderBy: { createdAt: "desc" },
-          take: 100,
+  const real = await prisma.store.findUnique({
+    where: { shopDomain: domain },
+    include: {
+      configs: {
+        select: storeDetailConfigSelect(),
+        orderBy: { updatedAt: "desc" },
+        take: 1,
+      },
+      performanceScript: {
+        select: {
+          scriptHash: true,
+          readableScript: true,
+          hiddenCss: true,
+          scriptBuiltAt: true,
+          metafieldSyncedAt: true,
         },
       },
-    }),
-    prisma.auditLog.findFirst({
-      where: { domain, status: "completed" },
-      orderBy: { timestamp: "desc" },
-      select: { timestamp: true, audit_data: true },
-    }),
-  ]);
+      activities: {
+        orderBy: { createdAt: "desc" },
+        take: 100,
+      },
+    },
+  });
 
   if (real) {
-    const auditSummary = summarizeAuditLog(auditLog);
-    return { ...real, auditSummary };
+    return real;
   }
 
   if (demoMode === "on") {
@@ -433,14 +410,6 @@ export async function getStoreByDomain(
   }
 
   return null;
-}
-
-export async function getLatestCompletedAudit(domain: string) {
-  return prisma.auditLog.findFirst({
-    where: { domain, status: "completed" },
-    orderBy: { timestamp: "desc" },
-    select: { audit_data: true, timestamp: true },
-  });
 }
 
 export type { DashboardStats, StoresResult, StoreWithDetails };

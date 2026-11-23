@@ -8,6 +8,7 @@ import {
 import { withShopifyTimeout, rethrowAuthRedirect } from "../lib/shopify-timeout.server";
 import { getPasswordProtection } from "../lib/password-protection.server";
 
+import { logger } from "../lib/logger.ts";
 // Per-call budget. Two Shopify calls run in parallel, so worst case is
 // ~2s + network, well inside the <3s client budget in the plan.
 const VALIDATE_TIMEOUT_MS = 2000;
@@ -38,15 +39,8 @@ export const action = async ({ request }) => {
   const formData = await request.formData();
   const intent = formData.get("intent");
   // The embed must be on in the theme the merchant picked (null = live theme).
-  const selectedThemeId = await getSelectedThemeId(session.shop).catch(
-    () => null,
-  );
-  const embedActivateUrl = getAppEmbedDeepLink(
-    session.shop,
-    undefined,
-    undefined,
-    selectedThemeId,
-  );
+  const selectedThemeId = await getSelectedThemeId(session.shop).catch(() => null);
+  const embedActivateUrl = getAppEmbedDeepLink(session.shop, undefined, undefined, selectedThemeId);
 
   if (intent !== "validate-toggle") {
     return { ok: false, allowed: false, blockReason: null, embedActivateUrl };
@@ -55,25 +49,24 @@ export const action = async ({ request }) => {
   // Run both Shopify reads + the local DB read in parallel, each Shopify
   // call individually time-boxed so one slow Admin API call can't stall
   // the whole check.
-  const [embedResult, passwordProtectedResult, savedPasswordResult] =
-    await Promise.allSettled([
-      withShopifyTimeout(
-        isAppEmbedEnabled(admin, undefined, selectedThemeId),
-        "isAppEmbedEnabled",
-        VALIDATE_TIMEOUT_MS,
-      ),
-      withShopifyTimeout(
-        getPasswordProtection(admin, session.shop),
-        "passwordProtection",
-        PASSWORD_CHECK_TIMEOUT_MS,
-      ),
-      prisma.store
-        .findUnique({
-          where: { shopDomain: session.shop },
-          select: { configs: { select: { storefrontPassword: true } } },
-        })
-        .then((store) => store?.configs?.[0]?.storefrontPassword || ""),
-    ]);
+  const [embedResult, passwordProtectedResult, savedPasswordResult] = await Promise.allSettled([
+    withShopifyTimeout(
+      isAppEmbedEnabled(admin, undefined, selectedThemeId),
+      "isAppEmbedEnabled",
+      VALIDATE_TIMEOUT_MS,
+    ),
+    withShopifyTimeout(
+      getPasswordProtection(admin, session.shop),
+      "passwordProtection",
+      PASSWORD_CHECK_TIMEOUT_MS,
+    ),
+    prisma.store
+      .findUnique({
+        where: { shopDomain: session.shop },
+        select: { configs: { select: { storefrontPassword: true } } },
+      })
+      .then((store) => store?.configs?.[0]?.storefrontPassword || ""),
+  ]);
 
   // An embedded-session bounce (302 -> session-token refresh) surfaces as a
   // thrown Response inside one of the settled promises — let it propagate
@@ -84,17 +77,14 @@ export const action = async ({ request }) => {
 
   // Fail-closed: a timeout/error, or an explicit non-true value, blocks.
   // (Mirrors isAppEmbedEnabled's own null-on-unknown = treat as NOT enabled.)
-  const appEmbedEnabled =
-    embedResult.status === "fulfilled" && embedResult.value === true;
+  const appEmbedEnabled = embedResult.status === "fulfilled" && embedResult.value === true;
 
   // Only a confirmed `true` counts as protected. Unknown (null / timeout) is
   // not treated as protected: the audit will report a password page itself.
   const passwordProtected =
-    passwordProtectedResult.status === "fulfilled" &&
-    passwordProtectedResult.value === true;
+    passwordProtectedResult.status === "fulfilled" && passwordProtectedResult.value === true;
 
-  const savedPassword =
-    savedPasswordResult.status === "fulfilled" ? savedPasswordResult.value : "";
+  const savedPassword = savedPasswordResult.status === "fulfilled" ? savedPasswordResult.value : "";
   const passwordSaved = Boolean(savedPassword);
 
   let blockReason = null;
@@ -105,15 +95,13 @@ export const action = async ({ request }) => {
   }
 
   if (embedResult.status === "rejected") {
-    console.warn(
+    logger.warn(
       "[toggle-validate] isAppEmbedEnabled failed/timed out:",
-      embedResult.reason instanceof Error
-        ? embedResult.reason.message
-        : embedResult.reason,
+      embedResult.reason instanceof Error ? embedResult.reason.message : embedResult.reason,
     );
   }
   if (passwordProtectedResult.status === "rejected") {
-    console.warn(
+    logger.warn(
       "[toggle-validate] passwordProtection check failed/timed out:",
       passwordProtectedResult.reason instanceof Error
         ? passwordProtectedResult.reason.message

@@ -21,11 +21,7 @@ export default async function StoresPage({
     getStores({
       search: params.search,
       isActive:
-        params.status === "active"
-          ? true
-          : params.status === "inactive"
-            ? false
-            : undefined,
+        params.status === "active" ? true : params.status === "inactive" ? false : undefined,
       appEnabled:
         params.appEnabled === "on" ? true : params.appEnabled === "off" ? false : undefined,
       page: params.page ? parseInt(params.page, 10) : 1,

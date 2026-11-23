@@ -36,6 +36,11 @@ export type ScriptRow = {
   homeRequestOrder?: number | null;
   homeStartMs?: number | null;
   durationMs?: number | null;
+  scriptCategory?: string | null;
+  deferTier?: string | null;
+  deferConfidence?: number | null;
+  riskLabel?: string | null;
+  storefrontImpact?: string | null;
 };
 
 export function scriptsForScope(
@@ -46,9 +51,7 @@ export function scriptsForScope(
   const rows = Array.isArray(topScripts) ? topScripts : [];
   if (scope === "global") {
     const present = [
-      ...new Set(
-        Object.values(pageRoles || {}).filter((role) => PAGE_ROLES.includes(role)),
-      ),
+      ...new Set(Object.values(pageRoles || {}).filter((role) => PAGE_ROLES.includes(role))),
     ];
     if (!present.length) return rows;
     return rows.filter((row) => {
@@ -58,9 +61,6 @@ export function scriptsForScope(
       return present.every((role) => have.has(role));
     });
   }
-  const want =
-    scope === "collection" ? "collection" : scope === "product" ? "product" : "home";
-  return rows.filter((row) =>
-    (row.pages || []).some((path) => roleFor(pageRoles, path) === want),
-  );
+  const want = scope === "collection" ? "collection" : scope === "product" ? "product" : "home";
+  return rows.filter((row) => (row.pages || []).some((path) => roleFor(pageRoles, path) === want));
 }

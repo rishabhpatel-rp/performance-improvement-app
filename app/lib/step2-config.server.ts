@@ -59,3 +59,15 @@ export async function loadStoreStep2Snapshot(shopDomain: string) {
     ),
   };
 }
+
+/**
+ * Merges the freshly stored config into a write response so a caller can
+ * re-render from the saved state instead of its optimistic copy.
+ */
+export async function withStep2Echo<T extends Record<string, unknown>>(
+  shopDomain: string,
+  payload: T,
+) {
+  const echo = await loadStep2WriteEcho(shopDomain);
+  return echo ? { ...payload, ...echo } : payload;
+}

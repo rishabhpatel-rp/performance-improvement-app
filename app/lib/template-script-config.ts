@@ -98,8 +98,7 @@ export function templateConfigFromRow(
     out[firstUserDelayMsColumn(scope)] =
       typeof fms === "number" && !Number.isNaN(fms) ? fms : 12000;
     const ems = sc[everyTimeDelayMsColumn(scope)];
-    out[everyTimeDelayMsColumn(scope)] =
-      typeof ems === "number" && !Number.isNaN(ems) ? ems : 6000;
+    out[everyTimeDelayMsColumn(scope)] = typeof ems === "number" && !Number.isNaN(ems) ? ems : 6000;
   }
   return out;
 }

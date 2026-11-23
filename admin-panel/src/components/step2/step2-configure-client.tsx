@@ -21,30 +21,32 @@ type StateResponse = {
 export default function Step2ConfigureClient({
   domain,
   initialConfig,
+  initialAuditReportSummary = null,
   appEnabled,
   readOnly,
 }: {
   domain: string;
   initialConfig: Record<string, unknown> | null;
+  initialAuditReportSummary?: AuditSummaryPayload | null;
   appEnabled: boolean;
   readOnly?: boolean;
 }) {
   const router = useRouter();
-  const [config, setConfig] = useState<Record<string, unknown>>(
-    initialConfig ?? {},
+  const [config, setConfig] = useState<Record<string, unknown>>(initialConfig ?? {});
+  const [auditStatus, setAuditStatus] = useState<StateResponse["auditStatus"]>({});
+  const [auditReportSummary, setAuditReportSummary] = useState<AuditSummaryPayload | null>(
+    initialAuditReportSummary,
   );
-  const [auditStatus, setAuditStatus] = useState<StateResponse["auditStatus"]>(
-    {},
-  );
-  const [auditReportSummary, setAuditReportSummary] =
-    useState<AuditSummaryPayload | null>(null);
   const [stateError, setStateError] = useState<string | null>(null);
   const [savingKey, setSavingKey] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [metafieldWarning, setMetafieldWarning] = useState(false);
   const [pendingToken, setPendingToken] = useState<string | null>(null);
   const [resyncing, setResyncing] = useState(false);
-  const versionKeyRef = useRef("");
+  // A poll that started before a save finished would overwrite the saved
+  // config with older data; `writeSeq` lets loadState drop such a response.
+  const writeSeq = useRef(0);
+  const pollInFlight = useRef(false);
 
   const applyState = useCallback((data: StateResponse) => {
     if (data.config) setConfig(data.config);
@@ -52,18 +54,18 @@ export default function Step2ConfigureClient({
     if (data.auditReportSummary !== undefined) {
       setAuditReportSummary(data.auditReportSummary);
     }
-    if (data.version) {
-      versionKeyRef.current = `${data.version.configUpdatedAt ?? ""}|${data.version.scriptHash ?? ""}`;
-    }
   }, []);
 
   const loadState = useCallback(async () => {
+    if (pollInFlight.current) return;
+    pollInFlight.current = true;
+    const seqAtStart = writeSeq.current;
     try {
-      const res = await fetch(
-        `/api/stores/${encodeURIComponent(domain)}/state`,
-        { cache: "no-store" },
-      );
+      const res = await fetch(`/api/stores/${encodeURIComponent(domain)}/state`, {
+        cache: "no-store",
+      });
       const data = (await res.json().catch(() => null)) as StateResponse | null;
+      if (seqAtStart !== writeSeq.current) return; // a save landed meanwhile
       if (!res.ok || !data?.ok) {
         setStateError(data?.error || `HTTP ${res.status}`);
         return;
@@ -72,6 +74,8 @@ export default function Step2ConfigureClient({
       applyState(data);
     } catch (err) {
       setStateError(err instanceof Error ? err.message : "Request failed");
+    } finally {
+      pollInFlight.current = false;
     }
   }, [domain, applyState]);
 
@@ -83,39 +87,34 @@ export default function Step2ConfigureClient({
     return () => clearInterval(id);
   }, [loadState]);
 
-  async function post(
-    body: Record<string, unknown>,
-    key: string,
-    scope: TemplateScope = "global",
-  ) {
+  async function post(body: Record<string, unknown>, key: string, scope: TemplateScope = "global") {
     setSavingKey(key);
     setSaveError(null);
+    writeSeq.current += 1;
     try {
-      const res = await fetch(
-        `/api/stores/${encodeURIComponent(domain)}/script`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ ...body, scope: body.scope ?? scope }),
-          cache: "no-store",
-        },
-      );
+      const res = await fetch(`/api/stores/${encodeURIComponent(domain)}/script`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...body, scope: body.scope ?? scope }),
+        cache: "no-store",
+      });
       const data = (await res.json().catch(() => null)) as StateResponse;
       if (!res.ok || !data?.ok) {
         setSaveError(data?.error || `Save failed (HTTP ${res.status}).`);
+        // New object identity so optimistic toggles snap back to stored values.
+        setConfig((current) => ({ ...current }));
         return false;
       }
       if (data.config) setConfig(data.config);
-      if (data.version) {
-        versionKeyRef.current = `${data.version.configUpdatedAt ?? ""}|${data.version.scriptHash ?? ""}`;
-      }
       setMetafieldWarning(data.metafieldStatus === "failed");
       router.refresh();
       return true;
     } catch (err) {
       setSaveError(err instanceof Error ? err.message : "Save failed.");
+      setConfig((current) => ({ ...current }));
       return false;
     } finally {
+      writeSeq.current += 1;
       setSavingKey(null);
       setPendingToken(null);
     }
@@ -137,33 +136,21 @@ export default function Step2ConfigureClient({
         void post({ intent: "toggle", field, enabled }, `toggle:${field}`, "global");
       }}
       onSave={(payload: SaveBoxPayload) => {
-        const field = fieldsForScope(payload.scope).find(
-          (f) => f.listFamily === payload.family,
-        );
+        const field = fieldsForScope(payload.scope).find((f) => f.listFamily === payload.family);
         const key = field?.key ?? payload.family;
         const patch: Record<string, unknown> = {};
         if (payload.list) patch[payload.family] = payload.list;
         if (payload.firstMs != null) patch.firstMs = payload.firstMs;
         if (payload.everyMs != null) patch.everyMs = payload.everyMs;
-        void post(
-          { intent: "save-lists", scope: payload.scope, patch },
-          key,
-          payload.scope,
-        );
+        void post({ intent: "save-lists", scope: payload.scope, patch }, key, payload.scope);
       }}
       onTokenAction={(token, action, scope) => {
         setPendingToken(token);
-        void post(
-          { intent: "script-token-action", token, action },
-          `token:${token}`,
-          scope,
-        );
+        void post({ intent: "script-token-action", token, action }, `token:${token}`, scope);
       }}
       onResync={() => {
         setResyncing(true);
-        void post({ intent: "resync" }, "resync", "global").finally(() =>
-          setResyncing(false),
-        );
+        void post({ intent: "resync" }, "resync", "global").finally(() => setResyncing(false));
       }}
       resyncing={resyncing}
     />

@@ -9,6 +9,18 @@ export type ClassifiedInventoryEntry = {
   reasons: string[];
   pages: string[];
   domain?: string;
+  bytes?: number;
+  encodedBytes?: number;
+  durationMs?: number;
+  homeRequestOrder?: number;
+  homeStartMs?: number;
+  loadingHint?: import("./audit-candidates").ScriptLoadingHint;
+  tbtContributionMs?: number;
+  riskLabel?: "low" | "medium" | "high";
+  scriptCategory?: import("./audit-script-category").ScriptRiskCategory;
+  deferTier?: import("./audit-candidates").DeferTier;
+  deferConfidence?: number;
+  storefrontImpact?: string;
 };
 
 function domainFromToken(token: string): string | undefined {
@@ -65,9 +77,7 @@ export function buildScriptInventoryFromClassified(report: {
     const pages = direct.length
       ? direct
       : status === "deferred"
-        ? pageEntries
-            .filter(([, tokens]) => tokenSeenOnPage(t, tokens || []))
-            .map(([path]) => path)
+        ? pageEntries.filter(([, tokens]) => tokenSeenOnPage(t, tokens || [])).map(([path]) => path)
         : [];
     byToken.push({
       token: t,

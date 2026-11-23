@@ -1,9 +1,10 @@
+import { getEnv } from "./env.server.ts";
 import type { Page } from "playwright";
 import type { LabVitalsEntry } from "./audit-report-types";
 
 /** D2=B — mobile lab: Slow 4G + CPU 4× when enabled (default on). */
 export async function applyMobileLabThrottling(page: Page) {
-  if (process.env.AUDIT_LAB_THROTTLE === "false") return;
+  if (getEnv().AUDIT_LAB_THROTTLE === "false") return;
   const cdp = await page.context().newCDPSession(page);
   await cdp.send("Network.enable").catch(() => {});
   await cdp

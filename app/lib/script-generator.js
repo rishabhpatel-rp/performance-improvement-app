@@ -1,6 +1,7 @@
-import JavaScriptObfuscator from "javascript-obfuscator";
+// @ts-check -- retained as JS: embedded verbatim in the storefront bundle.
+import { Worker } from "node:worker_threads";
 
-export function parseToArray(input) {
+export function parseToArray(/** @type {any} */ input) {
   if (!input) return [];
   if (Array.isArray(input)) return input;
 
@@ -21,16 +22,12 @@ export function parseToArray(input) {
  * Hide lastfold selectors until html.interacted is set.
  * Example: html:not(.interacted) :is(#footer,.grid>:nth-child(n+5)){display:none!important}
  */
-export function buildHiddenCss(selectors) {
+export function buildHiddenCss(/** @type {any} */ selectors) {
   const list = (Array.isArray(selectors) ? selectors : [])
     .map((selector) => String(selector || "").trim())
     .filter(Boolean);
   if (!list.length) return "";
-  return (
-    "html:not(.interacted) :is(" +
-    list.join(",") +
-    "){display:none!important}"
-  );
+  return "html:not(.interacted) :is(" + list.join(",") + "){display:none!important}";
 }
 
 /**
@@ -71,24 +68,36 @@ export function buildHiddenCss(selectors) {
  * @param {number}   options.everyLoadDelayMs         Timeout for the every-load list.
  * @param {string[]} options.hideSelectors            Fallback hide list when no
  *   variant matches. Source: auditHideSelectors.
-   * @param {boolean}  options.debugMode                Settings "Debug mode": keep
-   *   console logging in the bundle and run the timing logger. Source:
-   *   StoreConfig.debugMode.
- * @returns {string} Obfuscated JavaScript.
+ * @param {boolean}  options.debugMode                Settings "Debug mode": keep
+ *   console logging in the bundle and run the timing logger. Source:
+ *   StoreConfig.debugMode.
+ * @returns {Promise<string>} Obfuscated JavaScript.
  */
-export function generateDeferredScript(options = {}) {
+function obfuscateOffThread(/** @type {any} */ rawScript, /** @type {any} */ obfuscatorOptions) {
+  return new Promise((resolve, reject) => {
+    const worker = new Worker(new URL("./script-obfuscate.worker.js", import.meta.url), {
+      workerData: { rawScript, options: obfuscatorOptions },
+    });
+    worker.on("message", (code) => {
+      resolve(code);
+      void worker.terminate();
+    });
+    worker.on("error", reject);
+    worker.on("exit", (code) => {
+      if (code !== 0) {
+        reject(new Error(`obfuscate worker exited with ${code}`));
+      }
+    });
+  });
+}
+
+export async function generateDeferredScript(/** @type {any} */ options = {}) {
   const rawScript = buildDeferredScriptSource(options);
   const { seed = 1, debugMode = false } = options;
 
   let scriptBody = rawScript;
   if (!SKIP_JAVASCRIPT_OBFUSCATION) {
-    // Server-side obfuscation. This file is a blocking <script> on every storefront
-    // page, so size matters as much as strength. Measured on this template: the old
-    // profile (control-flow flattening 1.0 + dead-code injection + rc4 + split
-    // strings) produced ~197 KB (54 KB gzip) in ~660 ms; this one gives ~19 KB
-    // (~7 KB gzip) in ~80 ms while still renaming identifiers, flattening part of
-    // the control flow and moving strings into an encoded array.
-    const obfuscatedResult = JavaScriptObfuscator.obfuscate(rawScript, {
+    const obfuscatorOptions = {
       compact: true,
       controlFlowFlattening: true,
       controlFlowFlatteningThreshold: 0.3,
@@ -102,8 +111,8 @@ export function generateDeferredScript(options = {}) {
       stringArray: true,
       stringArrayEncoding: ["base64"],
       stringArrayThreshold: 0.75,
-    });
-    scriptBody = obfuscatedResult.getObfuscatedCode();
+    };
+    scriptBody = await obfuscateOffThread(rawScript, obfuscatorOptions);
   }
 
   return TEMP_TIMING_LOG || debugMode ? withTimingLog(scriptBody) : scriptBody;
@@ -145,15 +154,16 @@ export function buildDeferredScriptSource({
 } = {}) {
   // Intern identical selector lists. They are small, but a store whose pages
   // share the same below-fold sections would otherwise repeat them per variant.
-  const hideSets = [];
-  const internHide = (list) => {
+  const /** @type {any} */ hideSets = [];
+  const internHide = (/** @type {any} */ list) => {
     const key = JSON.stringify(list);
-    const hit = hideSets.findIndex((e) => e.key === key);
+    const hit = /** @type {any} */ hideSets.findIndex((/** @type {any} */ e) => e.key === key);
     if (hit !== -1) return hit;
     hideSets.push({ key, list });
     return hideSets.length - 1;
   };
   const variants = pageVariants.map((v) => {
+    /** @type {any} */
     const row = {
       pattern: v.pattern,
       add: v.add || [],
@@ -171,7 +181,9 @@ export function buildDeferredScriptSource({
 
   const baseJson = JSON.stringify(baseScripts);
   const fallbackUnionJson = JSON.stringify(interactionGatedScripts);
-  const hideSetsJson = JSON.stringify(hideSets.map((e) => e.list));
+  const hideSetsJson = JSON.stringify(
+    /** @type {any} */ hideSets.map((/** @type {any} */ e) => e.list),
+  );
   const variantsJson = JSON.stringify(variants);
   const fallbackJson = JSON.stringify({ hide: fallbackHideIndex });
   const firstVisitDelayedJson = JSON.stringify(firstVisitDelayedScripts);
@@ -691,9 +703,9 @@ export function buildDeferredScriptSource({
 // runs after it, so the logger captures a bound console.log first.
 // ---------------------------------------------------------------------------
 // The injection-timing log has served its purpose (it produced the
-  // "gate installs at ~1s, before first paint" numbers that confirmed the gate
-  // lands early enough) and it costs bytes in a script that blocks rendering on
-  // every storefront page load. Off by default; flip to true to re-measure.
+// "gate installs at ~1s, before first paint" numbers that confirmed the gate
+// lands early enough) and it costs bytes in a script that blocks rendering on
+// every storefront page load. Off by default; flip to true to re-measure.
 // Re-enabled 2026-09-30 to re-measure gate install time. REMEMBER TO SET BACK
 // TO false once you have the numbers.
 const TEMP_TIMING_LOG = false;
@@ -701,7 +713,7 @@ const TEMP_TIMING_LOG = false;
 // Dev-only: set true to skip javascript-obfuscator (readable script). Never true in production.
 const SKIP_JAVASCRIPT_OBFUSCATION = false;
 
-function withTimingLog(obfuscated) {
+function withTimingLog(/** @type {any} */ obfuscated) {
   const before = `
   var pp = { log: null, t0: 0, tag: "[PagePulse] " };
   try {

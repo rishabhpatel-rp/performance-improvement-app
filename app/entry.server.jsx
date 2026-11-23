@@ -5,6 +5,7 @@ import { createReadableStreamFromReadable } from "@react-router/node";
 import { isbot } from "isbot";
 import { addDocumentResponseHeaders } from "./shopify.server";
 
+import { logger } from "./lib/logger.ts";
 export const streamTimeout = 5000;
 
 export default async function handleRequest(
@@ -17,10 +18,10 @@ export default async function handleRequest(
   const userAgent = request.headers.get("user-agent");
   const callbackName = isbot(userAgent ?? "") ? "onAllReady" : "onShellReady";
 
-    // Set once the Response has been constructed. After that point changing
-    // the status can no longer affect what the client receives, so a late
-    // render error has to be surfaced by rejecting instead.
-    let responseStarted = false;
+  // Set once the Response has been constructed. After that point changing
+  // the status can no longer affect what the client receives, so a late
+  // render error has to be surfaced by rejecting instead.
+  let responseStarted = false;
 
   return new Promise((resolve, reject) => {
     const { pipe, abort } = renderToPipeableStream(
@@ -53,7 +54,7 @@ export default async function handleRequest(
           if (!responseStarted) {
             reject(error);
           }
-          console.error(error);
+          logger.error(error);
         },
       },
     );

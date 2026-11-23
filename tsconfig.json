@@ -1,3 +1,7 @@
+// CQ-1 JS allowlist in app/lib (all have // @ts-check):
+//   script-generator.js, script-inline.js, popup-audit.js, script-obfuscate.worker.js
+// These emit raw browser source strings for the storefront build and are not
+// imported as normal modules. Every other app/lib file is TypeScript.
 {
   "include": ["env.d.ts", "**/*.ts", "**/*.tsx", ".react-router/types/**/*"],
   "exclude": ["admin-panel", "node_modules", "build", ".react-router"],
@@ -11,13 +15,14 @@
     "forceConsistentCasingInFileNames": true,
     "noEmit": true,
     "allowJs": true,
+    "allowImportingTsExtensions": true,
     "resolveJsonModule": true,
     "jsx": "react-jsx",
     "module": "ESNext",
     "moduleResolution": "Bundler",
     "target": "ES2022",
     "baseUrl": ".",
-    "types": ["@react-router/node", "vite/client", "@shopify/polaris-types"],
+    "types": ["@react-router/node", "vite/client"],
     "rootDirs": [".", "./.react-router/types"]
   }
 }

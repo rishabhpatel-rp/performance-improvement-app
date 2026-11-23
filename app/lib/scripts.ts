@@ -18,8 +18,6 @@ import type { PredefinedScript } from "../types/script";
 
 export const PREDEFINED_SCRIPTS: PredefinedScript[] = [];
 
-export function getPredefinedScript(
-  id: PredefinedScript["id"],
-): PredefinedScript | undefined {
+export function getPredefinedScript(id: PredefinedScript["id"]): PredefinedScript | undefined {
   return PREDEFINED_SCRIPTS.find((s) => s.id === id);
 }

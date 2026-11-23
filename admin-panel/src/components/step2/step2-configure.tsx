@@ -5,9 +5,7 @@ import type { TemplateScope } from "@/lib/storefront-lists";
 import { PpAuditStyles } from "@/components/pp/pp-styles";
 import { PpBanner, PpSpinner } from "@/components/pp/polaris-shims";
 import Step2Titles, { type SaveBoxPayload } from "@/components/step2/step2-titles";
-import Step2AuditTable, {
-  type AuditSummaryPayload,
-} from "@/components/step2/step2-audit-table";
+import Step2AuditTable, { type AuditSummaryPayload } from "@/components/step2/step2-audit-table";
 
 const TABS: { id: TemplateScope; label: string }[] = [
   { id: "global", label: "Global" },
@@ -78,16 +76,16 @@ export default function Step2ConfigureView({
         )}
       </div>
 
-      {readOnly && (
-        <PpBanner tone="info">Demo store — editing is disabled.</PpBanner>
-      )}
+      {readOnly && <PpBanner tone="info">Demo store — editing is disabled.</PpBanner>}
       {stateError && (
         <PpBanner tone="warning">
           Merchant app not reachable: {stateError}. Showing last known data.
         </PpBanner>
       )}
       {showDisabledBanner && (
-        <PpBanner tone="info">Enable the app in Step 1 first.</PpBanner>
+        <PpBanner tone="info">
+          The app is turned off for this shop. Turn it on under Store control to edit these lists.
+        </PpBanner>
       )}
 
       <div style={{ display: "flex", gap: 8, marginTop: 20, flexWrap: "wrap" }}>
@@ -98,8 +96,7 @@ export default function Step2ConfigureView({
             onClick={() => setScope(tab.id)}
             style={{
               borderRadius: 999,
-              border:
-                scope === tab.id ? "1px solid #111827" : "1px solid #E5E7EB",
+              border: scope === tab.id ? "1px solid #111827" : "1px solid #E5E7EB",
               background: scope === tab.id ? "#111827" : "#fff",
               color: scope === tab.id ? "#fff" : "#374151",
               padding: "6px 14px",
@@ -164,7 +161,7 @@ function Step2AuditSection({
   if (!appEnabled) {
     return (
       <PpBanner tone="info">
-        Enable PagePulse in Step 1 to run a scan and see results.
+        Turn the app on under Store control and run an audit to see scan results.
       </PpBanner>
     );
   }

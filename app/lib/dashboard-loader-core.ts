@@ -1,0 +1,145 @@
+/* eslint-disable @typescript-eslint/no-explicit-any -- gradual TS migration of legacy modules */
+/** Pure dashboard-loader primitives, shared by the loader and its tests. */
+
+export function readStringArray(value: any) {
+  if (!Array.isArray(value)) return [];
+  return value.filter((x) => typeof x === "string");
+}
+
+export const AUTH_CACHE_KEY = "__pagepulse_admin_auth__";
+
+export const DEFAULT_CONFIG = {
+  appEnabled: false,
+  script1Enabled: false,
+  script2Enabled: false,
+  script3Enabled: false,
+  scriptTitles: ["", "", ""],
+  debugMode: false,
+  auditDeferArray: [],
+  auditHideSelectors: [],
+  staticDeferDefaults: ["wpm", "gtm"],
+  auditDeferArrayEnabled: true,
+  auditHideSelectorsEnabled: true,
+  staticDeferDefaultsEnabled: true,
+  auditDeferArrayPreserved: [],
+  auditHideSelectorsPreserved: [],
+  staticDeferDefaultsPreserved: [],
+  auditComplete: false,
+  appEndpoint: "",
+  storefrontPassword: "",
+  firstUserDelayScripts: ["wpm", "gtm"],
+  firstUserDelayScriptsEnabled: true,
+  firstUserDelayScriptsPreserved: [],
+  firstUserDelayMs: 12000,
+  everyTimeDelayMs: 6000,
+};
+
+export const STORE_CONFIG_SELECT = {
+  appEnabled: true,
+  script1Enabled: true,
+  script2Enabled: true,
+  script3Enabled: true,
+  debugMode: true,
+  scriptTitles: true,
+  auditComplete: true,
+  auditRunning: true,
+  auditFailed: true,
+  auditError: true,
+  auditPageIndex: true,
+  auditTotalPages: true,
+  auditPages: true,
+  auditPageStartedAt: true,
+  selectedThemeId: true,
+  storefrontPassword: true,
+  customPlpUrl: true,
+  customPdpUrl: true,
+  customPageUrls: true,
+  auditDeferArray: true,
+  auditHideSelectors: true,
+  staticDeferDefaults: true,
+  auditDeferArrayEnabled: true,
+  auditHideSelectorsEnabled: true,
+  staticDeferDefaultsEnabled: true,
+  auditDeferArrayPreserved: true,
+  auditHideSelectorsPreserved: true,
+  staticDeferDefaultsPreserved: true,
+  firstUserDelayScripts: true,
+  firstUserDelayScriptsEnabled: true,
+  firstUserDelayScriptsPreserved: true,
+  firstUserDelayMs: true,
+  everyTimeDelayMs: true,
+  auditDeferGlobal: true,
+  auditDeferHome: true,
+  auditDeferCollection: true,
+  auditDeferProduct: true,
+  auditHideGlobal: true,
+  auditHideHome: true,
+  auditHideCollection: true,
+  auditHideProduct: true,
+  staticDeferDefaultsGlobal: true,
+  staticDeferDefaultsHome: true,
+  staticDeferDefaultsCollection: true,
+  staticDeferDefaultsProduct: true,
+  firstUserDelayScriptsGlobal: true,
+  firstUserDelayScriptsHome: true,
+  firstUserDelayScriptsCollection: true,
+  firstUserDelayScriptsProduct: true,
+  firstUserDelayMsGlobal: true,
+  firstUserDelayMsHome: true,
+  firstUserDelayMsCollection: true,
+  firstUserDelayMsProduct: true,
+  everyTimeDelayMsGlobal: true,
+  everyTimeDelayMsHome: true,
+  everyTimeDelayMsCollection: true,
+  everyTimeDelayMsProduct: true,
+  themeHeadInjectStatus: true,
+  themeHeadInjectError: true,
+  themeHeadInjectAttemptedAt: true,
+  psiFieldVitals: true,
+  psiLastFetchedAt: true,
+  psiBackoffUntil: true,
+  isPasswordProtected: true,
+  cachedAppEndpoint: true,
+  lastAuditAt: true,
+  auditPhase: true,
+  activeAuditJobId: true,
+  // The merchant UI turns read-only from `adminManaged`, and the config
+  // version polled by the embedded app is derived from `updatedAt`.
+  adminManaged: true,
+  onboardingActivated: true,
+  updatedAt: true,
+};
+
+export function emptyAuditStatus() {
+  return {
+    running: false,
+    complete: false,
+    failed: false,
+    error: null,
+    pageIndex: 0,
+    totalPages: 0,
+    progress: 0,
+    pages: [],
+    pageStartedAt: null,
+    phase: null,
+    queue: null,
+    errorMessage: null,
+    serverNow: Date.now(),
+  };
+}
+
+export function configFromDbRow(sc: any) {
+  if (!sc) return null;
+  return {
+    appEnabled: sc.appEnabled,
+    script1Enabled: sc.script1Enabled,
+    script2Enabled: sc.script2Enabled,
+    script3Enabled: sc.script3Enabled,
+    debugMode: sc.debugMode,
+    scriptTitles: readStringArray(sc.scriptTitles),
+    auditComplete: sc.auditComplete,
+    auditDeferArray: readStringArray(sc.auditDeferArray),
+    auditHideSelectors: readStringArray(sc.auditHideSelectors),
+    staticDeferDefaults: readStringArray(sc.staticDeferDefaults),
+  };
+}

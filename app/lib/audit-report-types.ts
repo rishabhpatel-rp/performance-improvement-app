@@ -14,6 +14,25 @@ export interface ScriptInventoryEntry {
   homeRequestOrder?: number;
   /** performance.resource `startTime` on home (ms from navigation start). */
   homeStartMs?: number;
+  loadingHint?: "blocking" | "async" | "defer" | "module" | "nomodule" | "inline" | "unknown";
+  tbtContributionMs?: number;
+  /** Safety score for operators (early-home defer = high). */
+  riskLabel?: "low" | "medium" | "high";
+  scriptCategory?:
+    | "payments"
+    | "consent"
+    | "analytics"
+    | "chat"
+    | "ab-testing"
+    | "social-proof"
+    | "retargeting"
+    | "ui-critical"
+    | "theme"
+    | "shopify-core"
+    | "unknown";
+  deferTier?: "interaction" | "delay-every" | "delay-first" | "never";
+  deferConfidence?: number;
+  storefrontImpact?: string;
 }
 
 export interface LabVitalsEntry {
@@ -154,11 +173,14 @@ export interface AuditReportSummary {
   };
   pageRoles?: Record<string, string>;
   /** Above-fold image issues per audited page. Key = page pathname. */
-  imageRecommendations?: Record<string, Array<{
-    selector: string;
-    src: string;
-    issue: "lazy-above-fold" | "missing-fetchpriority" | "oversized";
-    description: string;
-    fix: string;
-  }>>;
+  imageRecommendations?: Record<
+    string,
+    Array<{
+      selector: string;
+      src: string;
+      issue: "lazy-above-fold" | "missing-fetchpriority" | "oversized";
+      description: string;
+      fix: string;
+    }>
+  >;
 }

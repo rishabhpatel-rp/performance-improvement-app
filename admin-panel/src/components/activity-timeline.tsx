@@ -30,8 +30,8 @@ function ActivityRow({ activity }: { activity: ActivityItem }) {
   const [expanded, setExpanded] = useState(false);
   const hasMetadata = Boolean(
     activity.metadata &&
-      typeof activity.metadata === "object" &&
-      Object.keys(activity.metadata as object).length > 0,
+    typeof activity.metadata === "object" &&
+    Object.keys(activity.metadata as object).length > 0,
   );
 
   return (
@@ -50,9 +50,7 @@ function ActivityRow({ activity }: { activity: ActivityItem }) {
               </span>
             )}
           </div>
-          {activity.description && (
-            <p className="text-sm mt-1">{activity.description}</p>
-          )}
+          {activity.description && <p className="text-sm mt-1">{activity.description}</p>}
         </div>
         <span
           className="text-xs text-muted-foreground whitespace-nowrap shrink-0"

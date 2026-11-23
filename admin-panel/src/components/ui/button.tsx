@@ -4,8 +4,7 @@ import { cn } from "@/lib/utils";
 type Variant = "default" | "outline" | "ghost" | "destructive";
 type Size = "default" | "sm" | "lg";
 
-export interface ButtonProps
-  extends React.ButtonHTMLAttributes<HTMLButtonElement> {
+export interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
   variant?: Variant;
   size?: Size;
 }

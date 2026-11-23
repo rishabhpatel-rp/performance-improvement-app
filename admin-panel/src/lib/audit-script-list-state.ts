@@ -1,8 +1,4 @@
-import {
-  readStringList,
-  scopeListColumn,
-  type TemplateScope,
-} from "@/lib/storefront-lists";
+import { readStringList, scopeListColumn, type TemplateScope } from "@/lib/storefront-lists";
 
 export type ScriptListState = {
   auditDeferArray: string[];
@@ -44,17 +40,8 @@ export function scriptListStateForScope(
   }
   const u = <T extends string>(a: T[], b: T[]) => [...new Set([...a, ...b])].sort();
   return {
-    auditDeferArray: u(
-      defer,
-      readStringList(row[scopeListColumn("defer", scope)]),
-    ),
-    firstUserDelayScripts: u(
-      first,
-      readStringList(row[scopeListColumn("first", scope)]),
-    ),
-    staticDeferDefaults: u(
-      every,
-      readStringList(row[scopeListColumn("every", scope)]),
-    ),
+    auditDeferArray: u(defer, readStringList(row[scopeListColumn("defer", scope)])),
+    firstUserDelayScripts: u(first, readStringList(row[scopeListColumn("first", scope)])),
+    staticDeferDefaults: u(every, readStringList(row[scopeListColumn("every", scope)])),
   };
 }

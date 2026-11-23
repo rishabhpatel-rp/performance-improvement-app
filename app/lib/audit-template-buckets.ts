@@ -56,9 +56,7 @@ export function buildTemplateDeferBuckets(
   deferByPath: Record<string, string[]>,
   pageRoles: Record<string, AuditPageRole>,
 ): TemplateDeferBuckets {
-  const perRole = TEMPLATE_ROLES.map((role) =>
-    deferTokensForRole(deferByPath, pageRoles, role),
-  );
+  const perRole = TEMPLATE_ROLES.map((role) => deferTokensForRole(deferByPath, pageRoles, role));
   const presentTemplates = perRole.filter((s) => s.length > 0);
 
   const global = intersectSorted(presentTemplates);

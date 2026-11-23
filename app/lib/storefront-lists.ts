@@ -68,9 +68,7 @@ export function scopeListColumn(family: ListFamily, scope: TemplateScope): strin
 }
 
 export function scopeMsColumn(kind: "first" | "every", scope: TemplateScope): string {
-  return kind === "first"
-    ? `firstUserDelayMs${suffix(scope)}`
-    : `everyTimeDelayMs${suffix(scope)}`;
+  return kind === "first" ? `firstUserDelayMs${suffix(scope)}` : `everyTimeDelayMs${suffix(scope)}`;
 }
 
 export function readStringList(value: unknown): string[] {
@@ -78,10 +76,7 @@ export function readStringList(value: unknown): string[] {
   return value.filter((x): x is string => typeof x === "string");
 }
 
-function bucketsFromRow(
-  row: Record<string, unknown>,
-  family: ListFamily,
-): TemplateListBuckets {
+function bucketsFromRow(row: Record<string, unknown>, family: ListFamily): TemplateListBuckets {
   return {
     global: readStringList(row[scopeListColumn(family, "global")]),
     home: readStringList(row[scopeListColumn(family, "home")]),

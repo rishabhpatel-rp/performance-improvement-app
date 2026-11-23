@@ -1,1909 +1,115 @@
 import {
-  chromium,
-  type Browser,
-  type BrowserContext,
-  type Page,
-} from "playwright";
-import { buildGatedSinglePageAuditScript } from "./audit-script";
-import {
-  coverageVerdict,
+  classifyCandidate,
   mergeSlugVariants,
+  normalizeTokenForCrossRun,
   pageMatchPatterns,
+  shouldProtectUnknownCoverageScript,
+  tokenEligibleForGlobalDefer,
   urlToCandidates,
-  type CoverageEntry,
 } from "./audit-candidates";
-import { normalizeCustomUrl } from "./page-urls.server";
+import { getEnv } from "./env.server.ts";
+import { classifyDeferTier, computeDeferConfidence } from "./audit-confidence.ts";
 import { buildScriptInventoryFromClassified } from "./audit-classified-inventory.ts";
-import { buildScriptInventory } from "./audit-inventory.server.ts";
+import { filterSelectorsWithInteractiveChildren } from "./audit-hide-safety-browser.server.ts";
 import { applyHideSelectorHygiene } from "./audit-hide-safety.server";
+import { buildScriptInventory } from "./audit-inventory.server.ts";
+import { AUDIT_PASS_GAP_MS } from "./audit-timing.ts";
+import { logger } from "./logger.ts";
+import { AuditRunCancelledError } from "./audit-cancel.ts";
+import { withBrowser } from "./audit-browser.ts";
+import {
+  AUDIT_REPEAT_PASSES,
+  AuditBlockedError,
+  AuditProgress,
+  DiscoveredPages,
+  HiddenAuditResult,
+  MeasuredPage,
+  PageFunnel,
+  assertAuditRunActive,
+  safePathname,
+} from "./audit-core.ts";
+import { measurePage } from "./audit-measure.ts";
+import {
+  readPriorDeferTokens,
+  selectorsOverlapFoldOnPage,
+  selectorsVisibleOnPage,
+} from "./audit-postpass.ts";
+import {
+  collapseToParentSelectors,
+  screenshotFoldRegression,
+  verifyFoldSurvives,
+} from "./audit-settle.ts";
+import type { DeferTier, ScriptLoadingHint } from "./audit-candidates";
+import { buildTemplateDeferBuckets, buildTemplateListBuckets } from "./audit-template-buckets.ts";
+import { buildPageRolesFromDiscovered } from "./page-audit-roles.ts";
+import { storefrontImpactForDeferTier } from "./audit-tier-copy.ts";
+export { pickPagesFromDiscovery, findPagesInHtml } from "./audit-discovery.ts";
+export {
+  AuditBlockedError,
+  AuditRunCancelledError,
+  AuditRunTimeoutError,
+  appendPreviewParams,
+  describePages,
+} from "./audit-core.ts";
+export type {
+  AuditBlockCode,
+  AuditPageInfo,
+  AuditPhase,
+  AuditProgress,
+  DiscoveredPages,
+  FoldAssertion,
+  HiddenAuditResult,
+  PageFunnel,
+} from "./audit-core.ts";
+export {
+  isPasswordPage,
+  isPasswordPageHtml,
+  returnToRequestedUrl,
+  unlockPasswordPage,
+  withBrowser,
+} from "./audit-browser.ts";
+export { discoverPages } from "./audit-discovery-runtime.ts";
 
-/** A `Profiler.ScriptCoverage` record: `coverageVerdict` only needs
- *  `functions`, but callers also need the `url` to map the record back to
- *  candidate tokens. */
-type ScriptCoverageEntry = CoverageEntry & { url: string };
-
-/**
- * Only real network scripts are meaningful for deferral decisions.
- *
- * Playwright's `stopJSCoverage` already returns nothing but scripts, but CDP's
- * `Profiler.takePreciseCoverage` additionally reports `extension://`,
- * `devtools://`, `blob:` and `data:` documents. Feeding those to
- * `urlToCandidates` would mint garbage slugs for them and pollute the emitted
- * lists, so they are dropped before classification.
- */
-function isRealScriptUrl(url: string): boolean {
-  return /^https?:/i.test(url) && /\.js(\?|#|$)/i.test(url);
-}
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type AdminClient = any;
-
-export interface DiscoveredPages {
-  home: string;
-  plp?: string;
-  pdp?: string;
-  /** Extra merchant-specified pages, already rewritten with the password and
-   *  preview-theme params. Audited like any other page but with no PLP/PDP
-   *  semantics, so they only ever contribute to the union. */
-  extras?: string[];
-}
-
-export interface HiddenAuditResult {
-  /** Union of every page's deferrable scripts. Kept as the union on purpose:
-   *  `StoreConfig.auditDeferArray` -> `rebuildPerformanceScript` -> obfuscate
-   *  -> app proxy is the existing consumer path and must not change shape. */
-  deferArray: string[];
-  /** Same decision, split by page pathname, for the per-page consumer rewrite.
-   *  Additive: this whole object is already persisted into
-   *  `AuditLog.audit_data` (`Json`), so no schema change is required. */
-  deferArrayByPage: Record<string, string[]>;
-  /** Pre-merge tokens, for reconciling against the funnel. */
-  deferArrayUnmerged: string[];
-  /** Scripts every audited page loads. The bundle ships this once. */
-  deferArrayBase: string[];
-  /** Per-page extras on top of `deferArrayBase`, keyed by page pathname. */
-  deferArrayAddByPage: Record<string, string[]>;
-  hideSelectors: string[];
-  /** Per-page hide lists, keyed by the audited page's pathname. */
-  hideSelectorsByPage: Record<string, string[]>;
-  /** Match patterns per audited page, most specific first. The consumer walks
-   *  these in order against `location.pathname` so one bundle can serve every
-   *  PDP/PLP on the store, not just the three URLs the audit saw. */
-  pagePatterns: Record<string, string[]>;
-  /** Shopify-critical scripts recorded but never gated (`chunk*`, `storefront*`). */
-  neverDefer: string[];
-  /** The app's own scripts, excluded so it cannot defer its own gate. */
-  selfExcluded: string[];
-  /** Hashed / all-digit names dropped as genuine noise. */
-  noiseDropped: string[];
-  /** token -> why it was fold-protected ("ancestor-fold" | "dormant-subtree"). */
-  foldReasons: Record<string, string>;
-  /** One entry per audited page: where every script went. */
-  funnel: PageFunnel[];
-  /** Did applying `hideSelectors` actually keep the first 1100px intact? */
-  foldAssertion: FoldAssertion;
-  pagesAudited: string[];
-  completedAt: string;
-}
-
-export interface PageFunnel {
-  request: number;
-  dom: number;
-  resourceTiming: number;
-  requestOnly: number;
-  disagreement: number;
-  candidates: number;
-  neverDefer: number;
-  noise: number;
-  selfExcluded: number;
-  foldProtected: number;
-  coverageRan: number;
-  coverageUnknown: number;
-  emitted: number;
-  settle: SettleReport;
-}
-
-export interface FoldAssertion {
-  pagesChecked: number;
-  /** Selectors that hid an element inside the first 1100px. Must be empty. */
-  violations: string[];
-  ok: boolean;
-}
-
-function safePathname(rawUrl: string): string {
-  try {
-    return new URL(rawUrl).pathname || "/";
-  } catch {
-    return rawUrl;
-  }
-}
-
-/** The storefront could not be audited because of its password page. The
- * `code` is stored in `StoreConfig.auditError` and mapped to a message in the
- * Step 1 UI (which also reveals the password box). */
-export type AuditBlockCode = "PASSWORD_REQUIRED" | "PASSWORD_INCORRECT";
-
-export class AuditBlockedError extends Error {
-  code: AuditBlockCode;
-  constructor(code: AuditBlockCode) {
-    super(
-      code === "PASSWORD_REQUIRED"
-        ? "The store is password protected and no storefront password is saved."
-        : "The saved storefront password did not unlock the store.",
-    );
-    this.name = "AuditBlockedError";
-    this.code = code;
-  }
-}
-
-interface CustomUrls {
-  /** Extra pages from the "+" button. Validated at save time, but re-checked
-   *  here because the stored value could predate a hostname change. */
-  extras?: string[];
-  plp?: string;
-  pdp?: string;
-}
-
-const STORE_KEY = "shopAuditState_v1";
-const P_KEY = "shopAuditP_v1";
-const VIS_KEY = "shopAuditVisible_v1";
-const OFF_KEY = "shopAuditOff_v1";
-
-function chromiumExecutablePath(): string | undefined {
-  const envPath = process.env.CHROMIUM_PATH;
-  return envPath || undefined;
-}
-
-// One Chromium is kept warm and shared by page discovery + the audit, instead
-// of a ~1 s launch per use. Each audited page gets its own browser *context*
-// (isolated localStorage/cookies), so the parallel pages never interfere.
-// The browser closes itself after a period of no use to free memory.
-const BROWSER_IDLE_CLOSE_MS = 10 * 1000;
-let browserPromise: Promise<Browser> | null = null;
-let browserUsers = 0;
-let browserIdleTimer: ReturnType<typeof setTimeout> | null = null;
-
-async function getBrowser(): Promise<Browser> {
-  if (browserPromise) {
-    const existing = await browserPromise.catch(() => null);
-    if (existing?.isConnected()) return existing;
-    browserPromise = null;
-  }
-  const launching = chromium.launch({
-    headless: true,
-    executablePath: chromiumExecutablePath(),
-    args: [
-      "--disable-dev-shm-usage",
-      "--disable-gpu",
-      "--no-first-run",
-      "--disable-extensions",
-    ],
-  });
-  browserPromise = launching;
-  launching
-    .then((b) =>
-      b.on("disconnected", () => {
-        if (browserPromise === launching) browserPromise = null;
-      }),
-    )
-    .catch(() => {
-      if (browserPromise === launching) browserPromise = null;
-    });
-  return launching;
-}
-
-export async function withBrowser<T>(fn: (browser: Browser) => Promise<T>): Promise<T> {
-  if (browserIdleTimer) {
-    clearTimeout(browserIdleTimer);
-    browserIdleTimer = null;
-  }
-  browserUsers++;
-  try {
-    return await fn(await getBrowser());
-  } finally {
-    browserUsers--;
-    if (browserUsers === 0) {
-      browserIdleTimer = setTimeout(() => {
-        const closing = browserPromise;
-        browserPromise = null;
-        closing?.then((b) => b.close()).catch(() => {});
-      }, BROWSER_IDLE_CLOSE_MS);
-      browserIdleTimer.unref?.();
-    }
-  }
-}
-
-async function graphqlJson(admin: AdminClient, query: string) {
-  const res = await admin.graphql(query);
-  const json = await res.json();
-  if (json.errors?.length) {
-    throw new Error(
-      json.errors.map((e: { message?: string }) => e.message).join("; "),
-    );
-  }
-  return json.data;
-}
-
-/** Appends the query params the hidden audit's headless browser needs to see
- * the storefront the merchant actually chose:
- *  - `password` — Shopify's documented programmatic storefront-password bypass
- *    (the store owner's own password, saved in Step 1), and
- *  - `preview_theme_id` — renders a specific (non-live) theme, so the audit
- *    scans the theme the app extension was installed in.
- * Either, both or neither may be given; with neither the URL is returned as is. */
-export function appendPreviewParams(
-  url: string,
-  { password, themeId }: { password?: string; themeId?: string },
-): string {
-  const u = new URL(url);
-  if (password) u.searchParams.set("password", password);
-  if (themeId) u.searchParams.set("preview_theme_id", themeId);
-  return u.toString();
-}
-
-// Scalar page keys only. `extras` is an ARRAY, so it is handled separately
-// below rather than being folded into this scalar loop.
-const PAGE_LABELS: Array<[Exclude<keyof DiscoveredPages, "extras">, string]> = [
-  ["home", "Home page"],
-  ["plp", "Collection page"],
-  ["pdp", "Product page"],
-];
-
-export interface AuditPageInfo {
-  label: string;
-  path: string;
-  done?: boolean; // set as each page finishes in the parallel audit
-}
-
-/** Human-readable list of the pages the audit will walk (Home -> PLP -> PDP,
- * in the same order as `runHiddenAudit`). Only the URL *pathname* is kept, so
- * `?password=` / `preview_theme_id=` never reach the DB, API or UI. */
-export function describePages(pages: DiscoveredPages): AuditPageInfo[] {
-  const out: AuditPageInfo[] = [];
-  // Canonical pages first, in a stable order, so the report always leads with
-  // home -> collection -> product.
-  for (const [key, label] of PAGE_LABELS) {
-    const url = pages[key];
-    // `extras` is an array, not a string. It is handled below, but the guard
-    // keeps this loop safe if PAGE_LABELS is ever widened again.
-    if (!url || typeof url !== "string") continue;
-    let path = url;
-    try {
-      path = new URL(url).pathname || "/";
-    } catch {
-      // keep the raw value if it is not an absolute URL
-    }
-    out.push({ label, path });
-  }
-  // Then the merchant-added pages, one chip each. They are labelled by path
-  // because their page type is unknown, and they come last so they never
-  // displace the canonical pages from the top of the report.
-  for (const extra of pages.extras ?? []) {
-    let path = extra;
-    try {
-      path = new URL(extra).pathname || "/";
-    } catch {
-      // keep the raw value
-    }
-    out.push({ label: "Extra page", path });
-  }
-  return out;
-}
-
-interface DiscoveryProduct {
-  handle: string;
-  onlineStoreUrl?: string | null;
-}
-interface DiscoveryData {
-  collections?: {
-    nodes?: Array<{
-      handle: string;
-      products?: { nodes?: DiscoveryProduct[] };
-    }>;
-  };
-  products?: { nodes?: DiscoveryProduct[] };
-}
-
-/** Picks the PLP / PDP from the discovery query result (pure, unit-testable).
- *  - PLP: the first published collection that has a product on the storefront;
- *    else `/collections/all` (always exists) when the store has any published
- *    product; else none.
- *  - PDP: that collection's best-selling product that is actually on the
- *    storefront (`onlineStoreUrl` set); else the first published product. */
-export function pickPagesFromDiscovery(
-  data: DiscoveryData,
-  shopDomain: string,
-): { plp?: string; pdp?: string } {
-  const onStorefront = (p: DiscoveryProduct) => Boolean(p.onlineStoreUrl);
-  const anyProduct = data.products?.nodes?.[0];
-  const collection = (data.collections?.nodes ?? []).find((c) =>
-    (c.products?.nodes ?? []).some(onStorefront),
-  );
-
-  let plpPath: string | undefined;
-  let pdpHandle: string | undefined;
-  if (collection) {
-    plpPath = `/collections/${collection.handle}`;
-    pdpHandle = (collection.products?.nodes ?? []).find(onStorefront)?.handle;
-  }
-  if (!plpPath && anyProduct) plpPath = "/collections/all";
-  if (!pdpHandle && anyProduct?.handle) pdpHandle = anyProduct.handle;
-
-  return {
-    plp: plpPath ? `https://${shopDomain}${plpPath}` : undefined,
-    pdp: pdpHandle ? `https://${shopDomain}/products/${pdpHandle}` : undefined,
-  };
-}
-
-/** One GraphQL round trip: published collections with their best-selling
- * products (`BEST_SELLING` is only valid on `Collection.products`, not on the
- * root `products` field) plus one published product as a fallback. */
-async function discoverViaGraphql(
-  admin: AdminClient,
-  shopDomain: string,
-): Promise<{ plp?: string; pdp?: string }> {
-  const data = await graphqlJson(
-    admin,
-    `#graphql
-    query PageDiscovery {
-      collections(first: 20, query: "published_status:published") {
-        nodes {
-          handle
-          products(first: 3, sortKey: BEST_SELLING) {
-            nodes { handle onlineStoreUrl }
-          }
-        }
-      }
-      products(first: 1, query: "status:active published_status:published") {
-        nodes { handle onlineStoreUrl }
-      }
-    }`,
-  );
-  return pickPagesFromDiscovery(data as DiscoveryData, shopDomain);
-}
-
-const HOME_FETCH_TIMEOUT_MS = 8000;
-
-/** True when a fetched page is Shopify's storefront password page. */
-export function isPasswordPageHtml(finalUrl: string, html: string): boolean {
-  try {
-    if (/^\/password\/?$/.test(new URL(finalUrl).pathname)) return true;
-  } catch {
-    // ignore an unparsable URL and fall through to the markup check
-  }
-  return /<form[^>]+action=["'][^"']*\/password/i.test(html);
-}
-
-/** If `page` is showing the storefront password page, submit `password` and
- * wait for the storefront to load. Returns true when the page was locked.
- * Shared by page discovery and the audit itself. */
-/** True when `page` is showing Shopify's storefront password page: the
- * `/password` route, or its form (`action="/password"` + `name="password"`). */
-export async function isPasswordPage(page: Page): Promise<boolean> {
-  return page
-    .evaluate(() => {
-      if (/(^|\/)password\/?$/.test(location.pathname)) return true;
-      const input = document.querySelector<HTMLInputElement>(
-        'input[name="password"], input[type="password"]',
-      );
-      const form = input?.closest("form");
-      if (!form) return false;
-      const action = form.getAttribute("action") || "";
-      try {
-        return /(^|\/)password\/?$/.test(
-          new URL(action, location.href).pathname,
-        );
-      } catch {
-        return /(^|\/)password\/?$/i.test(action);
-      }
-    })
-    .catch(() => false);
-}
-
-export async function unlockPasswordPage(
-  page: Page,
-  password: string,
-): Promise<boolean> {
-  if (!(await isPasswordPage(page))) return false;
-
-  console.log("[audit] Password page detected — submitting bypass form.");
-  const navigation = page
-    .waitForNavigation({ waitUntil: "load", timeout: 30000 })
-    .catch(() => undefined);
-  const submitted = await page
-    .evaluate((pw) => {
-      const input = document.querySelector<HTMLInputElement>(
-        'input[name="password"], input[type="password"]',
-      );
-      const form = (input?.closest("form") ??
-        document.querySelector<HTMLFormElement>('form[action*="password"], form')) as
-        | HTMLFormElement
-        | null;
-      if (!input || !form) return false;
-      input.value = pw;
-      if (typeof form.requestSubmit === "function") {
-        form.requestSubmit();
-      } else {
-        form.submit();
-      }
-      return true;
-    }, password)
-    .catch(() => false);
-  if (!submitted) return false;
-  await navigation;
-  return true;
-}
-
-/** After unlocking, Shopify redirects to the store root, which can drop the
- * requested page and `?preview_theme_id=`. Go back to the requested URL. */
-export async function returnToRequestedUrl(
-  page: Page,
-  requestedUrl: string,
-  timeout: number,
-): Promise<void> {
-  try {
-    const want = new URL(requestedUrl);
-    const now = new URL(page.url());
-    const sameTheme =
-      (want.searchParams.get("preview_theme_id") ?? "") ===
-      (now.searchParams.get("preview_theme_id") ?? "");
-    if (want.pathname !== now.pathname || !sameTheme) {
-      await page.goto(requestedUrl, { waitUntil: "load", timeout });
-    }
-  } catch {
-    // best-effort; the caller measures whatever loaded
-  }
-}
-
-/** Fallback 1 (no browser): read collection/product links from the homepage
- * HTML with a plain HTTP request, ~10x faster than launching Chromium. */
-async function discoverViaHtml(
-  home: string,
-): Promise<{ plp?: string; pdp?: string; passwordPage?: boolean }> {
-  try {
-    const res = await fetch(home, {
-      redirect: "follow",
-      headers: { "user-agent": "Mozilla/5.0 (compatible; PagePulseAudit/1.0)" },
-      signal: AbortSignal.timeout(HOME_FETCH_TIMEOUT_MS),
-    });
-    if (!res.ok) return {};
-    const html = await res.text();
-    // A password-protected store answers with the password page (no product or
-    // collection links to find). Report it so the caller can stop early (no
-    // saved password) or let the browser fallback unlock it (password saved).
-    if (isPasswordPageHtml(res.url, html)) return { passwordPage: true };
-    const find = (segment: string) => {
-      const m = html.match(
-        new RegExp(`href=["']([^"'#?]*/${segment}/[a-z0-9_-][^"'#?]*)`, "i"),
-      );
-      if (!m) return undefined;
-      try {
-        return new URL(m[1], home).toString();
-      } catch {
-        return undefined;
-      }
-    };
-    return { plp: find("collections"), pdp: find("products") };
-  } catch {
-    return {};
-  }
-}
-
-/** Fallback 2 (last resort): render the homepage in the shared browser. */
-async function discoverViaBrowser(
-  home: string,
-  need: { plp: boolean; pdp: boolean },
-  password?: string,
-): Promise<{ plp?: string; pdp?: string }> {
-  try {
-    return await withBrowser(async (browser) => {
-      const context = await browser.newContext();
-      try {
-        const page = await context.newPage();
-        await page.goto(home, { waitUntil: "domcontentloaded", timeout: 45000 });
-        // Password-protected store: enter the saved password, then make sure we
-        // are back on the requested (theme-preview) home page.
-        if (password && (await unlockPasswordPage(page, password))) {
-          await returnToRequestedUrl(page, home, 45000);
-        }
-        const firstHref = async (selectors: string[]) => {
-          for (const selector of selectors) {
-            const href = await page
-              .locator(selector)
-              .first()
-              .getAttribute("href", { timeout: 2000 })
-              .then((h) => (h ? new URL(h, home).toString() : undefined))
-              .catch(() => undefined);
-            if (href) return href;
-          }
-          return undefined;
-        };
-        return {
-          plp: need.plp
-            ? await firstHref([
-                'a[href*="/collections/"]',
-                'a[href*="/shop"]',
-                'a[href*="/catalog"]',
-                'a[href*="/collection"]',
-              ])
-            : undefined,
-          pdp: need.pdp
-            ? await firstHref(['a[href*="/products/"]', 'a[href*="/product/"]'])
-            : undefined,
-        };
-      } finally {
-        await context.close().catch(() => {});
-      }
-    });
-  } catch (err) {
-    console.warn(
-      "[audit] Homepage browser fallback failed:",
-      err instanceof Error ? err.message : err,
-    );
-    return {};
-  }
-}
-
-/** Discover Home / PLP / PDP URLs for a store, fastest source first:
- * merchant-provided URLs, then one Admin GraphQL call, then the homepage HTML
- * over plain HTTP, and only then a browser render.
- *
- * When `password` is provided (the store owner's own storefront password,
- * saved in Step 1 for a password-protected store), each URL is rewritten
- * with a `?password=` param, and the browser steps also submit the password
- * form when they land on the password page, so the hidden audit reaches the
- * real storefront. When `themeId` is provided (numeric id of a non-live theme the
- * merchant selected) each URL also gets `?preview_theme_id=` so that theme is
- * the one that is audited. */
-export async function discoverPages(
-  admin: AdminClient,
-  shopDomain: string,
-  password?: string,
-  themeId?: string,
-  customUrls?: CustomUrls,
-): Promise<DiscoveredPages> {
-  const home = `https://${shopDomain}/`;
-  const params = { password, themeId };
-  const shopHost = shopDomain.toLowerCase();
-
-  // Merchant-typed URLs are validated again here so a bad saved value can never
-  // fail the audit, and the store password is never sent to another host.
-  const customFor = (kind: "plp" | "pdp", raw?: string): string | undefined => {
-    const r = normalizeCustomUrl(raw, shopDomain, kind);
-    if (!r.ok) {
-      console.warn(`[audit] Ignoring invalid custom ${kind} URL: ${r.error}`);
-      return undefined;
-    }
-    return r.url;
-  };
-  // Links scraped from a page must stay on the store's own host too.
-  const ownHost = (u?: string): string | undefined => {
-    if (!u) return undefined;
-    try {
-      return new URL(u).hostname.toLowerCase() === shopHost ? u : undefined;
-    } catch {
-      return undefined;
-    }
-  };
-
-  let plp = customFor("plp", customUrls?.plp);
-  let pdp = customFor("pdp", customUrls?.pdp);
-
-    // Extra pages go through the same validation, de-duplicated and capped: a
-    // merchant can add many rows, and each one is a full headless page load, so
-    // an unbounded list would turn a 2-minute audit into an hour.
-    const extras: string[] = [];
-    for (const raw of customUrls?.extras ?? []) {
-      const r = normalizeCustomUrl(raw, shopDomain, "page");
-      if (!r.ok) {
-        console.warn(`[audit] Ignoring invalid extra page URL: ${r.error}`);
-        continue;
-      }
-      if (!r.url) continue;
-      // The homepage and the PLP/PDP are already measured; measuring them twice
-      // would double-count and waste a page load.
-      if (r.url === `https://${shopHost}/` || r.url === plp || r.url === pdp) continue;
-      if (!extras.includes(r.url)) extras.push(r.url);
-      if (extras.length >= MAX_EXTRA_PAGES) {
-        console.warn(
-          `[audit] Extra page limit (${MAX_EXTRA_PAGES}) reached; the rest were ignored.`,
-        );
-        break;
-      }
-    }
-
-  const source = { plp: plp ? "custom" : "none", pdp: pdp ? "custom" : "none" };
-  const adopt = (found: { plp?: string; pdp?: string }, via: string) => {
-    if (!plp && ownHost(found.plp)) {
-      plp = found.plp;
-      source.plp = via;
-    }
-    if (!pdp && ownHost(found.pdp)) {
-      pdp = found.pdp;
-      source.pdp = via;
-    }
-  };
-
-  if (!plp || !pdp) {
-    try {
-      adopt(await discoverViaGraphql(admin, shopDomain), "graphql");
-    } catch (err) {
-      console.error(
-        "[audit] GraphQL page discovery failed, falling back to HTML:",
-        err instanceof Error ? err.message : err,
-      );
-    }
-  }
-
-  if (!plp || !pdp) {
-    const htmlFound = await discoverViaHtml(appendPreviewParams(home, params));
-    // Password page and nothing to unlock it with: no page can be audited.
-    if (htmlFound.passwordPage && !password) {
-      throw new AuditBlockedError("PASSWORD_REQUIRED");
-    }
-    adopt(htmlFound, "html");
-  }
-
-  if (!plp || !pdp) {
-    adopt(
-      await discoverViaBrowser(
-        appendPreviewParams(home, params),
-        { plp: !plp, pdp: !pdp },
-        password,
-      ),
-      "browser",
-    );
-  }
-
-  console.log(
-    `[audit] Page sources for ${shopDomain}: plp=${source.plp}, pdp=${source.pdp}`,
-  );
-
-  // Graceful degradation: continue with whatever pages were discovered (minimum home)
-  if (!plp && !pdp) {
-    console.warn("[audit] Only home page discovered, auditing home only");
-  }
-
-  if (password || themeId) {
-    return {
-      home: appendPreviewParams(home, params),
-      plp: plp ? appendPreviewParams(plp, params) : undefined,
-      pdp: pdp ? appendPreviewParams(pdp, params) : undefined,
-      extras: extras.map((u) => appendPreviewParams(u, params)),
-    };
-  }
-
-  return { home, plp, pdp, extras };
-}
-
-export type AuditPhase = "discovering" | "auditing" | "building";
-
-export type AuditProgress = {
-  done: number; // pages whose audit has finished
-  total: number; // total pages to audit
-  path?: string; // pathname of the page that just finished (parallel audit)
+type TokenTiming = {
+  homeRequestOrder?: number;
+  homeStartMs?: number;
+  bytes?: number;
+  tbtContributionMs?: number;
 };
 
-// Audit timing. The old script slept a fixed 30 s per page; now each page is
-// measured once it has actually settled. All pages run at the same time, so
-// the whole audit takes about as long as the slowest page.
-//
-// IMPORTANT (measured): `waitForLoadState('networkidle')` is NOT a usable
-// "finished" signal here. On a store with analytics beacons it never fires
-// inside 30 s, so a 8 s cap just gives up and measures mid-load — on one
-// measured store the last script finished at 10 780 ms, past the old 10 500 ms
-// cap. We therefore wait on `max(responseEnd)` over script resource entries
-// and require it to be stable across consecutive checks. These are safety nets
-// against a pathological page, not the exit condition.
-const PAGE_LOAD_TIMEOUT_MS = 45000;
-const NETWORK_IDLE_CAP_MS = 8000; // upper bound per quiet-period probe
-const SETTLE_STABLE_CHECKS = 2; // consecutive identical counts required
-const SETTLE_PROBE_GAP_MS = 900; // quiet gap between probes
-/** Minimum time to observe before "stable" can mean "finished".
- *  Stability alone is not enough: a page that is quiet for 1.8s can still have a
- *  lazy chunk arriving at 2.5s, and declaring completion then silently drops it
- *  from the audit. The old capped wait effectively had a ~10.5s floor; this
- *  keeps a real (smaller) one so a quiet lull is never mistaken for the end. */
-const SETTLE_MIN_MS = 5000;
-const SETTLE_SAFETY_NET_MS = 40000; // never measure later than this
-const MEASURE_TIMEOUT_MS = 15000; // max time for the in-page measurement
-
-// Interaction-simulation timing. Runs before the settle block above, so it
-// adds to (not replaces) the existing per-page budget.
-const FOLD_HEIGHT_PX = 1100; // "initial viewport" band, measured from document top
-const SCROLL_STEP_PX = 900;
-/** Hard floor on scroll steps. The real count is derived from the document
- *  height — the previous fixed 4 steps covered 3600px, which is only 38% of a
- *  measured 9440px home page, so scroll-gated code in the lower two thirds
- *  never ran. */
-const MIN_SCROLL_STEPS = 6;
-const MAX_SCROLL_STEPS = 40; // a pathological page must not stall the audit
-const SCROLL_STEP_SETTLE_MS = 300;
-const MAX_INTERACTION_TARGETS = 25; // 25 safe targets existed on a measured page
-const INTERACTION_CLICK_TIMEOUT_MS = 1500; // per-click actionability timeout
-const INTERACTION_STEP_SETTLE_MS = 400; // pause after each click
-const INTERACTION_PHASE_TIMEOUT_MS = 30000; // hard cap: scroll + mouse + click
-
-/** How many times the whole page set is measured in one audit run.
- *
- *  Rationale: the storefront gate matches defer tokens as an EXACT substring of
- *  the script URL, so a token carrying a value that varies per request (nonce,
- *  A/B bucket, cache-buster) or that changes between deploys stops matching and
- *  the script is silently never deferred.
- *
- *  `mergeSlugVariants` already unifies divergent variants of one script to their
- *  longest common prefix, but with a single pass there is only ever ONE variant per
- *  script, so the merge is a no-op. Repeating the pass feeds it the divergence it
- *  was written to consume. Identical repeats stay verbatim, so a stable value is
- *  never over-stripped.
- */
-/** Hard cap on merchant-added extra pages. Each one is a full headless page
- *  load per pass, so this bounds the audit's wall time. Reaching it logs a
- *  warning rather than silently truncating. */
-const MAX_EXTRA_PAGES = 8;
-
-const AUDIT_REPEAT_PASSES = 3;
-
-/**
- * Gap between passes, in ms.
- *
- * Set to 0 deliberately. The gap was two minutes of pure sleeping -- roughly
- * half the wall time -- and it only bought ONE class: a value that rotates on a
- * window shorter than the gap. The classes that actually cost deferral are
- * covered elsewhere:
- *   - per-request nonces / A-B / cache-busters are caught by repeat samples
- *     alone, with no delay between them,
- *   - deploy-time build hashes are caught for free by the cross-run merge
- *     against the previous AuditLog row.
- * A rotation window longer than an audit run is not observable by any in-run
- * sampling, so a large gap bought very little for a very large cost.
- */
-const AUDIT_PASS_GAP_MS = 0;
-
-interface PageAccumulators {
-  p: string[];
-  vis: string[];
-  off: string[];
-  /** Kept-tokens required by fold-overlapping DOM, with the reason recorded so
-   *  the blast radius of over-protection is visible per store. */
-  foldScripts: string[];
-  foldReasons: Record<string, string>;
-  /** Ran at least one named function before interaction -> protect. */
-  coverageRan: string[];
-  /** Loaded but exposes no named function. Coverage genuinely cannot tell
-   *  "did nothing" from "did everything" for a purely top-level script, so
-   *  this is treated as unknown -> protect. */
-  coverageUnknown: string[];
-  neverDefer: string[];
-  noise: string[];
-  selfScripts: string[];
-  sources: ScriptSourceCounts;
-  settle: SettleReport;
-}
-
-interface ScriptSourceCounts {
-  /** Authoritative: every script request Playwright saw for this page. */
-  request: number;
-  /** `document.querySelectorAll('script[src]')` inside the page. */
-  dom: number;
-  /** `performance.getEntriesByType('resource')` filtered to scripts. */
-  resourceTiming: number;
-  /** Tokens present in the request log but missing from an in-page source. */
-  requestOnly: number;
-  /** In-page sources disagreed with each other. */
-  disagreement: number;
-}
-
-interface SettleReport {
-  /** True "all scripts loaded" = max responseEnd over script resources. */
-  lastScriptResponseEnd: number;
-  preInteractionWaitMs: number;
-  postInteractionWaitMs: number;
-  /** Scripts that arrived only after the interaction pass. */
-  postInteractionDelta: number;
-  scrollSteps: number;
-  clicks: number;
-  hitSafetyNet: boolean;
-}
-
-function emptyAccumulators(): PageAccumulators {
-  return {
-    p: [],
-    vis: [],
-    off: [],
-    foldScripts: [],
-    foldReasons: {},
-    coverageRan: [],
-    coverageUnknown: [],
-    neverDefer: [],
-    noise: [],
-    selfScripts: [],
-    sources: {
-      request: 0,
-      dom: 0,
-      resourceTiming: 0,
-      requestOnly: 0,
-      disagreement: 0,
-    },
-    settle: {
-      lastScriptResponseEnd: 0,
-      preInteractionWaitMs: 0,
-      postInteractionWaitMs: 0,
-      postInteractionDelta: 0,
-      scrollSteps: 0,
-      clicks: 0,
-      hitSafetyNet: false,
-    },
-  };
-}
-
-interface MeasuredPage {
-  context: BrowserContext;
-  page: Page;
-  acc: PageAccumulators;
-  /** Still on the storefront password page (none saved, or it was wrong). */
-  blocked?: boolean;
-  resourceRows?: Array<{
-    url: string;
-    transferSize?: number;
-    encodedBodySize?: number;
-    duration?: number;
-    pathname: string;
-    requestOrder?: number;
-    startTime?: number;
-  }>;
-}
-
-/**
- * Wait until the page has genuinely finished loading its scripts.
- *
- * `networkidle` is deliberately NOT the exit condition: on stores with
- * long-polling analytics it never fires, so a capped `networkidle` measures a
- * page that is still loading. Instead we track `max(responseEnd)` across script
- * resource entries and require it to stop moving across consecutive probes.
- * `NETWORK_IDLE_CAP_MS` only bounds each individual quiet-period probe so a page
- * that never goes quiet still gets probed, and `SETTLE_SAFETY_NET_MS` is a
- * guard against a pathological page rather than the normal exit.
- */
-async function waitForScriptsSettled(
-  page: Page,
-): Promise<{ waitMs: number; lastResponseEnd: number; scriptCount: number; hitSafetyNet: boolean }> {
-  const started = Date.now();
-  let lastResponseEnd = -1;
-  let lastCount = -1;
-  let stable = 0;
-
-  while (Date.now() - started < SETTLE_SAFETY_NET_MS) {
-    await page.waitForLoadState("networkidle", { timeout: NETWORK_IDLE_CAP_MS }).catch(() => {});
-    await page.waitForTimeout(SETTLE_PROBE_GAP_MS);
-    let snap: { lastResponseEnd: number; count: number };
-    try {
-      snap = await page.evaluate(() => {
-        const entries = (
-          performance.getEntriesByType("resource") as PerformanceResourceTiming[]
-        ).filter((e) => /\.js(\?|$)/i.test(e.name));
-        return {
-          lastResponseEnd: entries.reduce((m, e) => Math.max(m, e.responseEnd), 0),
-          count: entries.length,
-        };
-      });
-    } catch {
-      break; // page navigated or died; nothing more to wait for
-    }
-    const observedLongEnough = Date.now() - started >= SETTLE_MIN_MS;
-    if (snap.lastResponseEnd === lastResponseEnd && snap.count === lastCount) {
-      stable++;
-      if (stable >= SETTLE_STABLE_CHECKS && observedLongEnough) {
-        return {
-          waitMs: Date.now() - started,
-          lastResponseEnd: snap.lastResponseEnd,
-          scriptCount: snap.count,
-          hitSafetyNet: false,
-        };
-      }
-    } else {
-      stable = 0;
-      lastResponseEnd = snap.lastResponseEnd;
-      lastCount = snap.count;
-    }
-  }
-  return {
-    waitMs: Date.now() - started,
-    lastResponseEnd: Math.max(0, lastResponseEnd),
-    scriptCount: Math.max(0, lastCount),
-    hitSafetyNet: true,
-  };
-}
-
-/**
- * Collapse a per-element hide list to the smallest set of parent selectors that
- * still covers the same elements.
- *
- * Only *maximal* subtrees are used: an element qualifies when nothing inside it
- * starts above the fold band, and its parent does not qualify. That yields the
- * top-most fully-below-fold wrappers instead of every leaf, which on a measured
- * page took 127 per-element selectors down to 3.
- *
- * `html`/`body` are never returned — collapsing to them would hide the page.
- */
-async function collapseToParentSelectors(
-  page: Page,
-  selectors: string[],
-): Promise<string[]> {
-  if (selectors.length === 0) return [];
-  return page
-    .evaluate(
-      ([sels, foldHeight]) => {
-        const helpers = (
-          window as unknown as {
-            __ppHelpers?: {
-              isMajorForFold: (el: Element) => boolean;
-              getStableSelectors: (el: Element) => string[];
-            };
-          }
-        ).__ppHelpers;
-        if (!helpers) return [] as string[];
-
-        const docTop = (el: Element) => {
-          const r = el.getBoundingClientRect();
-          return r.top + (window.pageYOffset || document.documentElement.scrollTop || 0);
-        };
-        const inFold = (el: Element) => docTop(el) < (foldHeight as number);
-        const collapsible = (el: Element) =>
-          !inFold(el) &&
-          Array.prototype.every.call(
-            el.querySelectorAll("*"),
-            (d: Element) => !helpers.isMajorForFold(d) || !inFold(d),
-          );
-
-        const out: string[] = [];
-        const seen = new Set<string>();
-        Array.prototype.forEach.call(document.querySelectorAll("body *"), (el: Element) => {
-          if (!helpers.isMajorForFold(el)) return;
-          if (!collapsible(el)) return;
-          const parent = el.parentElement;
-          if (!parent || parent === document.body) return;
-          if (collapsible(parent)) return; // not maximal
-          const s = helpers.getStableSelectors(el)[0];
-          if (s && !seen.has(s)) {
-            seen.add(s);
-            out.push(s);
-          }
+function buildHomeResourceTimingIndex(
+  homeMeasured: MeasuredPage,
+  homeUrl: string,
+): Map<string, TokenTiming> {
+  const map = new Map<string, TokenTiming>();
+  for (const row of homeMeasured.resourceRows ?? []) {
+    const buckets = urlToCandidates(row.url, homeUrl);
+    for (const t of [...buckets.kept, ...buckets.neverDefer]) {
+      const order = row.requestOrder ?? 999;
+      const prev = map.get(t);
+      if (!prev || order < (prev.homeRequestOrder ?? 999)) {
+        map.set(t, {
+          homeRequestOrder: row.requestOrder,
+          homeStartMs: row.startTime,
+          bytes: row.transferSize ?? row.encodedBodySize,
+          tbtContributionMs: Math.max(prev?.tbtContributionMs ?? 0, row.tbtContributionMs ?? 0),
         });
-
-        // A candidate whose own selector did not collapse (its element has no
-        // fully-below-fold ancestor) still has to be emitted as-is, otherwise
-        // it silently stops being hidden.
-        for (const sel of sels as string[]) {
-          if (!seen.has(sel)) out.push(sel);
-        }
-        return out;
-      },
-      [selectors, FOLD_HEIGHT_PX] as [string[], number],
-    )
-    .catch(() => selectors);
-}
-
-/**
- * Apply the emitted hide list to each already-loaded page and check that no
- * element inside the first 1100px became hidden.
- *
- * This is the guard that makes the audit's central promise checkable instead of
- * assumed. The emitted CSS is `html:not(.interacted) :is(...){display:none!important}`;
- * we toggle the same state the consumer would and measure.
- */
-async function verifyFoldSurvives(
-  measured: MeasuredPage[],
-  hideSelectors: string[],
-): Promise<FoldAssertion> {
-  const violations = new Set<string>();
-  let pagesChecked = 0;
-  if (hideSelectors.length === 0) return { pagesChecked: 0, violations: [], ok: true };
-
-  for (let i = 0; i < measured.length; i++) {
-    const { page } = measured[i];
-    try {
-      const hits = await page.evaluate(
-        ([sels, foldHeight]) => {
-          const helpers = (
-            window as unknown as {
-              __ppHelpers?: {
-                isMajorForFold: (el: Element) => boolean;
-              };
-            }
-          ).__ppHelpers;
-          if (!helpers) return [] as string[];
-
-          const foldH = foldHeight as number;
-
-          const foldChromeRoot = (el: Element): Element | null => {
-            try {
-              return el.closest(
-                "header,[role=banner],[role=navigation],nav,.hero,.hero-wrapper,.shopify-section-header,.header-section,.header-logo",
-              );
-            } catch {
-              return null;
-            }
-          };
-          const docTop = (el: Element) => {
-            const r = el.getBoundingClientRect();
-            return r.top + (window.pageYOffset || document.documentElement.scrollTop || 0);
-          };
-          const overlapsFoldBand = (el: Element): boolean => {
-            const r = el.getBoundingClientRect();
-            if (r.width > 0 || r.height > 0) {
-              const top = docTop(el);
-              const bottom = top + r.height;
-              if (top < foldH && bottom > 0) return true;
-            }
-            const chrome = foldChromeRoot(el);
-            if (chrome) {
-              const cr = chrome.getBoundingClientRect();
-              if (cr.height > 0) {
-                const cTop = docTop(chrome);
-                const cBottom = cTop + cr.height;
-                if (cTop < foldH && cBottom > 0) return true;
-              }
-            }
-            return false;
-          };
-          const isFoldSensitiveTarget = (el: Element): boolean => {
-            if (!overlapsFoldBand(el)) return false;
-            if (helpers.isMajorForFold(el)) return true;
-            const tag = el.tagName;
-            if (tag === "IMG" || tag === "PICTURE" || tag === "VIDEO") return true;
-            if (foldChromeRoot(el) && el.classList.contains("lazyload")) return true;
-            return false;
-          };
-
-          const style = document.createElement("style");
-          style.textContent =
-            "html:not(.interacted) :is(" +
-            (sels as string[]).join(",") +
-            "){display:none!important}";
-          document.head.appendChild(style);
-          const cls = document.documentElement.classList;
-          const hadInteracted = cls.contains("interacted");
-          cls.remove("interacted");
-
-          const hidden: string[] = [];
-          for (const sel of sels as string[]) {
-            let els: NodeListOf<Element>;
-            try {
-              els = document.querySelectorAll(sel);
-            } catch {
-              continue;
-            }
-            for (let j = 0; j < els.length; j++) {
-              const el = els[j];
-              if (!isFoldSensitiveTarget(el)) continue;
-              if (!el.getClientRects().length) {
-                hidden.push(sel);
-                break;
-              }
-            }
-          }
-
-          style.remove();
-          if (hadInteracted) cls.add("interacted");
-          return hidden;
-        },
-        [hideSelectors, FOLD_HEIGHT_PX] as [string[], number],
-      );
-      hits.forEach((h) => violations.add(h));
-      pagesChecked++;
-    } catch {
-      // A page that died mid-assertion cannot prove anything; the funnel already
-      // reports its settle state.
+      } else if (row.tbtContributionMs != null && prev) {
+        prev.tbtContributionMs = Math.max(prev.tbtContributionMs ?? 0, row.tbtContributionMs);
+      }
     }
   }
-
-  const list = [...violations].sort();
-  if (list.length) {
-    console.warn(
-      `[audit] Fold assertion FAILED on ${list.length} selector(s) across ${pagesChecked} page(s):`,
-      list.slice(0, 10).join(", "),
-    );
-  }
-  return { pagesChecked, violations: list, ok: list.length === 0 };
+  return map;
 }
 
-/** Everything inside the first FOLD_HEIGHT_PX of the *document* (not the
- * current scroll viewport) is treated as always-required, regardless of what
- * the interaction phase later reveals or the off-screen check later hides:
- * it's what a visitor sees immediately without scrolling. Uses only raw
- * layout geometry (`getBoundingClientRect`) — never className or
- * getComputedStyle — so it can't be fooled by `.hidden`/`.d-none`-style
- * conventions and doesn't duplicate the off-screen script's own
- * display/visibility check (that check stays exclusive to `isMajor`). */
-async function captureInitialFold(
-  page: Page,
-): Promise<{ selectors: string[]; scripts: string[]; reasons: Record<string, string> }> {
-  return page
-    .evaluate((foldHeight) => {
-      const helpers = (
-        window as unknown as {
-          __ppHelpers?: {
-            isMajorForFold: (el: Element) => boolean;
-            getStableSelectors: (el: Element) => string[];
-          };
-        }
-      ).__ppHelpers;
-      if (!helpers) return { selectors: [], scripts: [], reasons: {} };
-
-      function docTop(el: Element): number {
-        const r = el.getBoundingClientRect();
-        return (
-          r.top + (window.pageYOffset || document.documentElement.scrollTop || 0)
-        );
-      }
-      // A genuine 0x0 rect pinned at the origin is a "not laid out" signal
-      // (detached, display:none, or collapsed) — this is layout state, not a
-      // style/class lookup, so filtering it out here doesn't reintroduce the
-      // className/computed-style checks the requirement rules out.
-      function hasLayout(el: Element): boolean {
-        const r = el.getBoundingClientRect();
-        return !(r.width === 0 && r.height === 0 && r.top === 0 && r.left === 0);
-      }
-      function overlapsFold(el: Element): boolean {
-        if (!hasLayout(el)) return false;
-        const top = docTop(el);
-        const bottom = top + el.getBoundingClientRect().height;
-        return top < foldHeight && bottom > 0;
-      }
-
-      const selectors = new Set<string>();
-      const scripts = new Set<string>();
-      const reasons: Record<string, string> = {};
-      const all = Array.prototype.filter.call(
-        document.querySelectorAll("body *"),
-        helpers.isMajorForFold,
-      ) as Element[];
-
-      // Every fold-overlapping element protects its own selector AND its
-      // subtree's <script src> tags — so an inactive carousel slide or an
-      // unopened tab panel inside a fold-overlapping container is protected
-      // even though it currently has no layout box of its own.
-      //
-      // The reason is recorded per script because this rule is deliberately
-      // conservative: a section that merely *straddles* the 1100px line
-      // protects its whole subtree, so a store can end up with far less
-      // deferral than expected. Being able to see "protected because an
-      // ancestor straddles the fold" is what makes that diagnosable.
-      all.filter(overlapsFold).forEach((container) => {
-        helpers.getStableSelectors(container).forEach((s) => selectors.add(s));
-        container.querySelectorAll("script[src]").forEach((s) => {
-          const src = s.getAttribute("src");
-          if (!src) return;
-          scripts.add(src);
-          if (!reasons[src]) {
-            reasons[src] = hasLayout(container) ? "ancestor-fold" : "dormant-subtree";
-          }
-        });
-      });
-
-      return { selectors: [...selectors], scripts: [...scripts], reasons };
-    }, FOLD_HEIGHT_PX)
-    .catch(
-      (): { selectors: string[]; scripts: string[]; reasons: Record<string, string> } => ({
-        selectors: [],
-        scripts: [],
-        reasons: {},
-      }),
-    );
-}
-
-/** Best-effort simulation of a real browsing session: scroll through the
- * page, move the mouse, and click a handful of clearly-safe, non-destructive
- * interactive elements (accordions, tabs, carousel controls, menu toggles),
- * recording which elements got revealed. Every Playwright call is
- * independently caught and the whole phase is time-boxed — a stuck or
- * failing page must never abort the outer `Promise.allSettled` batch in
- * `runHiddenAudit`. Returns the selectors of clicked elements (and their
- * `aria-controls` targets) so the caller can treat them as visible. */
-async function simulateInteractions(page: Page): Promise<{ revealed: string[]; steps: number; clicks: number }> {
-  const revealed = new Set<string>();
-
-  // Scroll the whole document, not a fixed number of steps. A measured home
-  // page was 9440px tall, which the previous fixed 4 steps (3600px) left 58%
-  // of unexercised — so scroll-gated code down there never ran and was
-  // wrongly classified as deferrable.
-  const docHeight = await page
-    .evaluate(() => document.documentElement.scrollHeight)
-    .catch(() => 0);
-  const steps = Math.min(
-    MAX_SCROLL_STEPS,
-    Math.max(MIN_SCROLL_STEPS, Math.ceil((docHeight || 0) / SCROLL_STEP_PX)),
-  );
-  let clicks = 0;
-
-  const run = async () => {
-    // 1. Scroll through the page so IntersectionObserver / lazy-load /
-    // scroll-gated code actually fires.
-    for (let i = 0; i < steps; i++) {
-      await page.mouse.wheel(0, SCROLL_STEP_PX).catch(() => {});
-      await page.waitForTimeout(SCROLL_STEP_SETTLE_MS);
-    }
-
-    // 2. Move the mouse across a few regions to wake pointer/hover-gated
-    // scripts (in addition to the existing two-point wake-up in the settle
-    // block below).
-    const viewport = page.viewportSize() ?? { width: 1280, height: 800 };
-    await page.mouse.move(viewport.width * 0.25, viewport.height * 0.25).catch(() => {});
-    await page.mouse.move(viewport.width * 0.75, viewport.height * 0.5).catch(() => {});
-    await page.mouse.move(viewport.width * 0.5, viewport.height * 0.75).catch(() => {});
-
-    // 3. Find and stamp a handful of clearly-safe interactive elements.
-    const count = await page
-      .evaluate((maxTargets: number) => {
-        const SELECTORS = [
-          '[aria-expanded="false"]',
-          "details > summary",
-          '[class*="accordion"]',
-          '[role="tab"]',
-          '[class*="slick-next"]',
-          '[class*="swiper-button-next"]',
-          "[data-carousel-next]",
-          '[aria-label*="menu" i]',
-          '[class*="hamburger"]',
-          "button[aria-controls]",
-        ].join(",");
-        const DESTRUCTIVE =
-          /add.{0,3}to.{0,3}cart|buy now|checkout|subscribe|place order|proceed to|sign.?up|pay now|purchase/i;
-
-        function isSafe(el: Element): boolean {
-          if (el.closest("form")) return false;
-          const tag = el.tagName.toLowerCase();
-          if (["input", "textarea", "select"].indexOf(tag) !== -1) return false;
-          if (tag === "a") {
-            const href = el.getAttribute("href") || "";
-            if (href && href !== "#" && !href.startsWith("javascript:")) return false;
-          }
-          if (tag === "button" && el.getAttribute("type") === "submit") return false;
-          if (el.hasAttribute("disabled") || el.getAttribute("aria-disabled") === "true")
-            return false;
-          const text =
-            (el.textContent || "") + " " + (el.getAttribute("aria-label") || "");
-          if (DESTRUCTIVE.test(text)) return false;
-          return true;
-        }
-
-        const candidates = Array.prototype.filter.call(
-          document.querySelectorAll(SELECTORS),
-          isSafe,
-        ) as Element[];
-
-        let stamped = 0;
-        for (const el of candidates) {
-          if (stamped >= maxTargets) break;
-          el.setAttribute("data-pp-interact", String(stamped));
-          stamped++;
-        }
-        return stamped;
-      }, MAX_INTERACTION_TARGETS)
-      .catch(() => 0);
-
-    // 4. Click each stamped target and record its own selector plus its
-    // aria-controls target's selector (if any).
-    for (let i = 0; i < count; i++) {
-      const clickedOk = await page
-        .locator(`[data-pp-interact="${i}"]`)
-        .click({ timeout: INTERACTION_CLICK_TIMEOUT_MS })
-        .then(() => true)
-        .catch(() => false);
-      if (clickedOk) clicks++;
-      await page.waitForTimeout(INTERACTION_STEP_SETTLE_MS);
-      const selectors = await page
-        .evaluate((idx: number) => {
-          const helpers = (
-            window as unknown as {
-              __ppHelpers?: { getStableSelectors: (el: Element) => string[] };
-            }
-          ).__ppHelpers;
-          const el = document.querySelector(`[data-pp-interact="${idx}"]`);
-          if (!helpers || !el) return [] as string[];
-          const out = helpers.getStableSelectors(el);
-          const controls = el.getAttribute("aria-controls");
-          if (controls) {
-            const target = document.getElementById(controls);
-            if (target) out.push(...helpers.getStableSelectors(target));
-          }
-          return out;
-        }, i)
-        .catch(() => [] as string[]);
-      selectors.forEach((s) => revealed.add(s));
-    }
-  };
-
-  await Promise.race([
-    run(),
-    new Promise<void>((resolve) => setTimeout(resolve, INTERACTION_PHASE_TIMEOUT_MS)),
-  ]).catch(() => {});
-
-  return { revealed: [...revealed], steps, clicks };
-}
-
-/** Loads one page in its own isolated browser context and runs the audit
- * script on it. The page is left open (caller closes the context) so the
- * merged selectors can be re-checked against it afterwards. */
-async function measurePage(
-  browser: Browser,
-  url: string,
-  password?: string,
-  /**
-   * Harvest only: collect the script NAMES this page loads and nothing else.
-   *
-   * Repeat passes after the first exist solely to observe token variation, and
-   * the names come from the in-page `P_KEY` accumulator. Coverage, the fold
-   * snapshot and the interaction pass all cost time and none of them affect a
-   * name. Skipping them is therefore free precision-wise: the fold/coverage
-   * filters are applied to the pooled token set afterwards, so a harvested name
-   * is still filtered exactly as before.
-   */
-  harvestOnly = false,
-): Promise<MeasuredPage> {
-  const context = await browser.newContext();
-  try {
-    const page = await context.newPage();
-
-    // Authoritative script inventory. `performance.getEntriesByType('resource')`
-    // is capped at 250 entries by Chromium, and on a measured store 32 of 204
-    // scripts were absent from resource timing while still being visible here
-    // (Shopify Pay's arrive-server chunks, preview-bar). `script[src]` in the
-    // DOM is also far smaller (~38) because most scripts arrive via preload /
-    // modulepreload / dynamic import. This listener sees every request
-    // regardless of any in-page buffer, so it is the source of truth and the
-    // two in-page sources become a cross-check rather than the only source.
-    const requestScripts: string[] = [];
-    const seenRequestUrls = new Set<string>();
-    const responseBytes = new Map<string, number>();
-    const onRequest = (req: import("playwright").Request) => {
-      const u = req.url();
-      if (/\.js(\?|$)/i.test(u) && !seenRequestUrls.has(u)) {
-        seenRequestUrls.add(u);
-        requestScripts.push(u);
-      }
-    };
-    const onResponse = (res: import("playwright").Response) => {
-      const u = res.url();
-      if (!/\.js(\?|$)/i.test(u)) return;
-      const header = Number(res.headers()["content-length"]);
-      if (Number.isFinite(header) && header > 0) {
-        responseBytes.set(u, Math.max(responseBytes.get(u) || 0, header));
-      }
-    };
-    page.on("request", onRequest);
-    page.on("response", onResponse);
-
-    // Precise coverage must be armed before the first script is parsed.
-    //
-    // Playwright's `page.coverage.startJSCoverage()` is NOT sufficient here: in
-    // this configuration it returns block coverage only (every entry is
-    // `isBlockCoverage: true` with an empty `functionName`), so `coverageVerdict`
-    // can never report `ran` and the gate has been unable to tell a script that
-    // executed from one that did not. CDP's `Profiler.startPreciseCoverage`
-    // with `detailed: true` returns real function-level data, which is what
-    // makes the `ran` / `unknown` / `idle` split meaningful. Falls back to the
-    // Playwright API if the CDP call is unavailable.
-    let cdpCoverage: import("playwright").CDPSession | null = null;
-    let usingPreciseCoverage = false;
-      // Coverage is skipped on a harvest pass: it costs a CDP session plus a
-      // stopJSCoverage round trip, and it only decides whether a token is
-      // PROTECTED -- it never changes the token's name, which is the only thing
-      // the repeat passes exist to observe.
-      if (!harvestOnly) {
-        try {
-          cdpCoverage = await page.context().newCDPSession(page);
-          await cdpCoverage.send("Profiler.enable");
-          await cdpCoverage.send("Profiler.startPreciseCoverage", {
-            detailed: true,
-            allowTriggeredUpdates: false,
-          });
-          usingPreciseCoverage = true;
-        } catch {
-          await page.coverage.startJSCoverage().catch(() => {});
-        }
-      }
-    await page.addInitScript({ content: buildGatedSinglePageAuditScript(url) });
-
-    try {
-      await page.goto(url, { waitUntil: "load", timeout: PAGE_LOAD_TIMEOUT_MS });
-
-      // Some password-protected stores don't honor the `?password=` query
-      // param on every request path, so detect the password page and submit
-      // the password form directly, then return to the page we asked for.
-      if (password && (await unlockPasswordPage(page, password))) {
-        await returnToRequestedUrl(page, url, PAGE_LOAD_TIMEOUT_MS);
-      }
-    } catch (err) {
-      console.log(
-        `[audit] Page load failed (${new URL(url).pathname}):`,
-        err instanceof Error ? err.message : err,
-      );
-      // A page that never rendered (DNS/connection error page) never ran the
-      // audit script; skip the settle/measure waits instead of timing out.
-      const scriptRan = await page
-        .evaluate(
-          () =>
-            typeof (window as unknown as { __ppOpenGate?: unknown })
-              .__ppOpenGate === "function",
-        )
-        .catch(() => false);
-      if (!scriptRan) {
-        return {
-          context,
-          page,
-          acc: emptyAccumulators(),
-        };
-      }
-    }
-
-    // Still on the password page (no password saved, or the saved one did not
-    // unlock it): there is nothing to measure — stop now instead of scanning it.
-    if (await isPasswordPage(page)) {
-      return {
-        context,
-        page,
-        acc: emptyAccumulators(),
-        blocked: true,
-      };
-    }
-
-    // Let natural (non-interaction) init finish first: the `load` event only
-    // means resources finished downloading, not that every above-fold widget
-    // has run its init code yet (DOMContentLoaded callbacks, deferred
-    // bundles, a short self-init delay are all common). Snapshotting coverage
-    // before this would miss a slider that hasn't autoplayed/initialized yet
-    // and wrongly treat its script as never-used.
-    const preSettle = await waitForScriptsSettled(page);
-
-    // Capture the first FOLD_HEIGHT_PX ("initial viewport") before anything
-    // is touched, then stop the pre-interaction JS coverage recording — both
-    // describe the page exactly as it first renders (post-settle, pre-interaction).
-      const fold = harvestOnly
-        ? { selectors: [] as string[], scripts: [] as string[], reasons: {} as Record<string, string> }
-        : await captureInitialFold(page);
-
-    // Read coverage now, while the page is still post-settle and
-    // pre-interaction. Coverage has to be stopped here because anything the
-    // interaction pass triggers would otherwise be attributed to the
-    // pre-interaction state.
-    let initialCoverage: ScriptCoverageEntry[] = [];
-    if (usingPreciseCoverage && cdpCoverage) {
-      const { result } = await cdpCoverage
-        .send("Profiler.takePreciseCoverage")
-        .catch(() => ({ result: [] as ScriptCoverageEntry[] }));
-      initialCoverage = (result || []).filter((e) => isRealScriptUrl(e.url || ""));
-      await cdpCoverage.send("Profiler.disable").catch(() => {});
-    } else {
-      initialCoverage = await page.coverage.stopJSCoverage().catch(() => []);
-    }
-
-    // Simulate a real browsing session (scroll, mouse movement, opening
-    // menus/tabs/accordions/carousels) so lazy-loaded and interaction-gated
-    // content actually renders before the page is measured.
-      const interaction = harvestOnly
-        ? { revealed: [] as string[], steps: 0, clicks: 0 }
-        : await simulateInteractions(page);
-    const revealedByInteraction = interaction.revealed;
-
-    // Let the page settle again, then assert no *new* scripts arrived because
-    // of the interaction. On the measured stores this delta is 0, so nothing
-    // loads late — but it is now an assertion rather than an assumption, so a
-    // store that does load on interaction cannot silently lose those scripts.
-    await page.mouse.move(1, 1).catch(() => {});
-    await page.mouse.move(3, 3).catch(() => {});
-    const postSettle = await waitForScriptsSettled(page);
-    const postInteractionDelta = Math.max(0, postSettle.scriptCount - preSettle.scriptCount);
-    if (postInteractionDelta > 0) {
-      console.log(
-        `[audit] ${new URL(url).pathname}: +${postInteractionDelta} scripts loaded after interaction`,
-      );
-    }
-    await page.evaluate(() => window.scrollTo(0, 0)).catch(() => {});
-
-    // Open the gate: the audit script measures now and stores its results.
-    await page
-      .evaluate(() => {
-        const w = window as unknown as { __ppOpenGate?: () => void };
-        w.__ppOpenGate?.();
-      })
-      .catch(() => {});
-
-    await page
-      .waitForFunction(
-        (key) => {
-          try {
-            const s = JSON.parse(localStorage.getItem(key) || "{}");
-            return typeof s.currentIndex === "number" && s.currentIndex >= 1;
-          } catch {
-            return false;
-          }
-        },
-        STORE_KEY,
-        { timeout: MEASURE_TIMEOUT_MS },
-      )
-      .catch(() => {
-        console.warn(
-          `[audit] Measurement timed out for ${new URL(url).pathname}.`,
-        );
-      });
-
-    const read = await page
-      .evaluate(
-        ([P, VIS, OFF]) => {
-          const load = (k: string) => {
-            try {
-              return JSON.parse(localStorage.getItem(k) || "[]");
-            } catch {
-              return [];
-            }
-          };
-          return { p: load(P), vis: load(VIS), off: load(OFF) };
-        },
-        [P_KEY, VIS_KEY, OFF_KEY],
-      )
-      .catch(() => ({ p: [] as string[], vis: [] as string[], off: [] as string[] }));
-
-    // ---- classify every script URL exactly once, from all three sources ----
-    // The request log is authoritative; the in-page DOM and resource-timing
-    // views are folded in so a script the request log missed (e.g. one served
-    // from a service worker) is still not silently dropped.
-    const allScriptUrls = new Set<string>(requestScripts);
-    const requestTokens = new Set<string>();
-    for (const u of allScriptUrls) {
-      const b = urlToCandidates(u, url);
-      b.kept.forEach((t) => requestTokens.add(t));
-      b.neverDefer.forEach((t) => requestTokens.add(t));
-    }
-
-    const inPageSources = await page
-      .evaluate(() => {
-        const dom: string[] = [];
-        document.querySelectorAll("script[src]").forEach((s) => {
-          const v = s.getAttribute("src");
-          if (v) dom.push(v);
-        });
-        const rt = (performance.getEntriesByType("resource") as PerformanceResourceTiming[])
-          .filter((e) => e.initiatorType === "script" || /\.js(\?|$)/i.test(e.name))
-          .map((e) => e.name);
-        return { dom, rt };
-      })
-      .catch(() => ({ dom: [] as string[], rt: [] as string[] }));
-
-    const foldScripts: string[] = [];
-    const foldReasons: Record<string, string> = {};
-    for (const src of fold.scripts) {
-      // NOTE: `getAttribute('src')` is protocol-relative (`//host/path`) for
-      // Shopify theme assets, so it MUST be resolved against the page origin.
-      const abs = src.startsWith("//") ? `https:${src}` : src;
-      const b = urlToCandidates(abs, url);
-      b.kept.forEach((t) => {
-        foldScripts.push(t);
-        foldReasons[t] = fold.reasons[src] || "ancestor-fold";
-      });
-    }
-
-    // ---- coverage verdict: three-way, because coverage is not a boolean ----
-    // A loaded script has ALWAYS executed its top-level code, so the whole-file
-    // block-coverage entry (`fn: ""`) is true for every loaded script and says
-    // nothing. Testing that entry alone marks every script as "used" and
-    // empties deferArray. Testing only named functions instead is also wrong:
-    // a purely top-level script (a custom-element definition, an IIFE that
-    // wires behaviour immediately) runs real work but exposes no named
-    // function, so it would be deferred. `unknown` is therefore protected.
-    const coverageRan: string[] = [];
-    const coverageUnknown: string[] = [];
-    for (const entry of initialCoverage) {
-      const verdict = coverageVerdict(entry);
-      if (verdict === "idle") continue;
-      const b = urlToCandidates(entry.url, url);
-      b.kept.forEach((t) => {
-        if (verdict === "ran") coverageRan.push(t);
-        else coverageUnknown.push(t);
-      });
-    }
-
-    // Fold / coverage sets can arrive in any source order, so bucket everything
-    // here in one place rather than at each call site.
-    const neverDefer: string[] = [];
-    const noise: string[] = [];
-    const selfScripts: string[] = [];
-    const mergedKept = new Set<string>([...read.p, ...requestTokens]);
-    for (const u of allScriptUrls) {
-      const b = urlToCandidates(u, url);
-      b.neverDefer.forEach((t) => neverDefer.push(t));
-      b.noise.forEach((t) => noise.push(t));
-      b.self.forEach((t) => selfScripts.push(t));
-    }
-
-    const inPageTokens = new Set<string>();
-    for (const u of [...inPageSources.dom, ...inPageSources.rt]) {
-      const abs = u.startsWith("//") ? `https:${u}` : u;
-      const b = urlToCandidates(abs, url);
-      b.kept.forEach((t) => inPageTokens.add(t));
-    }
-    const requestOnly = [...requestTokens].filter((t) => !inPageTokens.has(t)).length;
-    const disagreement = [...inPageTokens].filter((t) => !requestTokens.has(t)).length;
-
-    page.off("request", onRequest);
-    page.off("response", onResponse);
-
-    const pathname = safePathname(url);
-    const timedRows = await page
-      .evaluate((pagePath) => {
-        const rows: Array<{
-          url: string;
-          transferSize?: number;
-          encodedBodySize?: number;
-          decodedBodySize?: number;
-          duration?: number;
-          pathname: string;
-          requestOrder?: number;
-          startTime?: number;
-        }> = [];
-        const entries = performance.getEntriesByType(
-          "resource",
-        ) as PerformanceResourceTiming[];
-        const scripts = entries
-          .filter((e) => e.initiatorType === "script" || /\.js(\?|$)/i.test(e.name))
-          .sort((a, b) => a.startTime - b.startTime);
-        let order = 0;
-        for (const e of scripts) {
-          order += 1;
-          rows.push({
-            url: e.name,
-            transferSize: e.transferSize,
-            encodedBodySize: e.encodedBodySize,
-            decodedBodySize: e.decodedBodySize,
-            duration: e.duration,
-            startTime: e.startTime,
-            requestOrder: order,
-            pathname: pagePath as string,
-          });
-        }
-        return rows;
-      }, pathname)
-      .catch(() => []);
-    const seenTimed = new Set(timedRows.map((row) => row.url));
-    let nextOrder = timedRows.length;
-    for (const scriptUrl of requestScripts) {
-      if (seenTimed.has(scriptUrl)) continue;
-      nextOrder += 1;
-      timedRows.push({
-        url: scriptUrl,
-        pathname,
-        requestOrder: nextOrder,
-      });
-    }
-    for (const row of timedRows) {
-      const measured = responseBytes.get(row.url);
-      if (measured && measured > (row.transferSize || 0)) row.transferSize = measured;
-    }
-
-    return {
-      context,
-      page,
-      resourceRows: timedRows,
-      acc: {
-        p: [...mergedKept],
-        vis: [...new Set([...read.vis, ...fold.selectors, ...revealedByInteraction])],
-        off: read.off,
-        foldScripts: [...new Set(foldScripts)],
-        foldReasons,
-        coverageRan: [...new Set(coverageRan)],
-        coverageUnknown: [...new Set(coverageUnknown)],
-        neverDefer: [...new Set(neverDefer)],
-        noise: [...new Set(noise)],
-        selfScripts: [...new Set(selfScripts)],
-        sources: {
-          request: allScriptUrls.size,
-          dom: inPageSources.dom.length,
-          resourceTiming: inPageSources.rt.length,
-          requestOnly,
-          disagreement,
-        },
-        settle: {
-          lastScriptResponseEnd: Math.round(
-            Math.max(preSettle.lastResponseEnd, postSettle.lastResponseEnd),
-          ),
-          preInteractionWaitMs: preSettle.waitMs,
-          postInteractionWaitMs: postSettle.waitMs,
-          postInteractionDelta,
-          scrollSteps: interaction.steps,
-          clicks: interaction.clicks,
-          hitSafetyNet: preSettle.hitSafetyNet || postSettle.hitSafetyNet,
-        },
-      },
-    };
-  } catch (err) {
-    await context.close().catch(() => {});
-    throw err;
-  }
-}
-
-// Mirrors `isMajor` / `isVisible` from the audit script (audit-script.ts) so
-// the check below uses exactly the same notion of "a visible section".
-const MAJOR_MIN_SIZE = 80;
-
-/** Which of `selectors` match a visible, major element on this page. */
-async function selectorsVisibleOnPage(
-  page: Page,
-  selectors: string[],
-): Promise<string[]> {
-  if (selectors.length === 0) return [];
-  return page
-    .evaluate(
-      ([sels, size]) => {
-        const SKIP = [
-          "html", "body", "head", "script", "style", "link", "meta",
-          "noscript", "template", "svg", "path", "br", "hr",
-        ];
-        const isMajor = (el: Element) => {
-          if (el.nodeType !== 1) return false;
-          if (SKIP.indexOf(el.tagName.toLowerCase()) !== -1) return false;
-          if (!el.className && !el.id) return false;
-          const cs = getComputedStyle(el);
-          if (cs.display === "none" || cs.visibility === "hidden" || cs.opacity === "0")
-            return false;
-          const r = el.getBoundingClientRect();
-          return !(r.width < (size as number) && r.height < (size as number));
-        };
-        const isVisible = (el: Element) => {
-          const r = el.getBoundingClientRect();
-          return r.bottom > 0 && r.top < innerHeight && r.right > 0 && r.left < innerWidth;
-        };
-        const out: string[] = [];
-        for (const sel of sels as string[]) {
-          try {
-            const els = document.querySelectorAll(sel);
-            for (let i = 0; i < els.length; i++) {
-              if (isMajor(els[i]) && isVisible(els[i])) {
-                out.push(sel);
-                break;
-              }
-            }
-          } catch {
-            // invalid selector on this page
-          }
-        }
-        return out;
-      },
-      [selectors, MAJOR_MIN_SIZE] as [string[], number],
-    )
-    .catch(() => []);
-}
-
-/** Which of `selectors` match an element overlapping the first FOLD_HEIGHT_PX
- * of the document on this page — re-checked across every audited page, not
- * just the one a selector was first found "off" on (mirrors how
- * `selectorsVisibleOnPage` re-checks plain viewport visibility above). This
- * closes two gaps `captureInitialFold` can't close on its own: (1) an element
- * below the default ~800px headless viewport but still inside the 1100px
- * fold band, and (2) a *structural* off-screen selector like
- * `container > :nth-child(n+4)` — which doesn't match any single element's
- * own `getStableSelectors()` output, so it can never appear in
- * `captureInitialFold`'s per-element selector set even when the elements it
- * matches are themselves inside the fold. */
-async function selectorsOverlapFoldOnPage(
-  page: Page,
-  selectors: string[],
-): Promise<string[]> {
-  if (selectors.length === 0) return [];
-  return page
-    .evaluate(
-      ([sels, foldHeight]) => {
-        const helpers = (
-          window as unknown as {
-            __ppHelpers?: { isMajorForFold: (el: Element) => boolean };
-          }
-        ).__ppHelpers;
-        if (!helpers) return [];
-
-        function docTop(el: Element): number {
-          const r = el.getBoundingClientRect();
-          return (
-            r.top + (window.pageYOffset || document.documentElement.scrollTop || 0)
-          );
-        }
-        const foldH = foldHeight as number;
-        const foldChromeRoot = (el: Element): Element | null => {
-          try {
-            return el.closest(
-              "header,[role=banner],[role=navigation],nav,.hero,.hero-wrapper,.shopify-section-header,.header-section,.header-logo",
-            );
-          } catch {
-            return null;
-          }
-        };
-        const overlapsFoldBand = (el: Element): boolean => {
-          const r = el.getBoundingClientRect();
-          if (r.width > 0 || r.height > 0) {
-            const top = docTop(el);
-            const bottom = top + r.height;
-            if (top < foldH && bottom > 0) return true;
-          }
-          const chrome = foldChromeRoot(el);
-          if (chrome) {
-            const cr = chrome.getBoundingClientRect();
-            if (cr.height > 0) {
-              const cTop = docTop(chrome);
-              const cBottom = cTop + cr.height;
-              if (cTop < foldH && cBottom > 0) return true;
-            }
-          }
-          return false;
-        };
-        const isFoldSensitiveTarget = (el: Element): boolean => {
-          if (!overlapsFoldBand(el)) return false;
-          if (helpers.isMajorForFold(el)) return true;
-          const tag = el.tagName;
-          if (tag === "IMG" || tag === "PICTURE" || tag === "VIDEO") return true;
-          if (foldChromeRoot(el) && el.classList.contains("lazyload")) return true;
-          return false;
-        };
-
-        const out: string[] = [];
-        for (const sel of sels as string[]) {
-          try {
-            const els = document.querySelectorAll(sel);
-            for (let i = 0; i < els.length; i++) {
-              if (isFoldSensitiveTarget(els[i])) {
-                out.push(sel);
-                break;
-              }
-            }
-          } catch {
-            // invalid selector on this page
-          }
-        }
-        return out;
-      },
-      [selectors, FOLD_HEIGHT_PX] as [string[], number],
-    )
-    .catch(() => []);
-}
-
-/** Runs the audit script against all discovered pages at the same time (one
- * isolated browser context per page) and merges the results:
- *  - defer list = union of every page's third-party script fragments,
- *  - hide selectors = selectors off-screen somewhere and never visible on any
- *    page (same rule the script itself applies across pages). */
-/**
- * Defer tokens recorded by the PREVIOUS audit run, so this run can unify against
- * them.
- *
- * The storefront gate matches a token as an exact substring of the script URL,
- * so a build hash that changes on redeploy silently stops matching. Repeating
- * the pass catches per-request and short time-windowed variation, but three
- * passes minutes apart all hit the same build — so a deploy-time change is
- * invisible to in-run sampling. Pooling the previous run's tokens catches it.
- *
- * `AuditLog.audit_data` already holds the whole result object, and this project
- * already reads it for per-page data (see readPerPageAuditData), so no new
- * storage is involved.
- */
-async function readPriorDeferTokens(shopDomain: string): Promise<string[]> {
-  try {
-    const { default: prisma } = await import("../db.server");
-    const log = await prisma.auditLog.findFirst({
-      where: { domain: shopDomain },
-      orderBy: { timestamp: "desc" },
-      select: { audit_data: true },
-    });
-    const data = log?.audit_data as
-      | { deferArray?: unknown; deferArrayUnmerged?: unknown }
-      | null;
-    if (!data) return [];
-    const pick = (v: unknown): string[] =>
-      Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
-    return [...new Set([...pick(data.deferArrayUnmerged), ...pick(data.deferArray)])];
-  } catch (err) {
-    // The cross-run merge is an improvement, never a requirement: if the prior
-    // report cannot be read the audit must still complete.
-    console.warn("[audit] could not read the previous report:", err);
-    return [];
-  }
+function coverageVerdictForToken(
+  token: string,
+  coverageRan: Set<string>,
+  coverageUnknown: Set<string>,
+): "ran" | "unknown" | "idle" {
+  if (coverageRan.has(token)) return "ran";
+  if (coverageUnknown.has(token)) return "unknown";
+  return "idle";
 }
 
 export async function runHiddenAudit({
@@ -1911,6 +117,9 @@ export async function runHiddenAudit({
   password,
   shopDomain,
   onProgress,
+  signal,
+  runDeadlineAt,
+  shouldStop,
 }: {
   pages: DiscoveredPages;
   /** Used only to pool the previous run's tokens (see readPriorDeferTokens). */
@@ -1921,6 +130,9 @@ export async function runHiddenAudit({
   // doesn't let the store through.
   password?: string;
   onProgress?: (progress: AuditProgress) => void | Promise<void>;
+  signal?: AbortSignal;
+  runDeadlineAt?: number;
+  shouldStop?: () => boolean | Promise<boolean>;
 }): Promise<HiddenAuditResult> {
   // Extras are appended so they are genuinely MEASURED, not merely stored. A
   // saved-but-unaudited URL would be a lie in the UI. They keep the home/PLP/PDP
@@ -1944,36 +156,46 @@ export async function runHiddenAudit({
       // allSettled: one page failing to open must not abandon the others'
       // contexts (they are all closed in `finally`).
       for (let pass = 0; pass < AUDIT_REPEAT_PASSES; pass++) {
-        const settled = await Promise.allSettled(
-          urls.map(async (url) => {
-              const m = await measurePage(browser, url, password, pass > 0);
-            measuredAll.push(m);
-            let path: string | undefined;
-            try {
-              path = new URL(url).pathname || "/";
-            } catch {
-              path = url;
-            }
-            if (!seenPaths.has(path)) {
-              seenPaths.add(path);
-              measured.push(m);
-            } else if (pass > 0) {
-              // Later passes only add another URL sample. The first-pass page
-              // stays open for the fold checks. A harvest page is closed now.
-              await m.context.close().catch(() => {});
-            }
-            done++;
-            try {
-              await onProgress?.({
-                done,
-                total: urls.length * AUDIT_REPEAT_PASSES,
-                path,
-              });
-            } catch {
-              // progress is best-effort
-            }
-          }),
-        );
+        assertAuditRunActive(signal, runDeadlineAt);
+        if (shouldStop && (await shouldStop())) throw new AuditRunCancelledError();
+        const pageParallel = Math.max(1, getEnv().AUDIT_MAX_PARALLEL_PAGES);
+        const measureOne = async (url: string) => {
+          const m = await measurePage(browser, url, password, pass > 0, () => {
+            if (signal?.aborted || (runDeadlineAt != null && Date.now() > runDeadlineAt))
+              return true;
+            return shouldStop?.() === true;
+          });
+          measuredAll.push(m);
+          let path: string | undefined;
+          try {
+            path = new URL(url).pathname || "/";
+          } catch {
+            path = url;
+          }
+          if (!seenPaths.has(path)) {
+            seenPaths.add(path);
+            measured.push(m);
+          } else if (pass > 0) {
+            await m.context.close().catch(() => {});
+          }
+          done++;
+          try {
+            await onProgress?.({
+              done,
+              total: urls.length * AUDIT_REPEAT_PASSES,
+              path,
+            });
+          } catch {
+            // progress is best-effort
+          }
+        };
+        const settled: PromiseSettledResult<void>[] = [];
+        for (let bi = 0; bi < urls.length; bi += pageParallel) {
+          const batch = urls.slice(bi, bi + pageParallel);
+          const batchResults = await Promise.allSettled(batch.map((url) => measureOne(url)));
+          settled.push(...batchResults);
+        }
+        if (shouldStop && (await shouldStop())) throw new AuditRunCancelledError();
         const passFailed = measuredAll.length < (pass + 1) * urls.length;
         if (passFailed && pass === 0) {
           const failure = settled.find((r) => r.status === "rejected");
@@ -1986,15 +208,17 @@ export async function runHiddenAudit({
         }
       }
       if (measured.some((m) => m.blocked)) {
-        throw new AuditBlockedError(
-          password ? "PASSWORD_INCORRECT" : "PASSWORD_REQUIRED",
-        );
+        throw new AuditBlockedError(password ? "PASSWORD_INCORRECT" : "PASSWORD_REQUIRED");
       }
       if (measured.length === 0) {
         // A pass that measured nothing already threw above on pass 0; this
         // only guards the case where every later pass came back empty.
         throw new Error("No pages could be audited.");
       }
+
+      const homeUrl = urls[0];
+      const resourceTimingIndex = buildHomeResourceTimingIndex(measured[0], homeUrl);
+      const totalPages = measured.length;
 
       const pSet = new Set<string>();
       const visSet = new Set<string>();
@@ -2007,12 +231,9 @@ export async function runHiddenAudit({
       const noise = new Set<string>();
       const selfScripts = new Set<string>();
       const funnel: PageFunnel[] = [];
-        // Every pass contributes its script tokens, so a script whose name varies
-        // between passes yields several variants for `mergeSlugVariants` to unify.
-        // vis/off/fold/coverage are Sets, so extra samples can only widen coverage,
-        // never narrow it. The funnel below still uses the deduplicated `measured`
-        // so it keeps exactly one row per page.
-        for (const { acc } of measuredAll) {
+      // Slug harvest passes only contribute to `mergeSlugVariants` via measuredAll
+      // funnel rows. Defer/hide/coverage unions use the first full measure per URL.
+      for (const { acc } of measured) {
         acc.p.forEach((x) => pSet.add(x));
         acc.vis.forEach((x) => visSet.add(x));
         acc.off.forEach((x) => offSet.add(x));
@@ -2020,11 +241,13 @@ export async function runHiddenAudit({
         Object.entries(acc.foldReasons).forEach(([k, v]) => {
           if (!foldReasons[k]) foldReasons[k] = v;
         });
-        acc.coverageRan.forEach((x) => coverageRan.add(x));
-        acc.coverageUnknown.forEach((x) => coverageUnknown.add(x));
         acc.neverDefer.forEach((x) => neverDefer.add(x));
         acc.noise.forEach((x) => noise.add(x));
         acc.selfScripts.forEach((x) => selfScripts.add(x));
+        acc.coverageRan.forEach((x) => coverageRan.add(x));
+        acc.coverageUnknown.forEach((x) => coverageUnknown.add(x));
+      }
+      for (const { acc } of measuredAll) {
         funnel.push({
           request: acc.sources.request,
           dom: acc.sources.dom,
@@ -2047,6 +270,24 @@ export async function runHiddenAudit({
           settle: acc.settle,
         });
       }
+
+      const tokenPages = new Map<string, Set<string>>();
+      measured.forEach((m, i) => {
+        const path = safePathname(urls[i]);
+        for (const t of m.acc.p) {
+          let set = tokenPages.get(t);
+          if (!set) {
+            set = new Set();
+            tokenPages.set(t, set);
+          }
+          set.add(path);
+        }
+      });
+      const tokenOkForGlobalDefer = (token: string) =>
+        tokenEligibleForGlobalDefer(tokenPages.get(token) ?? []);
+
+      const homeIdx = measured.findIndex((_, i) => safePathname(urls[i]) === "/");
+      const homeNeverDefer = new Set(homeIdx >= 0 ? measured[homeIdx].acc.neverDefer : []);
 
       // The script's own cross-page check (an off-screen selector is not
       // hidden if it is a visible section somewhere) needs every page's DOM;
@@ -2098,18 +339,26 @@ export async function runHiddenAudit({
       const hideHygiene = applyHideSelectorHygiene(hideSelectors);
       hideSelectors = hideHygiene.hideSelectors;
       if (hideHygiene.warnings.length) {
-        console.warn(
+        logger.warn(
           `[audit] Dropped ${hideHygiene.warnings.length} unsafe hide selector(s):`,
           hideHygiene.warnings.slice(0, 8).join(", "),
         );
       }
 
+      for (const m of measured) {
+        const filtered = await filterSelectorsWithInteractiveChildren(m.page, hideSelectors);
+        if (filtered.rejected.length) {
+          logger.warn(
+            `[audit] Rejected ${filtered.rejected.length} hide selector(s) with interactive children`,
+          );
+        }
+        hideSelectors = hideSelectors.filter((s) => filtered.safe.includes(s));
+      }
+
       const postHygieneFoldVeto = await Promise.all(
         measured.map(({ page }) => selectorsOverlapFoldOnPage(page, hideSelectors)),
       );
-      postHygieneFoldVeto.forEach((hits) =>
-        hits.forEach((x) => foldProtectedSelectors.add(x)),
-      );
+      postHygieneFoldVeto.forEach((hits) => hits.forEach((x) => foldProtectedSelectors.add(x)));
       hideSelectors = hideSelectors
         .filter((x) => !foldProtectedSelectors.has(x) && !visSet.has(x))
         .sort();
@@ -2135,14 +384,20 @@ export async function runHiddenAudit({
         pagePatterns[path] = pageMatchPatterns(path);
       });
 
-      const emittedRaw = [...pSet].filter(
-        (x) =>
-          !foldRequiredScripts.has(x) &&
-          !coverageRan.has(x) &&
-          !coverageUnknown.has(x) &&
-          !selfScripts.has(x) &&
-          !neverDefer.has(x),
-      );
+      const isEmittableGlobal = (x: string) => {
+        if (!tokenOkForGlobalDefer(x)) return false;
+        if (foldRequiredScripts.has(x)) return false;
+        if (coverageRan.has(x)) return false;
+        if (selfScripts.has(x)) return false;
+        if (homeNeverDefer.has(x)) return false;
+        if (noise.has(x)) return false;
+        if (coverageUnknown.has(x)) {
+          return !shouldProtectUnknownCoverageScript(resourceTimingIndex.get(x) ?? {});
+        }
+        return true;
+      };
+
+      const emittedRaw = [...pSet].filter(isEmittableGlobal);
 
       // Per-page breakdown. `deferArray` below stays the union so the existing
       // consumer path (StoreConfig -> rebuildPerformanceScript -> obfuscate ->
@@ -2151,16 +406,20 @@ export async function runHiddenAudit({
       const deferArrayByPage: Record<string, string[]> = {};
       measured.forEach((m, i) => {
         const acc = m.acc;
-        deferArrayByPage[safePathname(urls[i])] = acc.p
-          .filter(
-            (x) =>
-              !acc.foldScripts.includes(x) &&
-              !acc.coverageRan.includes(x) &&
-              !acc.coverageUnknown.includes(x) &&
-              !acc.selfScripts.includes(x) &&
-              !acc.neverDefer.includes(x),
-          )
-          .sort();
+        const localNever = new Set(acc.neverDefer);
+        const isPageEmittable = (x: string) => {
+          if (!tokenOkForGlobalDefer(x)) return false;
+          if (acc.foldScripts.includes(x)) return false;
+          if (acc.coverageRan.includes(x)) return false;
+          if (acc.selfScripts.includes(x)) return false;
+          if (localNever.has(x)) return false;
+          if (acc.noise.includes(x)) return false;
+          if (acc.coverageUnknown.includes(x)) {
+            return !shouldProtectUnknownCoverageScript(resourceTimingIndex.get(x) ?? {});
+          }
+          return true;
+        };
+        deferArrayByPage[safePathname(urls[i])] = acc.p.filter(isPageEmittable).sort();
       });
 
       // Fold-survival assertion. The whole premise is that the first 1100px
@@ -2168,13 +427,34 @@ export async function runHiddenAudit({
       // which is how an empty `deferArray` shipped unnoticed. This re-applies
       // the emitted hide CSS to each page and asks the browser whether any
       // fold-overlapping element disappeared.
-      let foldAssertion = await verifyFoldSurvives(measured, hideSelectors);
+      const foldAssertion = await verifyFoldSurvives(measured, hideSelectors);
       if (!foldAssertion.ok) {
         hideSelectors = [];
         for (const path of Object.keys(hideSelectorsByPage)) {
           hideSelectorsByPage[path] = [];
         }
+      } else if (hideSelectors.length > 0) {
+        const homeIdx = urls.findIndex((u) => safePathname(u) === "/");
+        const shotPage = homeIdx >= 0 ? measured[homeIdx]?.page : measured[0]?.page;
+        if (shotPage) {
+          const shot = await screenshotFoldRegression(shotPage, hideSelectors);
+          if (shot.regressed) {
+            logger.warn(
+              `[audit] Screenshot fold regression (${(shot.changedPixelFraction * 100).toFixed(1)}% pixels) — clearing hide selectors`,
+            );
+            hideSelectors = [];
+            for (const path of Object.keys(hideSelectorsByPage)) {
+              hideSelectorsByPage[path] = [];
+            }
+          }
+        }
       }
+
+      const homeMeasured = measured.find((_, i) => safePathname(urls[i]) === "/") ?? measured[0];
+      const loadingHintByToken: Record<string, ScriptLoadingHint> = {
+        ...(homeMeasured?.loadHintsByToken ?? {}),
+      };
+      const homeDomMutation = homeMeasured?.acc.settle.domMutationCount ?? 0;
 
       // Base + delta. The storefront bundle ships the intersection once and each
       // page only its extras, which keeps a render-blocking script small: full
@@ -2197,7 +477,7 @@ export async function runHiddenAudit({
       // change stays inside the audit module. A `defer=[]` from "everything is
       // fold-protected" must be distinguishable from `defer=[]` caused by a
       // cleared array — that ambiguity is what hid the coverage bug.
-      console.log(
+      logger.info(
         `[audit] funnel ${JSON.stringify(
           {
             foldAssertion: foldAssertion.ok ? "pass" : `FAIL:${foldAssertion.violations.length}`,
@@ -2246,14 +526,50 @@ export async function runHiddenAudit({
       // resurrected from the previous report and gated again, which is the
       // unsafe direction.
       const priorRaw = shopDomain ? await readPriorDeferTokens(shopDomain) : [];
-      const isEmittable = (x: string) =>
-        !foldRequiredScripts.has(x) &&
-        !coverageRan.has(x) &&
-        !coverageUnknown.has(x) &&
-        !selfScripts.has(x) &&
-        !neverDefer.has(x);
-      const priorFiltered = priorRaw.filter(isEmittable);
-      const mergedDefer = mergeSlugVariants([...emittedRaw, ...priorFiltered]).sort();
+      const currentTokens = [...pSet];
+      const byNorm = new Map(currentTokens.map((t) => [normalizeTokenForCrossRun(t), t] as const));
+      const priorAligned = priorRaw.map((p) => byNorm.get(normalizeTokenForCrossRun(p)) ?? p);
+      const priorFiltered = priorAligned.filter(isEmittableGlobal);
+      const mergedSlugDefer = mergeSlugVariants([...emittedRaw, ...priorFiltered]).sort();
+
+      const delayEveryArray: string[] = [];
+      const delayFirstArray: string[] = [];
+      const interactionDefer: string[] = [];
+      const tierByToken = new Map<string, DeferTier>();
+      const confidenceByToken = new Map<string, number>();
+      for (const token of mergedSlugDefer) {
+        if (classifyCandidate(token) === "never-defer") continue;
+        const timing = resourceTimingIndex.get(token) ?? {};
+        const verdict = coverageVerdictForToken(token, coverageRan, coverageUnknown);
+        const loadingHint = loadingHintByToken[token] ?? "unknown";
+        const confidence = computeDeferConfidence({
+          coverageVerdict: verdict,
+          loadingHint,
+          homeRequestOrder: timing.homeRequestOrder,
+          homeStartMs: timing.homeStartMs,
+          bytes: timing.bytes,
+          tbtContributionMs: timing.tbtContributionMs,
+          domMutationCount:
+            verdict === "unknown" && homeDomMutation > 0 ? homeDomMutation : undefined,
+          appearsOnPages: deferArrayByPage
+            ? Object.values(deferArrayByPage).filter((list) => list.includes(token)).length
+            : 1,
+          totalPages,
+        });
+        const tier = classifyDeferTier({
+          confidence,
+          coverageVerdict: verdict,
+          homeRequestOrder: timing.homeRequestOrder,
+          homeStartMs: timing.homeStartMs,
+          loadingHint,
+        });
+        tierByToken.set(token, tier);
+        confidenceByToken.set(token, confidence);
+        if (tier === "delay-every") delayEveryArray.push(token);
+        else if (tier === "delay-first") delayFirstArray.push(token);
+        else if (tier === "interaction") interactionDefer.push(token);
+      }
+      const mergedDefer = interactionDefer.sort();
 
       const pagesAudited = urls.map((u) => {
         try {
@@ -2262,10 +578,7 @@ export async function runHiddenAudit({
           return u;
         }
       });
-      const resourcesByPath: Record<
-        string,
-        NonNullable<MeasuredPage["resourceRows"]>
-      > = {};
+      const resourcesByPath: Record<string, NonNullable<MeasuredPage["resourceRows"]>> = {};
       for (const m of measured) {
         for (const row of m.resourceRows || []) {
           const path = row.pathname || "/";
@@ -2292,18 +605,38 @@ export async function runHiddenAudit({
         },
         resourcesByPath,
       );
-      const scriptInventory = resourceInventory.byToken.length
-        ? resourceInventory
-        : listInventory;
+      const scriptInventory = resourceInventory.byToken.length ? resourceInventory : listInventory;
       if (resourceInventory.byToken.length) {
         const seen = new Set(scriptInventory.byToken.map((entry) => entry.token));
         for (const extra of listInventory.byToken) {
           if (!seen.has(extra.token)) scriptInventory.byToken.push(extra);
         }
       }
+      for (const entry of scriptInventory.byToken) {
+        const hint = loadingHintByToken[entry.token];
+        if (hint) entry.loadingHint = hint;
+        const tier = tierByToken.get(entry.token);
+        if (tier) {
+          entry.deferTier = tier;
+          entry.deferConfidence = confidenceByToken.get(entry.token);
+          entry.storefrontImpact = storefrontImpactForDeferTier(tier);
+        }
+      }
+
+      const pageRoles = buildPageRolesFromDiscovered(pages, pagesAudited);
+      const deferByPathForBuckets: Record<string, string[]> = {};
+      for (const [path, list] of Object.entries(deferArrayByPage)) {
+        deferByPathForBuckets[path] = mergeSlugVariants(list).sort();
+      }
+      const templateBuckets = {
+        defer: buildTemplateDeferBuckets(deferByPathForBuckets, pageRoles),
+        hide: buildTemplateListBuckets(hideSelectorsByPage, pageRoles),
+      };
 
       return {
         deferArray: mergedDefer,
+        delayEveryArray: [...new Set(delayEveryArray)].sort(),
+        delayFirstArray: [...new Set(delayFirstArray)].sort(),
         deferArrayByPage: Object.fromEntries(
           Object.entries(deferArrayByPage).map(([k, v]) => [k, mergeSlugVariants(v).sort()]),
         ),
@@ -2327,6 +660,8 @@ export async function runHiddenAudit({
         pagesAudited,
         completedAt: new Date().toISOString(),
         scriptInventory,
+        pageRoles,
+        templateBuckets,
       };
     } finally {
       const contexts = new Set(measuredAll.map((m) => m.context));

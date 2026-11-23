@@ -3,8 +3,7 @@ export const ROLE_LABEL = { MAIN: "Live", UNPUBLISHED: "Unpublished", DEMO: "Dem
 export const PASSWORD_BLOCK_MESSAGE = {
   PASSWORD_REQUIRED:
     "Your store is password protected. Enter the storefront password below and we'll scan again.",
-  PASSWORD_INCORRECT:
-    "The saved password didn't work. Update it below and we'll scan again.",
+  PASSWORD_INCORRECT: "The saved password didn't work. Update it below and we'll scan again.",
 };
 
 export function shortPath(path, max = 40) {

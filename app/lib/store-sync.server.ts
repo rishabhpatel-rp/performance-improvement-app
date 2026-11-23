@@ -1,13 +1,13 @@
+/* eslint-disable @typescript-eslint/no-explicit-any -- gradual TS migration of legacy modules */
+import { DEFAULT_DELAY_SCRIPTS, FIRST_USER_DELAY_MS, EVERY_TIME_DELAY_MS } from "./constants.ts";
 import prisma from "../db.server";
 import { applyFoldPolicy } from "./audit-fold-policy.server";
 import { applyHideSelectorHygiene } from "./audit-hide-safety.server";
-import {
-  rebuildPerformanceScript,
-  readStringArray,
-} from "./performance-script.server";
+import { rebuildPerformanceScript, readStringArray } from "./performance-script.server";
 
 import type { AuditPageInfo } from "./audit.server";
 
+import { logger } from "./logger.ts";
 export { readStringArray };
 
 /**
@@ -40,6 +40,7 @@ export function readAuditPages(value: unknown): AuditPageInfo[] {
 interface ShopifyShopData {
   shopifyShopId: string;
   shopDomain: string;
+  primaryDomain?: string;
   shopName: string;
   email: string;
   country?: string;
@@ -78,7 +79,7 @@ interface SyncConfigInput {
   auditHideSelectorsPreserved?: string[];
   staticDeferDefaultsPreserved?: string[];
 
-  // NEW
+  // First-user and every-time delay fields are DB-only.
   firstUserDelayScripts?: string[];
   firstUserDelayScriptsEnabled?: boolean;
   firstUserDelayScriptsPreserved?: string[];
@@ -91,15 +92,13 @@ type AdminClient = any;
 
 // Static defaults the app always defers, independent of the audit results.
 // Stored DB-only (not on the metaobject) and editable per store in Step 3.
-export const DEFAULT_STATIC_DEFER = ["wpm","gtm"];
+export const DEFAULT_STATIC_DEFER = [...DEFAULT_DELAY_SCRIPTS];
 
 // ============================================================
 // FUNCTION 1: Fetch shop details from Shopify Admin API
 // ============================================================
 
-export async function fetchShopDetailsFromShopify(
-  admin: AdminClient,
-): Promise<ShopifyShopData> {
+export async function fetchShopDetailsFromShopify(admin: AdminClient): Promise<ShopifyShopData> {
   const response = await admin.graphql(
     `#graphql
     query ShopDetails {
@@ -135,6 +134,12 @@ export async function fetchShopDetailsFromShopify(
   const data = await response.json();
   const shop = data.data?.shop;
   const productsCount = data.data?.productsCount?.count;
+  let primaryDomain: string | undefined;
+  try {
+    primaryDomain = shop?.url ? new URL(shop.url).hostname.toLowerCase() : undefined;
+  } catch {
+    primaryDomain = undefined;
+  }
   // `ordersCount` is read here but the query above never requests it (there
   // is no top-level `ordersCount` field selected), so `totalOrders` is
   // always undefined. Fixing this for real needs the `read_orders` scope,
@@ -157,6 +162,7 @@ export async function fetchShopDetailsFromShopify(
     // the domain — the domain is already tracked separately as shopDomain.
     shopifyShopId: shop.id || shopDomain,
     shopDomain: shopDomain,
+    primaryDomain,
     shopName: shop.name || "",
     email: shop.email || "",
     country: shop.shopAddress?.countryCode || undefined,
@@ -186,6 +192,7 @@ export async function upsertStore(data: ShopifyShopData) {
     create: {
       shopifyShopId: data.shopifyShopId,
       shopDomain: data.shopDomain,
+      primaryDomain: data.primaryDomain ?? null,
       shopName: data.shopName,
       email: data.email,
       country: data.country,
@@ -253,11 +260,11 @@ export async function markStoreUninstalled(shopDomain: string) {
       const archive = await archiveStoreSnapshot(shopDomain, {
         reason: "app_uninstalled",
       });
-      console.log(
+      logger.info(
         `[uninstalled] Archived store snapshot for ${shopDomain} (archiveId=${archive.id})`,
       );
     } catch (err) {
-      console.error(
+      logger.error(
         `[uninstalled] Failed to archive snapshot for ${shopDomain}:`,
         err instanceof Error ? err.message : err,
       );
@@ -275,10 +282,7 @@ function truncateText(value: string | null | undefined, max = SCRIPT_SNAPSHOT_MA
 }
 
 export type StoreArchiveReason =
-  | "shop_redact"
-  | "admin_manual"
-  | "app_uninstalled"
-  | "pm2_log_backfill";
+  "shop_redact" | "admin_manual" | "app_uninstalled" | "pm2_log_backfill";
 
 export type StoreEraseReason = "shop_redact" | "admin_manual";
 
@@ -394,9 +398,7 @@ export async function eraseShopData(
   const store = await loadStoreForArchive(shopDomain);
 
   if (store?.isActive) {
-    console.log(
-      `[shop/redact] Skip erase for ${shopDomain}: store is active (reinstalled)`,
-    );
+    logger.info(`[shop/redact] Skip erase for ${shopDomain}: store is active (reinstalled)`);
     return { skipped: true as const };
   }
 
@@ -422,7 +424,7 @@ export async function eraseShopData(
     }
   });
 
-  console.log(
+  logger.info(
     `[shop/redact] Archived then erased shop data for ${shopDomain} (archiveId=${archive.id})`,
   );
   return { skipped: false as const, archiveId: archive.id };
@@ -443,23 +445,19 @@ export async function updateStoreScope(shopDomain: string, newScope: string) {
 // FUNCTION 5: Sync config from metaobject to database
 // ============================================================
 
-export async function syncConfigToDatabase(
-  shopDomain: string,
-  config: SyncConfigInput,
-) {
+export async function syncConfigToDatabase(shopDomain: string, config: SyncConfigInput) {
   const store = await prisma.store.findUnique({
     where: { shopDomain },
   });
 
   if (!store) {
-    console.warn(
-      `[syncConfigToDatabase] No store found for ${shopDomain}. ` +
-        `Config sync skipped.`,
+    logger.warn(
+      `[syncConfigToDatabase] No store found for ${shopDomain}. ` + `Config sync skipped.`,
     );
     return null;
   }
 
-const storeConfig = await prisma.storeConfig.upsert({
+  const storeConfig = await prisma.storeConfig.upsert({
     where: { storeId: store.id },
     create: {
       storeId: store.id,
@@ -473,8 +471,7 @@ const storeConfig = await prisma.storeConfig.upsert({
       auditComplete: config.auditComplete,
       auditDeferArray: config.auditDeferArray ?? [],
       auditHideSelectors: config.auditHideSelectors ?? [],
-      staticDeferDefaults:
-        config.staticDeferDefaults ?? DEFAULT_STATIC_DEFER,
+      staticDeferDefaults: config.staticDeferDefaults ?? DEFAULT_STATIC_DEFER,
       auditDeferArrayEnabled: config.auditDeferArrayEnabled ?? true,
       auditHideSelectorsEnabled: config.auditHideSelectorsEnabled ?? true,
       staticDeferDefaultsEnabled: config.staticDeferDefaultsEnabled ?? true,
@@ -482,12 +479,11 @@ const storeConfig = await prisma.storeConfig.upsert({
       auditHideSelectorsPreserved: config.auditHideSelectorsPreserved ?? [],
       staticDeferDefaultsPreserved: config.staticDeferDefaultsPreserved ?? [],
 
-      // NEW
-      firstUserDelayScripts: config.firstUserDelayScripts ?? ["wpm","gtm"],
+      firstUserDelayScripts: config.firstUserDelayScripts ?? [...DEFAULT_DELAY_SCRIPTS],
       firstUserDelayScriptsEnabled: config.firstUserDelayScriptsEnabled ?? true,
       firstUserDelayScriptsPreserved: config.firstUserDelayScriptsPreserved ?? [],
-      firstUserDelayMs: config.firstUserDelayMs ?? 12000,
-      everyTimeDelayMs: config.everyTimeDelayMs ?? 6000,
+      firstUserDelayMs: config.firstUserDelayMs ?? FIRST_USER_DELAY_MS,
+      everyTimeDelayMs: config.everyTimeDelayMs ?? EVERY_TIME_DELAY_MS,
     },
     update: {
       appEnabled: config.appEnabled,
@@ -515,7 +511,6 @@ const storeConfig = await prisma.storeConfig.upsert({
       auditHideSelectorsPreserved: config.auditHideSelectorsPreserved ?? undefined,
       staticDeferDefaultsPreserved: config.staticDeferDefaultsPreserved ?? undefined,
 
-      // NEW
       firstUserDelayScriptsEnabled: config.firstUserDelayScriptsEnabled ?? undefined,
       firstUserDelayScriptsPreserved: config.firstUserDelayScriptsPreserved ?? undefined,
       firstUserDelayMs: config.firstUserDelayMs ?? undefined,
@@ -547,9 +542,7 @@ export async function logActivity(
   });
 
   if (!store) {
-    console.warn(
-      `[logActivity] No store found for ${shopDomain}. Activity not logged.`,
-    );
+    logger.warn(`[logActivity] No store found for ${shopDomain}. Activity not logged.`);
     return null;
   }
 
@@ -682,7 +675,7 @@ export async function saveAuditReport(
   });
 
   if (!store) {
-    console.warn(`[saveAuditReport] No store found for ${shopDomain}. Skipped.`);
+    logger.warn(`[saveAuditReport] No store found for ${shopDomain}. Skipped.`);
     return null;
   }
 
@@ -695,11 +688,17 @@ export async function saveAuditReport(
   const hideOn = current?.auditHideSelectorsEnabled ?? true;
   const activeDefer = deferOn ? report.deferArray : [];
   const hygiene = applyHideSelectorHygiene(report.hideSelectors ?? []);
-  const foldPolicy = applyFoldPolicy(
-    hygiene.hideSelectors,
-    (report as { foldAssertion?: { ok: boolean; violations?: string[]; pagesChecked: number } })
-      .foldAssertion ?? { ok: true, violations: [], pagesChecked: 0 },
-  );
+  const legacyFold = (
+    report as {
+      foldAssertion?: { ok: boolean; violations?: string[]; pagesChecked: number };
+    }
+  ).foldAssertion;
+  const foldAssertion: import("./audit.server").FoldAssertion = {
+    ok: legacyFold?.ok ?? true,
+    violations: legacyFold?.violations ?? [],
+    pagesChecked: legacyFold?.pagesChecked ?? 0,
+  };
+  const foldPolicy = applyFoldPolicy(hygiene.hideSelectors, foldAssertion);
   const activeHide = hideOn ? foldPolicy.hideSelectors : [];
   const reportToPersist = {
     ...report,
@@ -779,7 +778,4 @@ export async function saveAuditReport(
 }
 
 export type { AuditArrayPatch } from "./update-audit-config.server";
-export {
-  updateAuditArrays,
-  updateAuditFieldToggle,
-} from "./update-audit-config.server";
+export { updateAuditArrays, updateAuditFieldToggle } from "./update-audit-config.server";

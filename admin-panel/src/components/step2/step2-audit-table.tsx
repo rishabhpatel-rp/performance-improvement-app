@@ -1,15 +1,9 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import {
-  scriptListStateForScope,
-  scriptListStateForTab,
-} from "@/lib/audit-script-list-state";
-import {
-  scriptsForScope,
-  tabDropdownAction,
-  type ScriptRow,
-} from "@/lib/scan-summary-scope";
+import { formatDate } from "@/lib/utils";
+import { scriptListStateForScope, scriptListStateForTab } from "@/lib/audit-script-list-state";
+import { scriptsForScope, tabDropdownAction, type ScriptRow } from "@/lib/scan-summary-scope";
 import type { TemplateScope } from "@/lib/storefront-lists";
 
 const SCRIPT_ACTION_OPTIONS = [
@@ -22,6 +16,8 @@ const SCRIPT_ACTION_OPTIONS = [
 const SCRIPT_TABLE_COLUMNS = [
   { id: "name", label: "Name" },
   { id: "domain", label: "Domain" },
+  { id: "category", label: "Category" },
+  { id: "tier", label: "Audit tier" },
   { id: "type", label: "Type" },
   { id: "req", label: "Req #" },
   { id: "timeline", label: "Timeline" },
@@ -39,10 +35,7 @@ function formatScriptSize(row: ScriptRow) {
   return kb >= 100 ? `${Math.round(kb)} kB` : `${kb.toFixed(1)} kB`;
 }
 
-function scriptActionSelectValue(
-  row: ScriptRow,
-  lists: ReturnType<typeof scriptListStateForTab>,
-) {
+function scriptActionSelectValue(row: ScriptRow, lists: ReturnType<typeof scriptListStateForTab>) {
   return tabDropdownAction(
     {
       auditDeferArray: lists.auditDeferArray,
@@ -60,8 +53,7 @@ function compareScriptRows(
   lists: ReturnType<typeof scriptListStateForTab>,
 ) {
   const str = (v: unknown) => String(v ?? "").toLowerCase();
-  const num = (v: unknown) =>
-    v == null || Number.isNaN(Number(v)) ? null : Number(v);
+  const num = (v: unknown) => (v == null || Number.isNaN(Number(v)) ? null : Number(v));
   let va: string | number | null;
   let vb: string | number | null;
   switch (colId) {
@@ -72,6 +64,14 @@ function compareScriptRows(
     case "domain":
       va = str(a.domain);
       vb = str(b.domain);
+      break;
+    case "category":
+      va = str(a.scriptCategory);
+      vb = str(b.scriptCategory);
+      break;
+    case "tier":
+      va = str(a.deferTier);
+      vb = str(b.deferTier);
       break;
     case "type":
       va = "script";
@@ -139,14 +139,8 @@ export default function Step2AuditTable({
 }) {
   const [scriptSort, setScriptSort] = useState({ col: "size", dir: "desc" as "asc" | "desc" });
 
-  const scriptLists = useMemo(
-    () => scriptListStateForTab(config, scope),
-    [config, scope],
-  );
-  const globalLists = useMemo(
-    () => scriptListStateForScope(config, "global"),
-    [config],
-  );
+  const scriptLists = useMemo(() => scriptListStateForTab(config, scope), [config, scope]);
+  const globalLists = useMemo(() => scriptListStateForScope(config, "global"), [config]);
 
   const sortedScripts = useMemo(() => {
     const rows = scriptsForScope(summary.topScripts, summary.pageRoles, scope);
@@ -163,10 +157,7 @@ export default function Step2AuditTable({
         ? { col: colId, dir: prev.dir === "asc" ? "desc" : "asc" }
         : {
             col: colId,
-            dir:
-              colId === "name" || colId === "domain" || colId === "status"
-                ? "asc"
-                : "desc",
+            dir: colId === "name" || colId === "domain" || colId === "status" ? "asc" : "desc",
           },
     );
   };
@@ -177,15 +168,11 @@ export default function Step2AuditTable({
   return (
     <div style={{ marginBottom: 24, maxWidth: 960, margin: "30px auto 24px" }}>
       <div style={{ marginBottom: 16, textAlign: "center" }}>
-        <div style={{ fontSize: 17, fontWeight: 700, color: "#111827" }}>
-          Scan summary
-        </div>
+        <div style={{ fontSize: 17, fontWeight: 700, color: "#111827" }}>Scan summary</div>
         {summary.completedAt && (
           <div style={{ fontSize: 13, color: "#6B7177", marginTop: 6 }}>
-            {new Date(summary.completedAt).toLocaleString()}
-            {summary.pages?.length
-              ? ` · ${summary.pages.map((p) => p.label).join(" · ")}`
-              : ""}
+            {formatDate(summary.completedAt)}
+            {summary.pages?.length ? ` · ${summary.pages.map((p) => p.label).join(" · ")}` : ""}
           </div>
         )}
       </div>
@@ -211,8 +198,7 @@ export default function Step2AuditTable({
           textAlign: "right",
         }}
       >
-        {sortedScripts.length} script{sortedScripts.length === 1 ? "" : "s"} on
-        this store
+        {sortedScripts.length} script{sortedScripts.length === 1 ? "" : "s"} on this store
       </div>
       <div
         style={{
@@ -247,9 +233,7 @@ export default function Step2AuditTable({
                       cursor: "pointer",
                       userSelect: "none",
                       whiteSpace: "nowrap",
-                      boxShadow: pinned
-                        ? "-8px 0 8px -8px rgba(0,0,0,0.15)"
-                        : undefined,
+                      boxShadow: pinned ? "-8px 0 8px -8px rgba(0,0,0,0.15)" : undefined,
                     }}
                     onClick={() => toggleScriptSort(id)}
                   >
@@ -284,12 +268,17 @@ export default function Step2AuditTable({
                   >
                     {row.token}
                   </td>
-                  <td style={{ padding: "10px 12px", color: "#374151" }}>
-                    {row.domain || "—"}
-                  </td>
+                  <td style={{ padding: "10px 12px", color: "#374151" }}>{row.domain || "—"}</td>
                   <td style={{ padding: "10px 12px", color: "#6B7280" }}>
-                    script
+                    {row.scriptCategory || "—"}
                   </td>
+                  <td
+                    style={{ padding: "10px 12px", color: "#374151" }}
+                    title={row.storefrontImpact || undefined}
+                  >
+                    {row.deferTier || "—"}
+                  </td>
+                  <td style={{ padding: "10px 12px", color: "#6B7280" }}>script</td>
                   <td style={{ padding: "10px 12px", textAlign: "right" }}>
                     {row.homeRequestOrder != null ? row.homeRequestOrder : "—"}
                   </td>
@@ -300,17 +289,13 @@ export default function Step2AuditTable({
                       whiteSpace: "nowrap",
                     }}
                   >
-                    {row.homeStartMs != null
-                      ? `${Math.round(row.homeStartMs)} ms`
-                      : "—"}
+                    {row.homeStartMs != null ? `${Math.round(row.homeStartMs)} ms` : "—"}
                   </td>
                   <td style={{ padding: "10px 12px", whiteSpace: "nowrap" }}>
                     {formatScriptSize(row)}
                   </td>
                   <td style={{ padding: "10px 12px" }}>
-                    {row.durationMs != null
-                      ? `${Math.round(row.durationMs)} ms`
-                      : "—"}
+                    {row.durationMs != null ? `${Math.round(row.durationMs)} ms` : "—"}
                   </td>
                   <td style={{ padding: "10px 12px" }}>{row.status}</td>
                   <td
@@ -352,9 +337,7 @@ export default function Step2AuditTable({
                       (globalLists.auditDeferArray.includes(row.token) ||
                         globalLists.firstUserDelayScripts.includes(row.token) ||
                         globalLists.staticDeferDefaults.includes(row.token)) && (
-                        <div
-                          style={{ fontSize: 11, color: "#6B7280", marginTop: 4 }}
-                        >
+                        <div style={{ fontSize: 11, color: "#6B7280", marginTop: 4 }}>
                           Also in Global
                         </div>
                       )}

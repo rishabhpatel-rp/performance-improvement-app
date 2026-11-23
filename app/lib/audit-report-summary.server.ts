@@ -31,8 +31,7 @@ export function labVitalsToLighthouseView(
       tbtMs: undefined,
       speedIndexSec: undefined,
     },
-    note:
-      "PagePulse lab metrics only — Performance / SEO rings and TBT / SI need PageSpeed Insights (runs after scan).",
+    note: "PagePulse lab metrics only — Performance / SEO rings and TBT / SI need PageSpeed Insights (runs after scan).",
   };
 }
 
@@ -46,10 +45,7 @@ export function mergePageSpeedWithLab(
     const labView = labVitalsToLighthouseView(v.path, lab);
     return {
       ...v,
-      mobile:
-        v.mobile?.categories?.performance != null
-          ? v.mobile
-          : (labView ?? v.mobile),
+      mobile: v.mobile?.categories?.performance != null ? v.mobile : (labView ?? v.mobile),
       desktop: v.desktop ?? undefined,
     };
   });
@@ -71,27 +67,29 @@ export function buildAuditReportSummary(
     ? report.scriptInventory
     : buildScriptInventoryFromClassified(report);
   const topScripts = (inv?.byToken || []).map((e) => ({
-      token: e.token,
-      kb: e.bytes != null ? Math.round(e.bytes / 1024) : null,
-      bytes: e.bytes != null && e.bytes > 0 ? e.bytes : null,
-      durationMs: e.durationMs ?? null,
-      status: e.status,
-      reasons: e.reasons ?? [],
-      pages: e.pages,
-      domain: e.domain ?? null,
-      homeRequestOrder: e.homeRequestOrder ?? null,
-      homeStartMs: e.homeStartMs ?? null,
-    }));
+    token: e.token,
+    kb: e.bytes != null ? Math.round(e.bytes / 1024) : null,
+    bytes: e.bytes != null && e.bytes > 0 ? e.bytes : null,
+    durationMs: e.durationMs ?? null,
+    status: e.status,
+    reasons: e.reasons ?? [],
+    pages: e.pages,
+    domain: e.domain ?? null,
+    homeRequestOrder: e.homeRequestOrder ?? null,
+    homeStartMs: e.homeStartMs ?? null,
+    scriptCategory: e.scriptCategory ?? null,
+    deferTier: e.deferTier ?? null,
+    deferConfidence: e.deferConfidence ?? null,
+    riskLabel: e.riskLabel ?? null,
+    storefrontImpact: e.storefrontImpact ?? null,
+  }));
 
   const scriptsSeen = inv?.totals?.scriptRequests ?? request;
   const deferred = report.deferArray?.length ?? 0;
-  const protectedCount =
-    inv?.totals?.protectedTokenCount ??
-    Math.max(0, candidates - emitted);
+  const protectedCount = inv?.totals?.protectedTokenCount ?? Math.max(0, candidates - emitted);
 
   const completedAt = report.completedAt;
-  const staleScanWarning =
-    Date.now() - new Date(completedAt).getTime() > STALE_SCAN_MS;
+  const staleScanWarning = Date.now() - new Date(completedAt).getTime() > STALE_SCAN_MS;
   const homeVitals = report.labVitalsByPath?.["/"] ?? report.labVitalsByPath?.["/index"];
 
   return {
@@ -121,10 +119,7 @@ export function buildAuditReportSummary(
     staleScanWarning,
     homeLongTaskCount: homeVitals?.longTaskCount ?? null,
     psiByUrl,
-    pageSpeedViews: mergePageSpeedWithLab(
-      pageSpeedViews ?? [],
-      report.labVitalsByPath,
-    ),
+    pageSpeedViews: mergePageSpeedWithLab(pageSpeedViews ?? [], report.labVitalsByPath),
     psiSkipNote,
     imageRecommendations: report.imageRecommendations ?? {},
     templateBuckets: report.templateBuckets

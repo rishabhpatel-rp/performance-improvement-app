@@ -1,3 +1,11 @@
 .cache
 build
 node_modules
+.git
+admin-panel
+docs
+tests
+*.md
+.env
+.env.*
+!.env.audit.example

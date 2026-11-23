@@ -1,0 +1,7 @@
+-- G-2 canary rollout + G-3 PSI optimization gate baselines
+ALTER TABLE "StoreConfig" ADD COLUMN IF NOT EXISTS "canaryPercent" INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE "StoreConfig" ADD COLUMN IF NOT EXISTS "canaryStartedAt" TIMESTAMP(3);
+ALTER TABLE "StoreConfig" ADD COLUMN IF NOT EXISTS "canaryErrRate" DOUBLE PRECISION;
+ALTER TABLE "StoreConfig" ADD COLUMN IF NOT EXISTS "psiBaselineLcp" DOUBLE PRECISION;
+ALTER TABLE "StoreConfig" ADD COLUMN IF NOT EXISTS "psiBaselineCls" DOUBLE PRECISION;
+ALTER TABLE "StoreConfig" ADD COLUMN IF NOT EXISTS "auditOptimizationGate" TEXT;

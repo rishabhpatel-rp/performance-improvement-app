@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -34,12 +34,16 @@ export default function StoreControlPanel({
   const [adminManaged, setAdminManaged] = useState(initialAdminManaged);
   const [health, setHealth] = useState<Health>({});
   const [auditRunning, setAuditRunning] = useState(false);
-  const [forceOn, setForceOn] = useState(true);
+  const [forceOn, setForceOn] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
+  const pollInFlight = useRef(false);
+
   const refreshFromState = useCallback(async () => {
+    if (pollInFlight.current) return;
+    pollInFlight.current = true;
     try {
       const res = await fetch(`/api/stores/${encodeURIComponent(domain)}/state`, {
         cache: "no-store",
@@ -60,6 +64,8 @@ export default function StoreControlPanel({
       }
     } catch {
       /* ignore poll errors */
+    } finally {
+      pollInFlight.current = false;
     }
   }, [domain]);
 
@@ -103,9 +109,7 @@ export default function StoreControlPanel({
       if (body.intent === "set-admin-managed" && typeof body.adminManaged === "boolean") {
         setAdminManaged(body.adminManaged);
         setNotice(
-          body.adminManaged
-            ? "Merchant app locked for admin control."
-            : "Merchant can edit again.",
+          body.adminManaged ? "Merchant app locked for admin control." : "Merchant can edit again.",
         );
       }
       if (body.intent === "start-audit") setNotice("Audit started.");
@@ -131,8 +135,8 @@ export default function StoreControlPanel({
       <CardHeader>
         <CardTitle>Store control (remote)</CardTitle>
         <p className="text-sm text-muted-foreground">
-          Operates the merchant app via the internal API. First save locks the shop for
-          merchant edits (release below when handing back).
+          Operates the merchant app via the internal API. First save locks the shop for merchant
+          edits (release below when handing back).
         </p>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -206,9 +210,7 @@ export default function StoreControlPanel({
             size="sm"
             variant="outline"
             disabled={readOnly || Boolean(busy) || !appEnabled}
-            onClick={() =>
-              void postControl({ intent: "toggle-app", appEnabled: false })
-            }
+            onClick={() => void postControl({ intent: "toggle-app", appEnabled: false })}
           >
             Turn app OFF
           </Button>
@@ -238,9 +240,7 @@ export default function StoreControlPanel({
             size="sm"
             variant={adminManaged ? "outline" : "default"}
             disabled={readOnly || Boolean(busy) || adminManaged}
-            onClick={() =>
-              void postControl({ intent: "set-admin-managed", adminManaged: true })
-            }
+            onClick={() => void postControl({ intent: "set-admin-managed", adminManaged: true })}
           >
             Lock for admin
           </Button>
@@ -249,9 +249,7 @@ export default function StoreControlPanel({
             size="sm"
             variant="outline"
             disabled={readOnly || Boolean(busy) || !adminManaged}
-            onClick={() =>
-              void postControl({ intent: "set-admin-managed", adminManaged: false })
-            }
+            onClick={() => void postControl({ intent: "set-admin-managed", adminManaged: false })}
           >
             Release to merchant
           </Button>

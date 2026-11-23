@@ -2,10 +2,11 @@ import { authenticate } from "../shopify.server";
 import db from "../db.server";
 import { updateStoreScope, logActivity } from "../lib/store-sync.server";
 
+import { logger } from "../lib/logger.ts";
 export const action = async ({ request }) => {
   const { payload, session, topic, shop } = await authenticate.webhook(request);
 
-  console.log(`Received ${topic} webhook for ${shop}`);
+  logger.info(`Received ${topic} webhook for ${shop}`);
   const current = payload.current;
 
   if (session) {
@@ -29,7 +30,7 @@ export const action = async ({ request }) => {
         newScope: current.toString(),
       });
     } catch (err) {
-      console.error(
+      logger.error(
         `[scopes_update] Failed to update store scope for ${shop}:`,
         err instanceof Error ? err.message : err,
       );

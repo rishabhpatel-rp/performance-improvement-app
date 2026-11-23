@@ -2,6 +2,7 @@ import prisma from "../db.server";
 import { withBrowser } from "./audit.server";
 import { withShopifyTimeout } from "./shopify-timeout.server";
 
+import { logger } from "./logger.ts";
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AdminClient = any;
 
@@ -127,10 +128,7 @@ export async function checkPasswordProtection(
   admin: AdminClient,
   shopDomain: string,
 ): Promise<PasswordState> {
-  const [storefront, api] = await Promise.all([
-    probeStorefront(shopDomain),
-    probeAdminApi(admin),
-  ]);
+  const [storefront, api] = await Promise.all([probeStorefront(shopDomain), probeAdminApi(admin)]);
   return combineSignals(storefront, api);
 }
 
@@ -165,7 +163,7 @@ export function refreshPasswordProtection(
       if (state !== null) await saveState(shopDomain, state);
       return state;
     } catch (err) {
-      console.warn(
+      logger.warn(
         `[password-protection] Check failed for ${shopDomain}:`,
         err instanceof Error ? err.message : err,
       );

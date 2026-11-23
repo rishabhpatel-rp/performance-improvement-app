@@ -9,10 +9,7 @@ export async function POST(request: Request) {
     // dashboard (REQUIREMENTS_AND_PLANS.md R1 issue #7).
     const session = await requireAdmin();
     if (!session) {
-      return NextResponse.json(
-        { success: false, error: "Not authenticated" },
-        { status: 401 },
-      );
+      return NextResponse.json({ success: false, error: "Not authenticated" }, { status: 401 });
     }
 
     const { enabled } = await request.json();
@@ -29,9 +26,6 @@ export async function POST(request: Request) {
     return NextResponse.json({ success: true, demoMode: enabled ? "on" : "off" });
   } catch (error) {
     console.error("Demo mode toggle error:", error);
-    return NextResponse.json(
-      { success: false, error: "An error occurred" },
-      { status: 500 },
-    );
+    return NextResponse.json({ success: false, error: "An error occurred" }, { status: 500 });
   }
 }

@@ -19,7 +19,6 @@ export async function loader({ request }) {
   const value = store?.configs?.[0]?.isPasswordProtected ?? null;
 
   return {
-    state:
-      value === true ? "protected" : value === false ? "not_protected" : "checking",
+    state: value === true ? "protected" : value === false ? "not_protected" : "checking",
   };
 }

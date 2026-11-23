@@ -1,3 +1,4 @@
+import { getEnv } from "./env.server.ts";
 import type { FieldVitalsSummary } from "./audit-report-types";
 
 const PSI_ENDPOINT = "https://www.googleapis.com/pagespeedonline/v5/runPagespeed";
@@ -12,9 +13,7 @@ export const PSI_PREVIEW_LOCK_SCREEN_NOTE =
 export const PSI_PREVIEW_EXPIRED_NOTE =
   "Your theme preview link has expired. In the theme editor, open Share preview again and paste the new URL in Step 1.";
 
-export function shouldSkipPsiFetch(
-  isPasswordProtected: boolean | null | undefined,
-): boolean {
+export function shouldSkipPsiFetch(isPasswordProtected: boolean | null | undefined): boolean {
   return isPasswordProtected === true;
 }
 
@@ -61,10 +60,7 @@ type PsiJson = {
   };
   lighthouseResult?: {
     categories?: Record<string, { score?: number }>;
-    audits?: Record<
-      string,
-      { numericValue?: number; displayValue?: string; score?: number }
-    >;
+    audits?: Record<string, { numericValue?: number; displayValue?: string; score?: number }>;
     requestedUrl?: string;
   };
 };
@@ -73,10 +69,7 @@ function scorePct(cat?: { score?: number }) {
   return cat?.score != null ? Math.round(cat.score * 100) : undefined;
 }
 
-function auditMs(
-  audits: Record<string, { numericValue?: number }> | undefined,
-  id: string,
-) {
+function auditMs(audits: Record<string, { numericValue?: number }> | undefined, id: string) {
   const v = audits?.[id]?.numericValue;
   return typeof v === "number" ? v : undefined;
 }
@@ -88,11 +81,11 @@ export function parsePsiLighthouse(json: PsiJson): PsiLighthouseReport {
   const cats = lh?.categories;
   const audits = lh?.audits;
 
-  const source: FieldVitalsSummary["source"] =
-    le?.origin_fallback ? "origin" : m ? "url" : "none";
+  const source: FieldVitalsSummary["source"] = le?.origin_fallback ? "origin" : m ? "url" : "none";
 
   const fcpMs = auditMs(audits, "first-contentful-paint");
-  const lcpMs = auditMs(audits, "largest-contentful-paint") ?? m?.LARGEST_CONTENTFUL_PAINT_MS?.percentile;
+  const lcpMs =
+    auditMs(audits, "largest-contentful-paint") ?? m?.LARGEST_CONTENTFUL_PAINT_MS?.percentile;
   const tbtMs = auditMs(audits, "total-blocking-time");
   const siMs = auditMs(audits, "speed-index");
   const clsRaw = auditMs(audits, "cumulative-layout-shift");
@@ -126,7 +119,7 @@ export async function fetchPsiLighthouse(
   url: string,
   strategy: "mobile" | "desktop" = "mobile",
 ): Promise<PsiLighthouseReport> {
-  const key = process.env.GOOGLE_PSI_API_KEY;
+  const key = getEnv().GOOGLE_PSI_API_KEY;
   if (!key) {
     return {
       source: "none",
@@ -182,15 +175,6 @@ export async function fetchPsiLighthouse(
     };
   }
   return { ...parsed, strategy, analyzedUrl };
-}
-
-/** @deprecated use fetchPsiLighthouse */
-export async function fetchPsiFieldVitals(
-  url: string,
-  strategy: "mobile" | "desktop" = "mobile",
-): Promise<FieldVitalsSummary> {
-  const r = await fetchPsiLighthouse(url, strategy);
-  return r;
 }
 
 export function appendStorefrontPassword(url: string, password?: string | null) {

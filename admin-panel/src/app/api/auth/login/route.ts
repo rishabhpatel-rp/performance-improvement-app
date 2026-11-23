@@ -1,11 +1,6 @@
 import { NextResponse } from "next/server";
 import { loginAdmin } from "@/lib/auth";
-import {
-  checkBoth,
-  recordFailureBoth,
-  loginKey,
-  resetAttempts,
-} from "@/lib/rate-limit";
+import { checkBoth, recordFailureBoth, loginKey, resetAttempts } from "@/lib/rate-limit";
 
 /**
  * The rate-limit IP must NOT be taken from the client-controlled leftmost
@@ -21,7 +16,10 @@ function clientIp(request: Request): string {
   if (realIp) return realIp.trim();
   const forwarded = request.headers.get("x-forwarded-for");
   if (forwarded) {
-    const hops = forwarded.split(",").map((h) => h.trim()).filter(Boolean);
+    const hops = forwarded
+      .split(",")
+      .map((h) => h.trim())
+      .filter(Boolean);
     if (hops.length) return hops[hops.length - 1];
   }
   return "unknown";
@@ -42,7 +40,7 @@ export async function POST(request: Request) {
 
     // Brute-force protection (audit Task 9). See lib/rate-limit.ts.
     const key = loginKey(email, clientIp(request));
-    const limit = checkBoth(key, clientIp(request));
+    const limit = await checkBoth(key, clientIp(request));
     if (!limit.allowed) {
       return NextResponse.json(
         { success: false, error: "Too many attempts. Try again later." },
@@ -53,20 +51,17 @@ export async function POST(request: Request) {
     const user = await loginAdmin(email, password);
 
     if (!user) {
-      recordFailureBoth(key, clientIp(request));
+      await recordFailureBoth(key, clientIp(request));
       return NextResponse.json(
         { success: false, error: "Invalid email or password" },
         { status: 401 },
       );
     }
 
-    resetAttempts(key);
+    await resetAttempts(key);
     return NextResponse.json({ success: true, user });
   } catch (error) {
     console.error("Login error:", error);
-    return NextResponse.json(
-      { success: false, error: "An error occurred" },
-      { status: 500 },
-    );
+    return NextResponse.json({ success: false, error: "An error occurred" }, { status: 500 });
   }
 }

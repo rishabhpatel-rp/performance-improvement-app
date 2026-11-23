@@ -1,15 +1,16 @@
 import prisma from "../db.server";
 import { readStringArray, rebuildPerformanceScript } from "./performance-script.server";
-import { templateBucketsToStorePatch, auditDeferColumn, TEMPLATE_SCOPES } from "./template-script-config";
+import {
+  templateBucketsToStorePatch,
+  auditDeferColumn,
+  TEMPLATE_SCOPES,
+} from "./template-script-config";
 import type { HiddenAuditResult } from "./audit.server";
 
-export function storeNeedsTemplateHeal(
-  sc: Record<string, unknown> | null | undefined,
-): boolean {
+import { logger } from "./logger.ts";
+export function storeNeedsTemplateHeal(sc: Record<string, unknown> | null | undefined): boolean {
   if (!sc) return false;
-  return !TEMPLATE_SCOPES.some(
-    (scope) => readStringArray(sc[auditDeferColumn(scope)]).length > 0,
-  );
+  return !TEMPLATE_SCOPES.some((scope) => readStringArray(sc[auditDeferColumn(scope)]).length > 0);
 }
 
 export async function healStoreTemplateFromReport(
@@ -44,6 +45,6 @@ export async function healStoreTemplateFromReport(
     data: patch,
   });
   await rebuildPerformanceScript(shopDomain);
-  console.log(`[heal] Synced template defer/hide columns from latest audit for ${shopDomain}`);
+  logger.info(`[heal] Synced template defer/hide columns from latest audit for ${shopDomain}`);
   return true;
 }

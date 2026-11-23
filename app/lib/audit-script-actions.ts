@@ -9,10 +9,7 @@ import {
   unionTemplateLists,
 } from "./template-script-config";
 
-export type {
-  ScriptListState,
-  ScriptTokenAction,
-} from "./audit-script-actions-pure";
+export type { ScriptListState, ScriptTokenAction } from "./audit-script-actions-pure";
 
 export {
   applyScopedTokenAction,
@@ -21,10 +18,7 @@ export {
   inferScriptActionFromLists,
 } from "./audit-script-actions-pure";
 
-import {
-  effectiveListForScope,
-  type ScriptListState,
-} from "./audit-script-actions-pure";
+import { effectiveListForScope, type ScriptListState } from "./audit-script-actions-pure";
 
 export type ScriptArrayPatch = {
   auditDeferArray?: string[];

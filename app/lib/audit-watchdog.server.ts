@@ -9,7 +9,9 @@ import {
 } from "./audit-lifecycle";
 import { reconcileStoreAfterJobEnd } from "./audit-queue-reconcile.server";
 import { drainAuditQueue } from "./audit-queue.server";
+import { supersedeAuditRun } from "./audit-run-signal.server";
 
+import { logger } from "./logger.ts";
 let watchdogStarted = false;
 
 const STALE_SWEEP_THROTTLE_MS = 15_000;
@@ -50,6 +52,7 @@ async function loadStoreAuditRow(shopDomain: string): Promise<{
           auditPageStartedAt: true,
           updatedAt: true,
           activeAuditJobId: true,
+          auditPhase: true,
         },
         take: 1,
       },
@@ -65,9 +68,7 @@ async function loadStoreAuditRow(shopDomain: string): Promise<{
  * Fail long-queued jobs and clear stuck `auditRunning` for one shop.
  * @returns true when a job or store row was updated (queue drain may be needed).
  */
-export async function sweepStaleAuditStateForShop(
-  shopDomain: string,
-): Promise<boolean> {
+export async function sweepStaleAuditStateForShop(shopDomain: string): Promise<boolean> {
   const loaded = await loadStoreAuditRow(shopDomain);
   if (!loaded) return false;
   const { sc } = loaded;
@@ -127,10 +128,7 @@ export async function sweepStaleAuditStateForShop(
     if (job?.status === "queued") {
       return changed;
     }
-    if (
-      job?.status === "running" &&
-      runningJobHasFreshHeartbeat(job.lockedAt)
-    ) {
+    if (job?.status === "running" && runningJobHasFreshHeartbeat(job.lockedAt)) {
       return changed;
     }
     if (job?.status === "running") {
@@ -172,10 +170,7 @@ export async function maybeSweepStaleAuditStateForShop(
   }
   lastSweepAtByShop.set(shopDomain, now);
   const changed = await sweepStaleAuditStateForShop(shopDomain).catch((err) => {
-    console.warn(
-      "[audit-watchdog] sweep failed:",
-      err instanceof Error ? err.message : err,
-    );
+    logger.warn("[audit-watchdog] sweep failed:", err instanceof Error ? err.message : err);
     return false;
   });
   if (changed) void drainAuditQueue();
@@ -194,10 +189,7 @@ async function sweepStaleAuditStateBatch(limit = 25): Promise<void> {
     const domain = row.store?.shopDomain;
     if (domain) {
       const changed = await sweepStaleAuditStateForShop(domain).catch((err) => {
-        console.warn(
-          "[audit-watchdog] sweep failed:",
-          err instanceof Error ? err.message : err,
-        );
+        logger.warn("[audit-watchdog] sweep failed:", err instanceof Error ? err.message : err);
         return false;
       });
       if (changed) anyChanged = true;
@@ -236,6 +228,8 @@ export async function stopAuditForShop(shopDomain: string): Promise<{
     return { ok: true };
   }
 
+  supersedeAuditRun(shopDomain);
+
   const jobId = sc.activeAuditJobId;
   if (jobId) {
     await prisma.auditJob.updateMany({
@@ -248,6 +242,17 @@ export async function stopAuditForShop(shopDomain: string): Promise<{
         lockedAt: null,
         stopRequested: true,
         lastError: AUDIT_STOPPED_BY_USER,
+        errorCode: "AUDIT_STOPPED_BY_USER",
+        finishedAt: new Date(),
+      },
+    });
+  } else {
+    await prisma.auditJob.updateMany({
+      where: { storeId: store.id, status: { in: ["queued", "running"] } },
+      data: {
+        stopRequested: true,
+        lastError: AUDIT_STOPPED_BY_USER,
+        errorCode: "AUDIT_STOPPED_BY_USER",
       },
     });
   }

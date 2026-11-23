@@ -3,6 +3,8 @@
   "private": true,
   "scripts": {
     "build": "react-router build",
+    "predev": "prisma generate",
+    "postinstall": "prisma generate",
     "dev": "shopify app dev",
     "config:link": "shopify app config link",
     "generate": "shopify app generate",
@@ -11,6 +13,8 @@
     "env": "shopify app env",
     "start": "react-router-serve ./build/server/index.js",
     "docker-start": "npm run setup && npm run start",
+    "worker": "tsx app/worker/audit-worker.ts",
+    "docker-start-worker": "npm run worker",
     "setup": "prisma generate && prisma migrate deploy",
     "lint": "eslint --ignore-path .gitignore --cache --cache-location ./node_modules/.cache/eslint .",
     "shopify": "shopify",
@@ -18,7 +22,15 @@
     "graphql-codegen": "graphql-codegen",
     "vite": "vite",
     "typecheck": "react-router typegen && tsc --noEmit",
-    "test": "node --test \"tests/*.test.js\" \"Test Data/*.test.js\""
+    "format": "prettier --write \"app/**/*.{js,jsx,ts,tsx}\" \"tests/**/*.js\" \"scripts/**/*.{mjs,ts}\"",
+    "format:check": "prettier --check \"app/**/*.{js,jsx,ts,tsx}\" \"tests/**/*.js\" \"scripts/**/*.{mjs,ts}\"",
+    "test": "node --import tsx --test \"tests/*.test.js\" \"Test Data/*.test.js\"",
+    "test:integration": "node ./node_modules/tsx/dist/cli.mjs --env-file=.env --test tests/audit-queue.integration.test.ts",
+    "test:storefront-smoke": "node scripts/storefront-smoke.mjs",
+    "rollout:audit-queue": "bash scripts/rollout-audit-queue-local.sh",
+    "prepare": "husky",
+    "check:schema": "node scripts/check-schema-drift.mjs",
+    "retention": "node --import tsx scripts/retention-cleanup.ts"
   },
   "type": "module",
   "engines": {
@@ -37,9 +49,11 @@
     "javascript-obfuscator": "^5.7.0",
     "playwright": "^1.62.1",
     "pm2": "^7.0.4",
+    "prisma": "^6.19.3",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-router": "^7.12.0",
+    "tsx": "^4.19.2",
     "vite-tsconfig-paths": "^5.1.4"
   },
   "devDependencies": {
@@ -60,8 +74,9 @@
     "eslint-plugin-react": "^7.37.5",
     "eslint-plugin-react-hooks": "^4.6.2",
     "graphql-config": "^5.1.1",
+    "husky": "^9.1.7",
+    "lint-staged": "^17.6.1",
     "prettier": "^3.6.2",
-    "prisma": "^6.19.3",
     "typescript": "^5.9.3",
     "vite": "^6.3.6"
   },
@@ -74,5 +89,10 @@
   "overrides": {
     "p-map": "^4.0.0"
   },
-  "author": "rishabh.patel@brainvire.com"
+  "author": "rishabh.patel@brainvire.com",
+  "lint-staged": {
+    "*.{js,jsx,ts,tsx,mjs,cjs,json,css,md,yml,yaml}": "prettier --write --ignore-unknown",
+    "app/**/*.{js,jsx,ts,tsx}": "eslint --max-warnings=0 --no-cache",
+    "tests/**/*.{js,ts}": "eslint --max-warnings=0 --no-cache"
+  }
 }

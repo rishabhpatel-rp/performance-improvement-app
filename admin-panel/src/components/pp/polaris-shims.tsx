@@ -48,12 +48,7 @@ export function PpButton({
   onClick?: () => void;
 }) {
   return (
-    <button
-      type="button"
-      className="pp-btn-secondary-sm"
-      disabled={disabled}
-      onClick={onClick}
-    >
+    <button type="button" className="pp-btn-secondary-sm" disabled={disabled} onClick={onClick}>
       {children}
     </button>
   );

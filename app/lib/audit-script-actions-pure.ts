@@ -1,11 +1,6 @@
 /** Pure script-list helpers — no relative imports (node --test can load this file). */
 
-export type ScriptTokenAction =
-  | "keep"
-  | "defer"
-  | "delay_first"
-  | "delay_every"
-  | "protected";
+export type ScriptTokenAction = "keep" | "defer" | "delay_first" | "delay_every" | "protected";
 
 export type ScriptListState = {
   auditDeferArray: string[];
@@ -13,10 +8,7 @@ export type ScriptListState = {
   staticDeferDefaults: string[];
 };
 
-import type {
-  TemplateListBuckets,
-  TemplateScope,
-} from "./template-script-config";
+import type { TemplateListBuckets, TemplateScope } from "./template-script-config";
 
 export type { TemplateListBuckets, TemplateScope };
 

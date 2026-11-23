@@ -15,6 +15,7 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { formatDate } from "@/lib/utils";
+import { storeRowsToCsv } from "@/lib/store-csv";
 import type { StoresResult } from "@/lib/queries";
 
 type StoreRow = StoresResult["stores"][number];
@@ -55,6 +56,18 @@ export default function StoreTable({
 }: StoreTableProps) {
   const router = useRouter();
   const [searchInput, setSearchInput] = useState(search);
+  const exportCsv = () => {
+    const csv = storeRowsToCsv(
+      stores as unknown as Array<Record<string, unknown>>,
+      SORTABLE_COLUMNS,
+    );
+    const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "pagepulse-stores.csv";
+    link.click();
+    URL.revokeObjectURL(url);
+  };
 
   const navigate = (params: {
     search?: string;
@@ -94,6 +107,11 @@ export default function StoreTable({
 
   return (
     <div className="space-y-4">
+      <div className="flex justify-end">
+        <Button variant="outline" onClick={exportCsv}>
+          Export CSV
+        </Button>
+      </div>
       <div className="flex flex-col sm:flex-row gap-3 sm:items-center sm:justify-between">
         <form onSubmit={handleSearchSubmit} className="flex gap-2 flex-1 max-w-md">
           <Input

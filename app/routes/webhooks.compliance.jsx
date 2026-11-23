@@ -1,6 +1,7 @@
 import { authenticate } from "../shopify.server";
 import { eraseShopData } from "../lib/store-sync.server";
 
+import { logger } from "../lib/logger.ts";
 function normalizeTopic(topic) {
   return String(topic || "")
     .toLowerCase()
@@ -17,13 +18,13 @@ export const action = async ({ request }) => {
   const normalized = normalizeTopic(topic);
   const shopDomain = shop || payload?.shop_domain;
 
-  console.log(`Received ${topic} webhook for ${shopDomain}`);
+  logger.info(`Received ${topic} webhook for ${shopDomain}`);
 
   switch (normalized) {
     case "customers/data_request":
       // This app does not store Shopify customer or order records.
       // Acknowledge so merchants can complete the data-request flow.
-      console.log(
+      logger.info(
         `[customers/data_request] No customer data stored for ${shopDomain}`,
         payload?.customer?.id || "",
       );
@@ -31,7 +32,7 @@ export const action = async ({ request }) => {
 
     case "customers/redact":
       // No customer PII is persisted; nothing to delete.
-      console.log(
+      logger.info(
         `[customers/redact] No customer data to redact for ${shopDomain}`,
         payload?.customer?.id || "",
       );
@@ -41,17 +42,15 @@ export const action = async ({ request }) => {
       try {
         const result = await eraseShopData(shopDomain);
         if (result.skipped) {
-          console.log(
-            `[shop/redact] Skipped erase for ${shopDomain} (store active/reinstalled)`,
-          );
+          logger.info(`[shop/redact] Skipped erase for ${shopDomain} (store active/reinstalled)`);
         } else {
-          console.log(
+          logger.info(
             `[shop/redact] Archived then erased shop data for ${shopDomain} (archiveId=${result.archiveId})`,
           );
         }
       } catch (err) {
         // Fail closed: eraseShopData only deletes after StoreArchive insert succeeds.
-        console.error(
+        logger.error(
           `[shop/redact] Failed to archive/erase data for ${shopDomain}:`,
           err instanceof Error ? err.message : err,
         );
@@ -59,7 +58,7 @@ export const action = async ({ request }) => {
       break;
 
     default:
-      console.log(`[compliance] Unhandled topic ${topic}`);
+      logger.info(`[compliance] Unhandled topic ${topic}`);
   }
 
   return new Response();

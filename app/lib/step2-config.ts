@@ -1,7 +1,8 @@
+import { DEFAULT_DELAY_SCRIPTS, FIRST_USER_DELAY_MS, EVERY_TIME_DELAY_MS } from "./constants.ts";
 import { readStringArray } from "./performance-script.server";
 import { templateConfigFromRow } from "./template-script-config";
 
-const DEFAULT_STATIC_DEFER = ["wpm", "gtm"];
+const DEFAULT_STATIC_DEFER = [...DEFAULT_DELAY_SCRIPTS];
 
 type StoreConfigRow = Record<string, unknown>;
 
@@ -22,7 +23,7 @@ export function buildStep2Config(sc: StoreConfigRow | null | undefined) {
   }
 
   const firstUser = readStringArray(sc?.firstUserDelayScripts);
-  const firstUserDelayScripts = firstUser.length ? firstUser : ["wpm", "gtm"];
+  const firstUserDelayScripts = firstUser.length ? firstUser : [...DEFAULT_DELAY_SCRIPTS];
   const firstPreserved = readStringArray(sc?.firstUserDelayScriptsPreserved);
 
   return {
@@ -44,8 +45,10 @@ export function buildStep2Config(sc: StoreConfigRow | null | undefined) {
     staticDeferDefaultsPreserved: readStringArray(sc?.staticDeferDefaultsPreserved),
     firstUserDelayScriptsPreserved: firstPreserved.length ? firstPreserved : [],
     firstUserDelayScripts,
-    firstUserDelayMs: typeof sc?.firstUserDelayMs === "number" ? sc.firstUserDelayMs : 12000,
-    everyTimeDelayMs: typeof sc?.everyTimeDelayMs === "number" ? sc.everyTimeDelayMs : 6000,
+    firstUserDelayMs:
+      typeof sc?.firstUserDelayMs === "number" ? sc.firstUserDelayMs : FIRST_USER_DELAY_MS,
+    everyTimeDelayMs:
+      typeof sc?.everyTimeDelayMs === "number" ? sc.everyTimeDelayMs : EVERY_TIME_DELAY_MS,
     auditComplete: sc?.auditComplete === true,
     adminManaged: sc?.adminManaged === true,
     ...templateConfigFromRow(sc),

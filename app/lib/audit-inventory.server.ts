@@ -1,4 +1,6 @@
 import { urlToCandidates } from "./audit-candidates";
+import { classifyScriptCategory } from "./audit-script-category.ts";
+import { classifyRiskLabel } from "./audit-risk-label.ts";
 import type { ScriptInventoryBlock, ScriptInventoryEntry } from "./audit-report-types";
 
 export type InventoryReportInput = {
@@ -20,6 +22,7 @@ type ResourceRow = {
   pathname: string;
   requestOrder?: number;
   startTime?: number;
+  tbtContributionMs?: number;
 };
 
 function isHomePath(pathname: string) {
@@ -40,14 +43,10 @@ function hostOf(rawUrl: string): string | undefined {
   }
 }
 
-function applyResourceToEntry(
-  entry: ScriptInventoryEntry,
-  row: ResourceRow,
-  pathname: string,
-) {
+function applyResourceToEntry(entry: ScriptInventoryEntry, row: ResourceRow, pathname: string) {
   if (!entry.pages.includes(pathname)) entry.pages.push(pathname);
   const sizes = [row.transferSize, row.encodedBodySize, row.decodedBodySize];
-  const rawBytes = sizes.reduce(
+  const rawBytes = sizes.reduce<number>(
     (max, n) => (typeof n === "number" && n > max ? n : max),
     0,
   );
@@ -58,15 +57,15 @@ function applyResourceToEntry(
   if (typeof row.duration === "number" && row.duration > 0) {
     entry.durationMs = Math.max(entry.durationMs ?? 0, row.duration);
   }
+  if (typeof row.tbtContributionMs === "number" && row.tbtContributionMs > 0) {
+    entry.tbtContributionMs = Math.max(entry.tbtContributionMs ?? 0, row.tbtContributionMs);
+  }
   const host = hostOf(row.url);
   if (host && !entry.domain) entry.domain = host;
   if (row.requestOrder != null) {
     const onHome = isHomePath(pathname);
     if (onHome) {
-      if (
-        entry.homeRequestOrder == null ||
-        row.requestOrder < entry.homeRequestOrder
-      ) {
+      if (entry.homeRequestOrder == null || row.requestOrder < entry.homeRequestOrder) {
         entry.homeRequestOrder = row.requestOrder;
         if (row.startTime != null) entry.homeStartMs = row.startTime;
       }
@@ -142,9 +141,11 @@ export function buildScriptInventory(
     }
   }
 
-  const byTokenList = [...byToken.values()].sort(
-    (a, b) => (b.bytes ?? 0) - (a.bytes ?? 0),
-  );
+  for (const entry of byToken.values()) {
+    entry.riskLabel = classifyRiskLabel(entry);
+    entry.scriptCategory = classifyScriptCategory(entry.token, entry.domain);
+  }
+  const byTokenList = [...byToken.values()].sort((a, b) => (b.bytes ?? 0) - (a.bytes ?? 0));
 
   let thirdPartyBytes = 0;
   let scriptRequests = 0;

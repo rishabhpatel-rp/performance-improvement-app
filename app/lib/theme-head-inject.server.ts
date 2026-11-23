@@ -1,3 +1,5 @@
+/* eslint-disable @typescript-eslint/no-explicit-any -- gradual TS migration of legacy modules */
+import { getEnv } from "./env.server.ts";
 /**
  * Writes the PagePulse inline script into the merchant theme at the first line
  * of <head> so it runs before content_for_header and other head scripts.
@@ -6,16 +8,16 @@
  * `pagepulse.theme_head_active` to true so the theme app embed does not double-run.
  */
 
-import { getSelectedThemeId, listThemes } from "./theme-embed.server.js";
+import { getSelectedThemeId, listThemes } from "./theme-embed.server.ts";
 import {
   THEME_LAYOUT_FILENAME,
   THEME_SNIPPET_FILENAME,
   patchThemeLayoutHead,
-} from "./theme-head-patch.js";
-import { readExtensionInlineSnippetLiquid } from "./theme-head-inject-utils.js";
+} from "./theme-head-patch.ts";
+import { readExtensionInlineSnippetLiquid } from "./theme-head-inject-utils.ts";
 
-const HEAD_INJECT_ENABLED =
-  process.env.PAGEPULSE_THEME_HEAD_INJECT !== "false";
+import { logger } from "./logger.ts";
+const HEAD_INJECT_ENABLED = getEnv().PAGEPULSE_THEME_HEAD_INJECT !== "false";
 
 function formatGraphqlErrors(errors: unknown): string {
   if (Array.isArray(errors)) {
@@ -30,7 +32,10 @@ export interface GraphQLResponse<T = unknown> {
 }
 
 export type AdminGraphQL = {
-  graphql: (query: string, variables?: Record<string, unknown>) => Promise<{ json(): Promise<unknown> }>;
+  graphql: (
+    query: string,
+    variables?: Record<string, unknown>,
+  ) => Promise<{ json(): Promise<unknown> }>;
 };
 
 async function graphqlJson<T = unknown>(
@@ -39,21 +44,18 @@ async function graphqlJson<T = unknown>(
   variables?: object,
 ): Promise<T | undefined> {
   const res = await admin.graphql(query, variables ? { variables } : undefined);
-  const json = await res.json() as GraphQLResponse<T>;
+  const json = (await res.json()) as GraphQLResponse<T>;
   if (json.errors?.length || (json.errors && !json.data)) {
     throw new Error(formatGraphqlErrors(json.errors));
   }
   return json.data;
 }
 
-async function resolveThemeGid(
-  admin: AdminGraphQL,
-  shopDomain: string,
-): Promise<string | null> {
+async function resolveThemeGid(admin: AdminGraphQL, shopDomain: string): Promise<string | null> {
   const selected = await getSelectedThemeId(shopDomain);
   if (selected) return selected;
   const themes = await listThemes(admin);
-  const main = themes.find((t) => t.role === "MAIN");
+  const main = themes.find((t: any) => t.role === "MAIN");
   return main?.id ?? themes[0]?.id ?? null;
 }
 
@@ -133,10 +135,7 @@ async function upsertThemeFiles(
   }
 }
 
-async function setThemeHeadActive(
-  admin: AdminGraphQL,
-  active: boolean,
-): Promise<void> {
+async function setThemeHeadActive(admin: AdminGraphQL, active: boolean): Promise<void> {
   const installData = await graphqlJson<{
     currentAppInstallation?: { id: string };
   }>(
@@ -224,19 +223,17 @@ export async function ensureThemeHeadInlineScript(
     try {
       await setThemeHeadActive(admin, true);
     } catch (metaErr) {
-      console.warn(
+      logger.warn(
         `[theme-head-inject] theme files ok but theme_head_active metafield failed for ${shopDomain}:`,
         metaErr instanceof Error ? metaErr.message : metaErr,
       );
     }
 
-    console.log(
-      `[theme-head-inject] head inline ready for ${shopDomain} on theme ${themeId}`,
-    );
+    logger.info(`[theme-head-inject] head inline ready for ${shopDomain} on theme ${themeId}`);
     return { status: "injected", themeId };
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);
-    console.warn(`[theme-head-inject] failed for ${shopDomain}:`, reason);
+    logger.warn(`[theme-head-inject] failed for ${shopDomain}:`, reason);
     return { status: "failed", reason };
   }
 }
@@ -248,7 +245,7 @@ export async function clearThemeHeadDelivery(admin: AdminGraphQL): Promise<void>
   try {
     await setThemeHeadActive(admin, false);
   } catch (err) {
-    console.warn(
+    logger.warn(
       "[theme-head-inject] clearThemeHeadDelivery:",
       err instanceof Error ? err.message : err,
     );
