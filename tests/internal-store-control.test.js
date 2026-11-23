@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { decideInternalStoreControlRequest } from "../app/lib/internal-store-control-route.js";
+import { decideInternalStoreControlRequest } from "../app/lib/internal-store-control-route.ts";
 
 const base = {
   shopDomain: "test.myshopify.com",

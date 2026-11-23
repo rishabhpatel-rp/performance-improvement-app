@@ -14,11 +14,7 @@ test("isUnsafeHideSelector blocks lazy-load utility classes", () => {
 });
 
 test("filterUnsafeHideSelectors removes unsafe entries only", () => {
-  const { safe, rejected } = filterUnsafeHideSelectors([
-    ".lazyload",
-    "#footer",
-    ".lazyloaded",
-  ]);
+  const { safe, rejected } = filterUnsafeHideSelectors([".lazyload", "#footer", ".lazyloaded"]);
   assert.deepEqual(safe, ["#footer"]);
   assert.deepEqual(rejected, [".lazyload", ".lazyloaded"]);
 });

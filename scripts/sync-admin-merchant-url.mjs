@@ -1,90 +1,127 @@
 #!/usr/bin/env node
 /**
- * Point admin-panel PAGEPULSE_APP_URL at the running merchant Vite server.
- * Shopify CLI picks a random localhost port; this probes it via internal auth.
+ * Point admin-panel at the running merchant dev server.
+ *
+ * Shopify CLI picks a random localhost port. Each candidate is fingerprinted
+ * WITHOUT the secret first (the merchant app answers a secret-less internal
+ * call with 401 "Unauthorized"); only a port that identifies itself that way
+ * is then sent the real secret, so unrelated local services never see it.
  */
 import fs from "node:fs";
 import path from "node:path";
 import { execSync } from "node:child_process";
-
 import { fileURLToPath } from "node:url";
+
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const rootEnv = path.join(root, ".env");
 const adminEnv = path.join(root, "admin-panel", ".env");
+const SECRET_NAMES = ["INTERNAL_API_SECRET", "ADMIN_INTERNAL_SECRET"];
+const URL_NAMES = ["PAGEPULSE_INTERNAL_URL", "PAGEPULSE_APP_URL"];
+
+function readEnvFile(file) {
+  if (!fs.existsSync(file)) return "";
+  return fs.readFileSync(file, "utf8");
+}
+
+function envValue(text, name) {
+  const row = text.split(/\r?\n/).find((line) => line.startsWith(`${name}=`));
+  return row
+    ? row
+        .slice(name.length + 1)
+        .trim()
+        .replace(/^"|"$/g, "")
+    : "";
+}
 
 function readSecret() {
-  const text = fs.readFileSync(rootEnv, "utf8");
-  const line = text.split("\n").find((row) => row.startsWith("INTERNAL_API_SECRET="));
-  if (!line) throw new Error("INTERNAL_API_SECRET missing in root .env");
-  return line.slice("INTERNAL_API_SECRET=".length).trim().replace(/^"|"$/g, "");
+  const text = readEnvFile(rootEnv);
+  for (const name of SECRET_NAMES) {
+    const value = envValue(text, name);
+    if (value) return value;
+  }
+  throw new Error(`${SECRET_NAMES[0]} missing in root .env`);
 }
 
 function candidatePorts() {
   const ports = new Set();
+  const fromEnv = envValue(readEnvFile(rootEnv), "PORT");
+  if (/^\d+$/.test(fromEnv)) ports.add(Number(fromEnv));
   try {
     const out = execSync("ss -tlnp 2>/dev/null", { encoding: "utf8" });
     for (const line of out.split("\n")) {
-      const m = line.match(/127\.0\.0\.1:(\d+)/);
-      if (m) ports.add(Number(m[1]));
+      const match = line.match(/127\.0\.0\.1:(\d+)/);
+      if (match) ports.add(Number(match[1]));
     }
   } catch {
-    /* ignore */
+    /* `ss` is unavailable on macOS/Windows: fall back to known ports */
   }
-  const fromEnv = fs.readFileSync(rootEnv, "utf8").match(/^PORT=(\d+)/m);
-  if (fromEnv) ports.add(Number(fromEnv[1]));
   ports.add(9001);
-  return [...ports].filter((p) => p > 1024 && p < 65535);
+  return [...ports].filter((port) => port > 1024 && port < 65535);
 }
 
-async function probe(port, secret) {
+async function callState(port, secret) {
+  const headers = { "Content-Type": "application/json" };
+  if (secret) headers["x-pagepulse-internal"] = secret;
+  const res = await fetch(`http://127.0.0.1:${port}/api/internal/storefront-state`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ shopDomain: "health-check.invalid" }),
+    signal: AbortSignal.timeout(2000),
+  });
+  const data = await res.json().catch(() => null);
+  return { status: res.status, data };
+}
+
+/** True only for the PagePulse merchant app, verified with the real secret. */
+async function isMerchantApp(port, secret) {
   try {
-    const res = await fetch(`http://127.0.0.1:${port}/api/internal/storefront-state`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-pagepulse-internal": secret,
-      },
-      body: JSON.stringify({ shopDomain: "health-check.invalid" }),
-    });
-    const text = await res.text();
-    try {
-      const data = JSON.parse(text);
-      return data !== null && typeof data === "object" && "ok" in data;
-    } catch {
+    const anonymous = await callState(port);
+    if (anonymous.status !== 401 || anonymous.data?.error !== "Unauthorized") {
       return false;
     }
+    const authed = await callState(port, secret);
+    // A valid secret on an unknown shop is a 404; anything else (401) means a
+    // secret mismatch and the URL would not work from the admin panel anyway.
+    return authed.status === 404 && authed.data?.ok === false;
   } catch {
     return false;
   }
 }
 
-async function main() {
-  const secret = readSecret();
-  let found = null;
-  for (const port of candidatePorts()) {
-    if (await probe(port, secret)) {
-      found = port;
-      break;
+function writeAdminUrl(url) {
+  let text = readEnvFile(adminEnv);
+  // Update whichever variable the admin panel reads first, so a stale
+  // PAGEPULSE_INTERNAL_URL can never shadow the freshly detected URL.
+  const target = URL_NAMES.find((name) => new RegExp(`^${name}=`, "m").test(text)) ?? URL_NAMES[1];
+  if (new RegExp(`^${target}=`, "m").test(text)) {
+    text = text.replace(new RegExp(`^${target}=.*$`, "m"), `${target}="${url}"`);
+  } else {
+    text += `${text && !text.endsWith("\n") ? "\n" : ""}${target}="${url}"\n`;
+  }
+  // Keep every URL variable that is present in agreement.
+  for (const name of URL_NAMES) {
+    if (name !== target && new RegExp(`^${name}=`, "m").test(text)) {
+      text = text.replace(new RegExp(`^${name}=.*$`, "m"), `${name}="${url}"`);
     }
   }
-  if (!found) {
-    console.error(
-      "Could not find merchant dev server. Start: npx shopify app dev --config pagepulse ...",
-    );
-    process.exit(1);
+  fs.writeFileSync(adminEnv, text);
+  return target;
+}
+
+async function main() {
+  const secret = readSecret();
+  for (const port of candidatePorts()) {
+    if (await isMerchantApp(port, secret)) {
+      const url = `http://127.0.0.1:${port}`;
+      const name = writeAdminUrl(url);
+      console.log(`Updated admin-panel/.env ${name}=${url}`);
+      return;
+    }
   }
-  const url = `http://127.0.0.1:${found}`;
-  let adminText = fs.readFileSync(adminEnv, "utf8");
-  if (/^PAGEPULSE_APP_URL=/m.test(adminText)) {
-    adminText = adminText.replace(
-      /^PAGEPULSE_APP_URL=.*$/m,
-      `PAGEPULSE_APP_URL="${url}"`,
-    );
-  } else {
-    adminText += `\nPAGEPULSE_APP_URL="${url}"\n`;
-  }
-  fs.writeFileSync(adminEnv, adminText);
-  console.log(`Updated admin-panel/.env PAGEPULSE_APP_URL=${url}`);
+  console.error(
+    "Could not find the merchant dev server (or INTERNAL_API_SECRET does not match). Start: npx shopify app dev",
+  );
+  process.exit(1);
 }
 
 await main();

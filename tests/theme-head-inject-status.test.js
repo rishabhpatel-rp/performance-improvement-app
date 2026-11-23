@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { isThemeFilesExemptDenied } from "../app/lib/theme-head-inject-utils.js";
+import { isThemeFilesExemptDenied } from "../app/lib/theme-head-inject-utils.ts";
 
 test("isThemeFilesExemptDenied detects Shopify exemption message", () => {
   assert.equal(

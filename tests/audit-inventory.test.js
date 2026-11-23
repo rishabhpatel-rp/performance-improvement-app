@@ -10,10 +10,7 @@ import { urlToCandidates } from "../app/lib/audit-candidates.ts";
 test("inventory token mapping defers clarity host and never-defers shopify chunk", () => {
   const page = "https://shop.test/";
   const clarity = urlToCandidates("https://www.clarity.ms/tag/abc", page);
-  const shopify = urlToCandidates(
-    "https://cdn.shopify.com/s/files/1/chunk.storefront.js",
-    page,
-  );
+  const shopify = urlToCandidates("https://cdn.shopify.com/s/files/1/chunk.storefront.js", page);
   const clarityToken = clarity.kept[0] || clarity.neverDefer[0];
   const shopToken = shopify.neverDefer[0] || shopify.kept[0];
   assert.ok(clarityToken);

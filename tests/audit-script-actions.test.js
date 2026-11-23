@@ -6,10 +6,7 @@ import {
   effectiveListForScope,
   inferScriptActionFromLists,
 } from "../app/lib/audit-script-actions-pure.ts";
-import {
-  auditDeferColumn,
-  readBucketsFromRow,
-} from "../app/lib/template-script-config.ts";
+import { auditDeferColumn, readBucketsFromRow } from "../app/lib/template-script-config.ts";
 
 const base = {
   auditDeferArray: ["a.js"],
@@ -31,10 +28,7 @@ test("buildArrayPatchForTokenAction delay_first moves token", () => {
 });
 
 test("inferScriptActionFromLists reads defer list", () => {
-  assert.equal(
-    inferScriptActionFromLists(base, "a.js", "protected"),
-    "defer",
-  );
+  assert.equal(inferScriptActionFromLists(base, "a.js", "protected"), "defer");
 });
 
 test("applyScopedTokenAction updates only the chosen scope column", () => {

@@ -3,10 +3,7 @@ import {
   buildAuditReportSummary,
   loadLatestAuditReport,
 } from "../app/lib/audit-report-summary.server";
-import {
-  buildPageSpeedViews,
-  loadPsiSnapshotsForShop,
-} from "../app/lib/psi-scheduler.server";
+import { buildPageSpeedViews, loadPsiSnapshotsForShop } from "../app/lib/psi-scheduler.server";
 
 const shop = process.argv[2] || "rishabh-dev-store-mdqu0epm.myshopify.com";
 
@@ -42,9 +39,7 @@ for (const v of summary.pageSpeedViews || []) {
   );
 }
 
-const anyScores = summary.pageSpeedViews?.some(
-  (v) => v.mobile?.categories?.performance != null,
-);
+const anyScores = summary.pageSpeedViews?.some((v) => v.mobile?.categories?.performance != null);
 console.log(anyScores ? "OK: Overview would show gauges" : "FAIL: no PSI scores in summary");
 
 await prisma.$disconnect();

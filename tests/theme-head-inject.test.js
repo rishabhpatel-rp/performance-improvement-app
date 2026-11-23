@@ -2,14 +2,11 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import {
-  patchThemeLayoutHead,
-  THEME_RENDER_MARKER,
-} from "../app/lib/theme-head-patch.js";
+import { patchThemeLayoutHead, THEME_RENDER_MARKER } from "../app/lib/theme-head-patch.ts";
 import {
   findSnippetPath,
   readExtensionInlineSnippetLiquid,
-} from "../app/lib/theme-head-inject-utils.js";
+} from "../app/lib/theme-head-inject-utils.ts";
 
 test("readExtensionInlineSnippetLiquid finds the extension snippet", () => {
   const body = readExtensionInlineSnippetLiquid();

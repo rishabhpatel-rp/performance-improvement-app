@@ -17,10 +17,7 @@
  * metafields are blank (there is no <script src> fallback any more).
  */
 import prisma from "../app/db.server";
-import {
-  clearScriptMetafield,
-  reconcileScriptMetafield,
-} from "../app/lib/script-metafield.server";
+import { clearScriptMetafield, reconcileScriptMetafield } from "../app/lib/script-metafield.server";
 
 const CONCURRENCY = 3;
 const DELAY_BETWEEN_BATCHES_MS = 500;

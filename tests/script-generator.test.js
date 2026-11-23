@@ -1,9 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import vm from "node:vm";
-import {
-  generateDeferredScript,
-} from "../app/lib/script-generator.js";
+import { generateDeferredScript } from "../app/lib/script-generator.js";
 import { INLINE_CAPACITY_CHARS, isSafeForInline } from "../app/lib/script-inline.js";
 
 const OPTIONS = {
@@ -15,17 +13,20 @@ const OPTIONS = {
   hideSelectors: ["#footer"],
 };
 
-test("generated output is safe to inline and within the inline capacity", () => {
-  const out = generateDeferredScript(OPTIONS);
+test("generated output is safe to inline and within the inline capacity", async () => {
+  const out = await generateDeferredScript(OPTIONS);
   assert.equal(isSafeForInline(out).ok, true);
-  assert.ok(out.length < INLINE_CAPACITY_CHARS, "small-size profile stays under the inline capacity");
+  assert.ok(
+    out.length < INLINE_CAPACITY_CHARS,
+    "small-size profile stays under the inline capacity",
+  );
 });
 
 // Timing logs stay off unless Settings debug mode is on. TEMP_TIMING_LOG
 // was a temporary measurement flag and must stay false in production.
-test("timing logger is only in debug builds", () => {
-  const prod = generateDeferredScript(OPTIONS);
-  const dbg = generateDeferredScript({ ...OPTIONS, debugMode: true });
+test("timing logger is only in debug builds", async () => {
+  const prod = await generateDeferredScript(OPTIONS);
+  const dbg = await generateDeferredScript({ ...OPTIONS, debugMode: true });
   assert.equal(prod.includes("[PagePulse]"), false);
   assert.ok(dbg.includes("[PagePulse]"), "debug builds ship the timing logger");
 });
@@ -34,19 +35,19 @@ test("timing logger is only in debug builds", () => {
 // a pure function of its options. This test previously proved seed stability;
 // it now proves determinism, which is the property the app actually relies on
 // to decide whether a store's cached script is stale.
-test("same options give byte-identical output; any change to options changes it", () => {
-  const base = generateDeferredScript(OPTIONS);
-  assert.equal(base, generateDeferredScript(OPTIONS));
-  assert.notEqual(base, generateDeferredScript({ ...OPTIONS, baseScripts: ["other.js"] }));
+test("same options give byte-identical output; any change to options changes it", async () => {
+  const base = await generateDeferredScript(OPTIONS);
+  assert.equal(base, await generateDeferredScript(OPTIONS));
+  assert.notEqual(base, await generateDeferredScript({ ...OPTIONS, baseScripts: ["other.js"] }));
   assert.notEqual(
     base,
-    generateDeferredScript({
+    await generateDeferredScript({
       ...OPTIONS,
       pageVariants: [{ pattern: "/collections/", add: ["plp-extra.js"], hide: [] }],
     }),
   );
-  assert.notEqual(base, generateDeferredScript({ ...OPTIONS, everyLoadDelayMs: 1234 }));
-  assert.notEqual(base, generateDeferredScript({ ...OPTIONS, hideSelectors: ["#other"] }));
+  assert.notEqual(base, await generateDeferredScript({ ...OPTIONS, everyLoadDelayMs: 1234 }));
+  assert.notEqual(base, await generateDeferredScript({ ...OPTIONS, hideSelectors: ["#other"] }));
 });
 
 // ---- smoke: the final bytes actually run and gate scripts -------------------
@@ -63,7 +64,9 @@ function makeBrowser(pathname) {
     insertBefore() {}
   }
   class HTMLScriptElement extends Element {
-    get src() { return ""; }
+    get src() {
+      return "";
+    }
     set src(_v) {}
   }
   class MutationObserver {
@@ -71,13 +74,17 @@ function makeBrowser(pathname) {
     disconnect() {}
   }
   class CustomEvent {
-    constructor(type) { this.type = type; }
+    constructor(type) {
+      this.type = type;
+    }
   }
-  const docEl = { classList: {
-    add: (c) => classes.add(c),
-    remove: (c) => classes.delete(c),
-    contains: (c) => classes.has(c),
-  } };
+  const docEl = {
+    classList: {
+      add: (c) => classes.add(c),
+      remove: (c) => classes.delete(c),
+      contains: (c) => classes.has(c),
+    },
+  };
   const dispatched = [];
   const doc = {
     documentElement: docEl,
@@ -91,12 +98,21 @@ function makeBrowser(pathname) {
   };
   const ctx = {
     document: doc,
-    Node, Element, HTMLScriptElement, MutationObserver, CustomEvent,
+    Node,
+    Element,
+    HTMLScriptElement,
+    MutationObserver,
+    CustomEvent,
     location: { pathname },
     performance: { now: () => 0 },
     localStorage: { getItem: () => null, setItem: () => {} },
-    setTimeout: (fn, ms) => { timers.push({ fn, ms }); return timers.length; },
-    addEventListener: (evt, fn) => { (listeners[evt] ||= []).push(fn); },
+    setTimeout: (fn, ms) => {
+      timers.push({ fn, ms });
+      return timers.length;
+    },
+    addEventListener: (evt, fn) => {
+      (listeners[evt] ||= []).push(fn);
+    },
     console: { log() {} },
   };
   ctx.window = ctx;
@@ -116,8 +132,8 @@ function makeScript(src) {
   };
 }
 
-test("bundle runs, parks a gated script on a matching page, and releases on interaction", () => {
-  const code = generateDeferredScript({ ...OPTIONS, seed: 9 });
+test("bundle runs, parks a gated script on a matching page, and releases on interaction", async () => {
+  const code = await generateDeferredScript({ ...OPTIONS, seed: 9 });
   const { ctx, classes, listeners } = makeBrowser("/products/gift-card");
   vm.runInContext(code, ctx);
 
@@ -139,8 +155,8 @@ test("bundle runs, parks a gated script on a matching page, and releases on inte
   assert.ok(classes.has("interacted"));
 });
 
-test("empty delay lists do not arm delay timers", () => {
-  const code = generateDeferredScript({
+test("empty delay lists do not arm delay timers", async () => {
+  const code = await generateDeferredScript({
     ...OPTIONS,
     firstVisitDelayedScripts: [],
     everyLoadDelayedScripts: [],
@@ -151,8 +167,8 @@ test("empty delay lists do not arm delay timers", () => {
   assert.equal(timers.length, 0);
 });
 
-test("an un-audited page falls back to the union list", () => {
-  const code = generateDeferredScript({ ...OPTIONS, seed: 9 });
+test("an un-audited page falls back to the union list", async () => {
+  const code = await generateDeferredScript({ ...OPTIONS, seed: 9 });
   const { ctx } = makeBrowser("/blogs/news/hello");
   vm.runInContext(code, ctx);
   const plp = makeScript("https://cdn.example.com/plp-extra.js");
