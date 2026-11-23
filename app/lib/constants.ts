@@ -16,5 +16,6 @@ export const WORKER_HEARTBEAT_WRITE_MS = 60_000;
 
 export const MAX_EXTRA_PAGES = 5;
 
-export const MAX_CONCURRENT_AUDITS = 4;
+/** Fallback constant; live cap is `AUDIT_MAX_CONCURRENT_SHOPS` (default 1 on 4 GB hosts). */
+export const MAX_CONCURRENT_AUDITS = 1;
 export const AUDIT_RUN_DEADLINE_MS = 10 * 60_000;
