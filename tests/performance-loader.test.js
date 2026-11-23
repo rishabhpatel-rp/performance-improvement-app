@@ -37,7 +37,8 @@ function render(metafields) {
     return "";
   }
 
-  const ifRe = /\{%\s*if pp\.(\w+)\.value\s*(>=|!=)\s*(\w+)\s*%\}((?:(?!\{%\s*if)[\s\S])*?)\{%\s*endif\s*%\}/;
+  const ifRe =
+    /\{%\s*if pp\.(\w+)\.value\s*(>=|!=)\s*(\w+)\s*%\}((?:(?!\{%\s*if)[\s\S])*?)\{%\s*endif\s*%\}/;
   for (let guard = 0; guard < 50; guard++) {
     const m = ifRe.exec(out);
     if (!m) break;
@@ -79,7 +80,11 @@ test("embed is rendered first in <head>, as the only supported target", () => {
 test("no <script src>, no proxy URL, no network request in the block", () => {
   assert.doesNotMatch(markup, /<script[^>]*\ssrc\s*=/i);
   assert.doesNotMatch(inlineSnippet, /apps\/performance-scripts/);
-  assert.doesNotMatch(markup, /\{%-?\s*else\s*-?%\}/, "nothing rendered when blank: no else branch");
+  assert.doesNotMatch(
+    markup,
+    /\{%-?\s*else\s*-?%\}/,
+    "nothing rendered when blank: no else branch",
+  );
 });
 
 test("embed defers to theme head when theme_head_active is set", () => {
@@ -96,7 +101,10 @@ test("namespace in Liquid matches the app-owned namespace the server writes", ()
 test("the Liquid reads exactly MAX_CHUNKS chunks, matching the server", () => {
   const keys = [...markup.matchAll(/pp\.(script(?:_\d+)?)\.value/g)].map((m) => m[1]);
   const unique = [...new Set(keys)];
-  assert.deepEqual(unique, Array.from({ length: MAX_CHUNKS }, (_, i) => chunkKey(i + 1)));
+  assert.deepEqual(
+    unique,
+    Array.from({ length: MAX_CHUNKS }, (_, i) => chunkKey(i + 1)),
+  );
 });
 
 test("renders the script byte for byte via json chunks, for 1, several and MAX_CHUNKS chunks", () => {

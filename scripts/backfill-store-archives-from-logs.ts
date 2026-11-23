@@ -14,8 +14,7 @@ import { PrismaClient } from "@prisma/client";
 const prisma = new PrismaClient();
 const DRY_RUN = process.env.DRY_RUN === "1" || process.env.DRY_RUN === "true";
 
-const DEFAULT_LOG =
-  "/var/www/pagepulsespeed/.pm2/logs/performance-improvement-app-out.log";
+const DEFAULT_LOG = "/var/www/pagepulsespeed/.pm2/logs/performance-improvement-app-out.log";
 
 function mainLogPath() {
   return process.argv[2] || process.env.PAGEPULSE_APP_OUT_LOG || DEFAULT_LOG;
@@ -67,9 +66,7 @@ async function run() {
     byShop.set(ev.shopDomain, list);
   }
 
-  console.log(
-    `Parsed ${events.length} events across ${byShop.size} shops from ${logPath}`,
-  );
+  console.log(`Parsed ${events.length} events across ${byShop.size} shops from ${logPath}`);
   console.log(DRY_RUN ? "DRY_RUN=1 — no writes" : "Applying inserts…");
 
   let inserted = 0;

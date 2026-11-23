@@ -53,19 +53,13 @@ test("planMetafieldSync: write when new or changed", () => {
     "write",
   );
   // scriptHash missing: derived from the script
-  assert.equal(
-    planMetafieldSync({ script, scriptHash: null, metafieldHash: null }).hash,
-    hash,
-  );
+  assert.equal(planMetafieldSync({ script, scriptHash: null, metafieldHash: null }).hash, hash);
 });
 
 test("planMetafieldSync: noop when already current", () => {
   const script = "var a=1;";
   const hash = hashScript(script);
-  assert.equal(
-    planMetafieldSync({ script, scriptHash: hash, metafieldHash: hash }).action,
-    "noop",
-  );
+  assert.equal(planMetafieldSync({ script, scriptHash: hash, metafieldHash: hash }).action, "noop");
 });
 
 test("planMetafieldSync: app off (empty script) clears a live metafield, else noop", () => {
@@ -87,13 +81,25 @@ test("capacity is MAX_CHUNKS chunks of CHUNK_CHARS, under Shopify's ~65k per-met
 
 test("planMetafieldSync: over capacity is never inlined and clears a live copy", () => {
   const big = "a".repeat(INLINE_CAPACITY_CHARS + 1);
-  assert.equal(planMetafieldSync({ script: big, scriptHash: "h", metafieldHash: null }).action, "noop");
-  assert.equal(planMetafieldSync({ script: big, scriptHash: "h", metafieldHash: "live" }).action, "clear");
+  assert.equal(
+    planMetafieldSync({ script: big, scriptHash: "h", metafieldHash: null }).action,
+    "noop",
+  );
+  assert.equal(
+    planMetafieldSync({ script: big, scriptHash: "h", metafieldHash: "live" }).action,
+    "clear",
+  );
   const atCap = "a".repeat(INLINE_CAPACITY_CHARS);
-  assert.equal(planMetafieldSync({ script: atCap, scriptHash: "h", metafieldHash: null }).action, "write");
+  assert.equal(
+    planMetafieldSync({ script: atCap, scriptHash: "h", metafieldHash: null }).action,
+    "write",
+  );
   // a script bigger than one chunk (the old 60 KB cap) is now inlined
   const multi = "a".repeat(CHUNK_CHARS + 5000);
-  assert.equal(planMetafieldSync({ script: multi, scriptHash: "h", metafieldHash: null }).action, "write");
+  assert.equal(
+    planMetafieldSync({ script: multi, scriptHash: "h", metafieldHash: null }).action,
+    "write",
+  );
 });
 
 test("chunkKey / allMetafieldKeys", () => {
@@ -101,7 +107,13 @@ test("chunkKey / allMetafieldKeys", () => {
   assert.equal(chunkKey(2), "script_2");
   assert.equal(chunkKey(6), "script_6");
   assert.deepEqual(allMetafieldKeys(), [
-    "script", "script_2", "script_3", "script_4", "script_5", "script_6", METAFIELD_PARTS_KEY,
+    "script",
+    "script_2",
+    "script_3",
+    "script_4",
+    "script_5",
+    "script_6",
+    METAFIELD_PARTS_KEY,
   ]);
 });
 
@@ -117,7 +129,7 @@ test("splitScript: joins back byte for byte, chunks within size", () => {
 });
 
 test("splitScript: never cuts next to whitespace or inside a surrogate pair", () => {
-  const script = ("let x = 1; \u{1F600}a b\n").repeat(200).replace(/\\u\{1F600\}/g, "\u{1F600}");
+  const script = "let x = 1; \u{1F600}a b\n".repeat(200).replace(/\\u\{1F600\}/g, "\u{1F600}");
   const chunks = splitScript(script, 37);
   assert.equal(chunks.join(""), script);
   for (let i = 0; i < chunks.length - 1; i++) {
@@ -131,7 +143,11 @@ test("splitScript: never cuts next to whitespace or inside a surrogate pair", ()
 });
 
 test("planMetafieldSync: unsafe script is not inlined", () => {
-  const plan = planMetafieldSync({ script: "x='</script>'", scriptHash: "h", metafieldHash: "live" });
+  const plan = planMetafieldSync({
+    script: "x='</script>'",
+    scriptHash: "h",
+    metafieldHash: "live",
+  });
   assert.equal(plan.action, "clear");
   assert.match(plan.reason, /script/);
 });
@@ -184,7 +200,10 @@ test("writeScriptMetafield: a long script is split across chunks in a single cal
   const mfs = admin.calls[1].variables.metafields;
   const chunks = mfs.filter((m) => m.key !== METAFIELD_PARTS_KEY);
   assert.equal(chunks.length, 3);
-  assert.deepEqual(chunks.map((m) => m.key), ["script", "script_2", "script_3"]);
+  assert.deepEqual(
+    chunks.map((m) => m.key),
+    ["script", "script_2", "script_3"],
+  );
   assert.equal(chunks.map((m) => m.value).join(""), script);
   assert.equal(mfs.at(-1).value, "3");
 });

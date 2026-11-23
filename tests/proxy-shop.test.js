@@ -7,7 +7,7 @@ import {
   resolveVerifiedProxyShop,
   safeCompare,
   verifyAppProxyShop,
-} from "../app/lib/proxy-shop.js";
+} from "../app/lib/proxy-shop.ts";
 
 // ---------------------------------------------------------------------------
 // The pre-existing session-based path (REMEDIATION Task 2 / audit finding H2).
@@ -70,9 +70,7 @@ test("a signature computed with the WRONG secret is refused", () => {
 
 test("tampering with shop after signing is refused", () => {
   const req = signedRequest({ shop: SHOP, path_prefix: "/apps" });
-  const tampered = new Request(
-    req.url.replace(`shop=${SHOP}`, "shop=evil.myshopify.com"),
-  );
+  const tampered = new Request(req.url.replace(`shop=${SHOP}`, "shop=evil.myshopify.com"));
   assert.equal(verifyAppProxyShop(tampered, SECRET), null);
 });
 
@@ -281,7 +279,10 @@ test("a signature ours accepts is one shopify-api also accepts (no false positiv
     const ours = verifyAppProxyShop(req, SECRET);
     assert.ok(ours, "fixture must be accepted by us for this test to mean anything");
     assert.equal(
-      await validateHmac({ ...params, signature: req.url.split("signature=")[1] }, { signator: "appProxy" }),
+      await validateHmac(
+        { ...params, signature: req.url.split("signature=")[1] },
+        { signator: "appProxy" },
+      ),
       true,
       "we accepted a signature shopify-api rejects — fail-OPEN",
     );
@@ -319,8 +320,11 @@ test("the route tries the fast path and falls back to the session path", async (
   const src = await import("node:fs").then((fs) =>
     fs.readFileSync("app/routes/api.storefront-scripts.jsx", "utf8"),
   );
-  assert.match(src, /verifyAppProxyShop\(request, process\.env\.SHOPIFY_API_SECRET\)/);
-  assert.match(src, /\?\?\s*\n?\s*resolveVerifiedProxyShop\(await authenticate\.public\.appProxy\(request\)\)/);
+  assert.match(src, /verifyAppProxyShop\(request, getEnv\(\)\.SHOPIFY_API_SECRET\)/);
+  assert.match(
+    src,
+    /\?\?\s*\n?\s*resolveVerifiedProxyShop\(await authenticate\.public\.appProxy\(request\)\)/,
+  );
   // The session path must remain the fallback, never be deleted.
   assert.match(src, /authenticate\.public\.appProxy/);
   // And an unresolved shop must still yield the OFF script, never shop data.

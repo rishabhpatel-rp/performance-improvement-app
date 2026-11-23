@@ -100,12 +100,25 @@ test("staleReason does not treat fresh runs as stale", () => {
   );
 });
 
-test("queuedJobStale respects QUEUED_JOB_STALE_MS (3h cap)", () => {
+test("staleReason ignores shops waiting in the queued phase", () => {
   const now = Date.parse("2026-01-01T12:00:00Z");
   assert.equal(
-    queuedJobStale(new Date(now - QUEUED_JOB_STALE_MS - 1), now),
-    true,
+    staleReason(
+      {
+        auditRunning: true,
+        auditPageStartedAt: null,
+        auditPhase: "queued",
+        updatedAt: new Date(now - AUDIT_STALE_MS - 1),
+      },
+      now,
+    ),
+    null,
   );
+});
+
+test("queuedJobStale respects QUEUED_JOB_STALE_MS (3h cap)", () => {
+  const now = Date.parse("2026-01-01T12:00:00Z");
+  assert.equal(queuedJobStale(new Date(now - QUEUED_JOB_STALE_MS - 1), now), true);
   assert.equal(queuedJobStale(new Date(now - 60 * 60 * 1000), now), false);
 });
 
@@ -136,10 +149,7 @@ test("needsOrphanStaleClear only when running, stale, and no active job", () => 
     activeAuditJobId: null,
   };
   assert.equal(needsOrphanStaleClear(staleRow, now), true);
-  assert.equal(
-    needsOrphanStaleClear({ ...staleRow, activeAuditJobId: "job-1" }, now),
-    false,
-  );
+  assert.equal(needsOrphanStaleClear({ ...staleRow, activeAuditJobId: "job-1" }, now), false);
   assert.equal(
     needsOrphanStaleClear(
       {

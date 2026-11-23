@@ -1,7 +1,7 @@
 import { getEnv } from "./env.server.ts";
 /** Pure admission rules for audit queue (AUDIT-SYSTEM-OCT-12 §9.3, D19). */
 
-/** Up to four shops can be audited in parallel; beyond that jobs wait in the queue. */
+/** Global Chromium audit cap (DB-enforced). Default 1 on 4 GB hosts; override via env. */
 export const MAX_CONCURRENT_AUDITS = Math.max(1, getEnv().AUDIT_MAX_CONCURRENT_SHOPS);
 
 /** Keep in sync with `AUDIT_STALE_MS` in audit-lifecycle.ts (no import — node --test loads this file). */

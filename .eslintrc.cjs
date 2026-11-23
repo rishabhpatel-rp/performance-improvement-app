@@ -19,12 +19,30 @@ module.exports = {
     commonjs: true,
     es6: true,
   },
-  ignorePatterns: ["!**/.server", "!**/.client", "extensions/script-injector/assets/**", "admin-panel/**"],
+  ignorePatterns: [
+    "!**/.server",
+    "!**/.client",
+    "extensions/script-injector/assets/**",
+    "admin-panel/**",
+  ],
 
   // Base config
   extends: ["eslint:recommended"],
+  rules: {
+    "no-empty": ["error", { allowEmptyCatch: false }],
+  },
 
   overrides: [
+    // Server-only modules run on Node: allow process, Buffer, etc.
+    {
+      files: [
+        "app/lib/**/*.{js,ts}",
+        "app/routes/api.*.{js,jsx}",
+        "scripts/**/*.mjs",
+        "tests/**/*.js",
+      ],
+      env: { node: true },
+    },
     // React
     {
       files: ["**/*.{js,jsx,ts,tsx}"],
@@ -58,6 +76,10 @@ module.exports = {
       files: ["**/*.{ts,tsx}"],
       plugins: ["@typescript-eslint", "import"],
       parser: "@typescript-eslint/parser",
+      parserOptions: {
+        project: ["./tsconfig.json"],
+        tsconfigRootDir: __dirname,
+      },
       settings: {
         "import/internal-regex": "^~/",
         "import/resolver": {
@@ -74,6 +96,12 @@ module.exports = {
         "plugin:import/recommended",
         "plugin:import/typescript",
       ],
+      rules: {
+        "@typescript-eslint/no-floating-promises": [
+          "error",
+          { ignoreVoid: true, ignoreIIFE: true },
+        ],
+      },
     },
 
     // Node
@@ -89,8 +117,29 @@ module.exports = {
         node: true,
       },
     },
+
+    // Logging: use app/lib/logger.js instead of console.* in app code.
+    {
+      files: ["app/**/*.{js,jsx,ts,tsx}"],
+      rules: { "no-console": "error" },
+    },
+    {
+      // The logger itself writes to stdout/stderr; audit-logging emits its own
+      // JSON events; audit-script / script-generator build browser-side code
+      // strings. The dashboard-* modules are the unwired refactor cluster
+      // (PROJECT_FLOW.md 17.3) awaiting a wire-or-delete decision.
+      files: [
+        "app/lib/logger.ts",
+        "app/lib/audit-logging.server.ts",
+        "app/lib/audit-script.ts",
+        "app/lib/script-generator.js",
+        "app/lib/dashboard-*.server.js",
+        "app/lib/dashboard-*.server.ts",
+      ],
+      rules: { "no-console": "off" },
+    },
   ],
   globals: {
-    shopify: "readonly"
+    shopify: "readonly",
   },
 };

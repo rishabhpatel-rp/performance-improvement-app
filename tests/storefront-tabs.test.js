@@ -5,8 +5,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { buildDeferredScriptSource } from "../app/lib/script-generator.js";
-import { internalAuthOk, scriptsForScope, tabDropdownAction } from "../app/lib/scan-summary-scope.js";
-import { readInternalSecret } from "../app/lib/internal-storefront-route.js";
+import { scriptsForScope, tabDropdownAction } from "../app/lib/scan-summary-scope.ts";
+import { internalAuthOk, readInternalSecret } from "../app/lib/internal-request.ts";
 import { applyScopePatch, toggleFamilyPatch } from "../app/lib/storefront-lists.ts";
 import { templateScopedPageVariants } from "../app/lib/audit-template-buckets.ts";
 
@@ -33,7 +33,15 @@ test("home defers global plus home, and a product page does not defer the home-o
 
   function gated(pathname, src) {
     const classes = new Set();
-    const docEl = { classList: { add(c) { classes.add(c); }, remove() {}, contains: (c) => classes.has(c) } };
+    const docEl = {
+      classList: {
+        add(c) {
+          classes.add(c);
+        },
+        remove() {},
+        contains: (c) => classes.has(c),
+      },
+    };
     const doc = {
       documentElement: docEl,
       head: { firstChild: null, appendChild() {}, insertBefore() {} },
@@ -44,21 +52,34 @@ test("home defers global plus home, and a product page does not defer the home-o
       dispatchEvent() {},
       querySelectorAll: () => [],
     };
-    class Node { replaceChild() {} }
+    class Node {
+      replaceChild() {}
+    }
     class Element extends Node {
       setAttribute() {}
       appendChild() {}
       insertBefore() {}
     }
     class HTMLScriptElement extends Element {
-      get src() { return ""; }
+      get src() {
+        return "";
+      }
       set src(_v) {}
     }
     const ctx = {
       document: doc,
-      Node, Element, HTMLScriptElement,
-      MutationObserver: class { observe() {} disconnect() {} },
-      CustomEvent: class { constructor(type) { this.type = type; } },
+      Node,
+      Element,
+      HTMLScriptElement,
+      MutationObserver: class {
+        observe() {}
+        disconnect() {}
+      },
+      CustomEvent: class {
+        constructor(type) {
+          this.type = type;
+        }
+      },
       location: { pathname },
       performance: { now: () => 0 },
       localStorage: { getItem: () => null, setItem() {} },
@@ -231,19 +252,24 @@ test("turning defer off preserves the four scopes and clears them", () => {
 
 test("a global-only name stays Keep protected on the home dropdown", () => {
   assert.equal(
-    tabDropdownAction({ auditDeferArray: [], firstUserDelayScripts: [], staticDeferDefaults: [] }, "g.js"),
+    tabDropdownAction(
+      { auditDeferArray: [], firstUserDelayScripts: [], staticDeferDefaults: [] },
+      "g.js",
+    ),
     "protected",
   );
   assert.equal(
-    tabDropdownAction({ auditDeferArray: ["xyz.js"], firstUserDelayScripts: [], staticDeferDefaults: [] }, "xyz.js"),
+    tabDropdownAction(
+      { auditDeferArray: ["xyz.js"], firstUserDelayScripts: [], staticDeferDefaults: [] },
+      "xyz.js",
+    ),
     "defer",
   );
 });
 
 test("the real save gate does not write when the secret is missing or the JSON is invalid", async () => {
-  const { decideInternalStorefrontRequest } = await import(
-    "../app/lib/internal-storefront-route.js"
-  );
+  const { decideInternalStorefrontRequest } =
+    await import("../app/lib/internal-storefront-route.ts");
   let writes = 0;
   const refuseWrite = () => {
     writes += 1;
@@ -327,7 +353,16 @@ test("scan summary tabs keep a product-only script off the home tab", () => {
     { token: "both.js", pages: ["/", "/collections/all", "/products/shirt"] },
   ];
   const roles = { "/": "home", "/collections/all": "collection", "/products/shirt": "product" };
-  assert.deepEqual(scriptsForScope(rows, roles, "home").map((r) => r.token), ["xyz.js", "both.js"]);
-  assert.deepEqual(scriptsForScope(rows, roles, "product").map((r) => r.token), ["pdp.js", "both.js"]);
-  assert.deepEqual(scriptsForScope(rows, roles, "global").map((r) => r.token), ["both.js"]);
+  assert.deepEqual(
+    scriptsForScope(rows, roles, "home").map((r) => r.token),
+    ["xyz.js", "both.js"],
+  );
+  assert.deepEqual(
+    scriptsForScope(rows, roles, "product").map((r) => r.token),
+    ["pdp.js", "both.js"],
+  );
+  assert.deepEqual(
+    scriptsForScope(rows, roles, "global").map((r) => r.token),
+    ["both.js"],
+  );
 });
