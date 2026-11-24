@@ -438,6 +438,7 @@ export function getDummyStoreByDomain(domain: string): NonNullable<StoreWithDeta
     ...store,
     configs: store.configs,
     activities: store.activities,
+    popupLeads: [],
   };
 }
 

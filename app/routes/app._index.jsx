@@ -46,6 +46,7 @@ import Step1Activate from "../components/Step1Activate";
 import Step2Configure from "../components/Step2Configure";
 import { templateConfigFromRow } from "../lib/template-script-config";
 import { buildStep2Version } from "../lib/step2-config.server";
+import { isStep2OfferPopupEnabled } from "../lib/global-settings.server.ts";
 import WizardNavigation from "../components/WizardNavigation";
 import FooterBranding from "../components/FooterBranding";
 import RouteErrorBoundary from "../components/RouteErrorBoundary.jsx";
@@ -261,6 +262,7 @@ export const loader = async ({ request }) => {
     selectedThemeId,
     passwordProtected,
     configVersion: buildStep2Version(store, sc, store?.performanceScript ?? null),
+    step2OfferPopupEnabled: await isStep2OfferPopupEnabled(),
   };
 };
 
@@ -289,6 +291,7 @@ export default function Dashboard() {
     passwordProtected: loaderPasswordProtected = null,
     adminManaged = false,
     shopDomain = "",
+    step2OfferPopupEnabled = false,
   } = useLoaderData();
   const revalidator = useRevalidator();
   const [machine, dispatch] = useReducer(dashboardReducer, {
@@ -536,6 +539,7 @@ export default function Dashboard() {
             appEnabled={appEnabled}
             configVersion={configVersion}
             readOnly={adminManaged}
+            offerPopupEnabled={step2OfferPopupEnabled}
           />
         </>
       )}

@@ -6,6 +6,7 @@ import { useFetcher, useRevalidator } from "react-router";
 import { PREDEFINED_SCRIPTS } from "../lib/scripts";
 import Step3Titles from "./Step3Titles";
 import Step3AuditResults from "./Step3AuditResults";
+import PerformanceOfferPopup from "./PerformanceOfferPopup";
 
 interface Props {
   config?: Record<string, any> | null;
@@ -13,6 +14,7 @@ interface Props {
   appEnabled?: boolean;
   configVersion?: any;
   readOnly?: boolean;
+  offerPopupEnabled?: boolean;
 }
 
 const TABS = [
@@ -36,6 +38,7 @@ export default function Step2Configure({
   appEnabled,
   configVersion,
   readOnly = false,
+  offerPopupEnabled = false,
 }: Props) {
   const fetcher: any = useFetcher();
   const revalidator = useRevalidator();
@@ -148,6 +151,7 @@ export default function Step2Configure({
         scope={scope}
         readOnly={readOnly}
       />
+      {offerPopupEnabled && <PerformanceOfferPopup />}
     </s-section>
   );
 }

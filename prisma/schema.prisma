@@ -409,3 +409,20 @@ model PerformanceScript {
   @@index([storeId])
   @@map("performance_scripts")
 }
+
+model GlobalSetting {
+  key       String   @id
+  value     Json
+  updatedAt DateTime @updatedAt
+  updatedBy String?
+}
+
+model PopupLead {
+  id         String   @id @default(cuid())
+  shopDomain String
+  email      String
+  createdAt  DateTime @default(now())
+
+  @@index([shopDomain])
+  @@index([createdAt])
+}

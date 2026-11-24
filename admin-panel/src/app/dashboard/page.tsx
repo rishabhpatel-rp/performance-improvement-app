@@ -4,12 +4,12 @@ import { getDemoMode } from "@/lib/demo-mode";
 import StatsCards from "@/components/stats-cards";
 import ActivityTimeline from "@/components/activity-timeline";
 import TopBar from "@/components/top-bar";
-import InstallsChart from "@/components/installs-chart";
 import CountryChart from "@/components/country-chart";
 import PlanChart from "@/components/plan-chart";
 import { Badge } from "@/components/ui/badge";
 import { formatDate } from "@/lib/utils";
 import AuditFleetPanel from "@/components/audit-fleet-panel";
+import PopupLeadsPanel from "@/components/popup-leads-panel";
 
 type RecentInstall = DashboardStats["recentInstalls"][number];
 
@@ -21,12 +21,12 @@ export default async function DashboardPage() {
       <TopBar title="Dashboard" demoMode={demoMode} />
       <StatsCards stats={stats} />
 
-      <AuditFleetPanel fleet={stats.auditFleet} />
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
+        <AuditFleetPanel fleet={stats.auditFleet} />
+        <PopupLeadsPanel leads={stats.popupLeads} />
+      </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-        <div className="lg:col-span-2">
-          <InstallsChart data={stats.installsByDay} />
-        </div>
         <CountryChart data={stats.storesByCountry} />
         <PlanChart data={stats.storesByPlan} />
       </div>

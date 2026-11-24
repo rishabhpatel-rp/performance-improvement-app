@@ -154,7 +154,7 @@ export async function getDashboardStats(): Promise<DashboardStats> {
 
   // Pull everything needed to compute both the existing counts and the new
   // analytics aggregates from the real database.
-  const [allRealStores, recentActivityReal] = await Promise.all([
+  const [allRealStores, recentActivityReal, popupLeads] = await Promise.all([
     prisma.store.findMany({
       include: { configs: { select: STORE_CONFIG_SELECT } },
       orderBy: { installedAt: "desc" },
@@ -167,6 +167,11 @@ export async function getDashboardStats(): Promise<DashboardStats> {
           select: { shopName: true, shopDomain: true },
         },
       },
+    }),
+    prisma.popupLead.findMany({
+      orderBy: { createdAt: "desc" },
+      take: 10,
+      select: { id: true, shopDomain: true, email: true, createdAt: true },
     }),
   ]);
 
@@ -248,6 +253,7 @@ export async function getDashboardStats(): Promise<DashboardStats> {
     totalOrders,
     auditsCompleted,
     auditFleet,
+    popupLeads,
     installsByDay,
     storesByCountry,
     storesByPlan,
@@ -377,32 +383,40 @@ export async function getStores(options?: {
 export async function getStoreByDomain(domain: string): Promise<StoreWithDetails | null> {
   const demoMode = await getDemoMode();
 
-  const real = await prisma.store.findUnique({
-    where: { shopDomain: domain },
-    include: {
-      configs: {
-        select: storeDetailConfigSelect(),
-        orderBy: { updatedAt: "desc" },
-        take: 1,
-      },
-      performanceScript: {
-        select: {
-          scriptHash: true,
-          readableScript: true,
-          hiddenCss: true,
-          scriptBuiltAt: true,
-          metafieldSyncedAt: true,
+  const [real, popupLeads] = await Promise.all([
+    prisma.store.findUnique({
+      where: { shopDomain: domain },
+      include: {
+        configs: {
+          select: storeDetailConfigSelect(),
+          orderBy: { updatedAt: "desc" },
+          take: 1,
+        },
+        performanceScript: {
+          select: {
+            scriptHash: true,
+            readableScript: true,
+            hiddenCss: true,
+            scriptBuiltAt: true,
+            metafieldSyncedAt: true,
+          },
+        },
+        activities: {
+          orderBy: { createdAt: "desc" },
+          take: 100,
         },
       },
-      activities: {
-        orderBy: { createdAt: "desc" },
-        take: 100,
-      },
-    },
-  });
+    }),
+    prisma.popupLead.findMany({
+      where: { shopDomain: domain },
+      orderBy: { createdAt: "desc" },
+      take: 10,
+      select: { id: true, shopDomain: true, email: true, createdAt: true },
+    }),
+  ]);
 
   if (real) {
-    return real;
+    return { ...real, popupLeads };
   }
 
   if (demoMode === "on") {

@@ -10,6 +10,7 @@ const NAV_ITEMS = [
   { href: "/dashboard", label: "Dashboard" },
   { href: "/dashboard/stores", label: "Stores" },
   { href: "/dashboard/archives", label: "Archived stores" },
+  { href: "/dashboard/settings", label: "Settings" },
 ];
 
 export default function Sidebar({ user }: { user: AdminSession }) {
