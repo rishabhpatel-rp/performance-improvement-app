@@ -11,6 +11,7 @@ const NAV_ITEMS = [
   { href: "/dashboard/stores", label: "Stores" },
   { href: "/dashboard/archives", label: "Archived stores" },
   { href: "/dashboard/settings", label: "Settings" },
+  { href: "/dashboard/custom-audit", label: "Custom audit" },
 ];
 
 export default function Sidebar({ user }: { user: AdminSession }) {

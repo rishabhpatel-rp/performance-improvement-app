@@ -14,6 +14,7 @@ export async function applyPreSaveAuditValidation(
   homeUrl: string,
   password: string | undefined,
   report: HiddenAuditResult,
+  shopifySpecific = true,
 ): Promise<HiddenAuditResult> {
   const warnings = [...(report.warnings ?? [])];
   let deferArray = [...report.deferArray];
@@ -26,6 +27,7 @@ export async function applyPreSaveAuditValidation(
     deferArray,
     report.hideSelectors,
     password,
+    shopifySpecific,
   );
   if (!smokeResult.passed) {
     const critical = smokeResult.failures.filter((f) =>
