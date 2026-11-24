@@ -93,6 +93,11 @@ test("N-2: query strings and fragments are stripped from discovered links", () =
   assert.equal(found.pdp, `https://${SHOP}/products/hat`);
 });
 
+test("regression: installed-store discovery keeps its original PLP priority", () => {
+  const html = `<a href="/catalog/gifts">Catalog</a><a href="/shop/sale">Shop</a>`;
+  assert.equal(findPagesInHtml(html, `https://${SHOP}/`).plp, `https://${SHOP}/shop/sale`);
+});
+
 test("N-2: empty HTML returns no pages without throwing", () => {
   const empty = findPagesInHtml("", `https://${SHOP}/`);
   assert.equal(empty.plp, undefined);

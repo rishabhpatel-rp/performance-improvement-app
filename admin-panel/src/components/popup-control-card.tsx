@@ -41,7 +41,7 @@ export default function PopupControlCard({ initialEnabled, canEdit, demoMode }: 
     <section className="rounded-lg border border-border bg-white p-6 shadow-sm">
       <div className="flex items-start justify-between gap-6">
         <div className="space-y-1">
-          <h2 className="text-lg font-semibold">Step 2 offer popup</h2>
+          <h2 className="text-lg font-semibold">Offer Popup</h2>
           <p className="text-sm text-muted-foreground max-w-2xl">
             When on, every store sees the &ldquo;Boost Your Site Performance&rdquo; offer popup as
             soon as they reach Step 2 in the merchant app.

@@ -43,7 +43,7 @@ async function discoverViaGraphql(
 }
 
 /** True when a fetched page is Shopify's storefront password page. */
-async function discoverViaHtml(
+export async function discoverViaHtml(
   home: string,
 ): Promise<{ plp?: string; pdp?: string; passwordPage?: boolean }> {
   try {
@@ -65,7 +65,7 @@ async function discoverViaHtml(
 }
 
 /** Fallback 2 (last resort): render the homepage in the shared browser. */
-async function discoverViaBrowser(
+export async function discoverViaBrowser(
   home: string,
   need: { plp: boolean; pdp: boolean },
   password?: string,
@@ -87,7 +87,11 @@ async function discoverViaBrowser(
               .locator(selector)
               .first()
               .getAttribute("href", { timeout: 2000 })
-              .then((h) => (h ? new URL(h, home).toString() : undefined))
+              .then((h) => {
+                if (!h) return undefined;
+                const candidate = new URL(h, home);
+                return candidate.host === new URL(home).host ? candidate.toString() : undefined;
+              })
               .catch(() => undefined);
             if (href) return href;
           }
@@ -100,10 +104,19 @@ async function discoverViaBrowser(
                 'a[href*="/shop"]',
                 'a[href*="/catalog"]',
                 'a[href*="/collection"]',
+                'a[href*="/categories/"]',
+                'a[href*="/category/"]',
+                'a[href*="/c/"]',
               ])
             : undefined,
           pdp: need.pdp
-            ? await firstHref(['a[href*="/products/"]', 'a[href*="/product/"]'])
+            ? await firstHref([
+                'a[href*="/products/"]',
+                'a[href*="/product/"]',
+                'a[href*="/produto/"]',
+                'a[href*="/item/"]',
+                'a[href*="/p/"]',
+              ])
             : undefined,
         };
       } finally {

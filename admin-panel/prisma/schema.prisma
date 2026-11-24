@@ -399,3 +399,25 @@ model PopupLead {
   @@index([shopDomain])
   @@index([createdAt])
 }
+
+model CustomAuditRun {
+  id            String    @id @default(cuid())
+  url           String
+  status        String    @default("queued")
+  phase         String?
+  progress      Int       @default(0)
+  pageIndex     Int       @default(0)
+  totalPages    Int       @default(0)
+  errorCode     String?
+  error         String?
+  summary       Json?
+  readableScript String?
+  report        Json?
+  requestedBy   String?
+  createdAt     DateTime  @default(now())
+  startedAt     DateTime?
+  finishedAt    DateTime?
+  updatedAt     DateTime  @updatedAt
+
+  @@index([status, createdAt])
+}

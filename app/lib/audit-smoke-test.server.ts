@@ -61,6 +61,7 @@ export async function runStorefrontSmokeTest(
   deferArray: string[],
   hideSelectors: string[],
   password?: string,
+  shopifySpecific = true,
 ): Promise<SmokeTestResult> {
   const failures: Array<{ check: string; reason: string }> = [];
   const checksRun: string[] = [];
@@ -109,6 +110,10 @@ export async function runStorefrontSmokeTest(
       .catch(() => false);
     if (!foldOk) {
       failures.push({ check: "home-fold-present", reason: "No visible header/main fold region" });
+    }
+
+    if (!shopifySpecific) {
+      return { passed: failures.length === 0, failures, checksRun };
     }
 
     checksRun.push("cart-drawer-or-link");
