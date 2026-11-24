@@ -22,6 +22,8 @@ import { classifyAuditFailure } from "./audit-error-codes.server";
 import { logAuditEvent } from "./audit-logging.server";
 import { withBrowser } from "./audit-browser.ts";
 import { applyPreSaveAuditValidation } from "./audit-presave-validation.server.ts";
+import { tryIncrementalReaudit } from "./audit-incremental.server.ts";
+import { getEnv } from "./env.server.ts";
 
 import { clearLogContext, logger, setLogContext } from "./logger.ts";
 import { decryptStorefrontPassword } from "./storefront-password.server.ts";
@@ -153,32 +155,52 @@ export async function executeAuditRun(
     const pagesState = described.map((p) => ({ ...p }));
     const runDeadlineAt = Date.now() + auditRunDeadlineMs();
 
-    let report = await runHiddenAudit({
-      pages,
-      password: password || undefined,
-      shopDomain,
-      signal,
-      runDeadlineAt,
-      shouldStop,
-      onProgress: async ({ done, total, path }) => {
-        if (await shouldStop()) throw new AuditRunCancelledError();
-        if (path) {
-          const page = pagesState.find((p) => p.path === path && !p.done);
-          if (page) page.done = true;
-        }
-        await prisma.storeConfig
-          .update({
-            where: { storeId },
-            data: {
-              auditPageIndex: done,
-              auditTotalPages: total,
-              auditPages: pagesState,
-              updatedAt: new Date(),
-            },
+    const pushProgress = async (done: number, total: number, path?: string) => {
+      if (await shouldStop()) throw new AuditRunCancelledError();
+      if (path) {
+        const page = pagesState.find((p) => p.path === path && !p.done);
+        if (page) page.done = true;
+      }
+      await prisma.storeConfig
+        .update({
+          where: { storeId },
+          data: {
+            auditPageIndex: done,
+            auditTotalPages: total,
+            auditPages: pagesState,
+            updatedAt: new Date(),
+          },
+        })
+        .catch(() => {});
+    };
+
+    // Sprint 6 — opt-in fingerprint cache before a full Chromium audit.
+    let report =
+      (getEnv().AUDIT_INCREMENTAL_REAUDIT
+        ? await tryIncrementalReaudit({
+            shopDomain,
+            pages,
+            password: password || undefined,
+            isStopped: shouldStop,
           })
-          .catch(() => {});
-      },
-    });
+        : null) ?? null;
+
+    if (report?.auditRunMeta?.incrementalCacheHit) {
+      for (const page of pagesState) page.done = true;
+      await pushProgress(described.length, described.length);
+    } else {
+      report = await runHiddenAudit({
+        pages,
+        password: password || undefined,
+        shopDomain,
+        signal,
+        runDeadlineAt,
+        shouldStop,
+        onProgress: async ({ done, total, path }) => {
+          await pushProgress(done, total, path);
+        },
+      });
+    }
 
     if (await shouldStop()) return { ok: false, code: "CANCELLED", detail: "cancelled" };
 
@@ -187,9 +209,14 @@ export async function executeAuditRun(
       data: { auditPhase: "building" },
     });
 
-    report = await withBrowser((browser) =>
-      applyPreSaveAuditValidation(browser, pages.home, password || undefined, report),
-    );
+    // Always run fold/LCP smoke-test — including incremental hits — so a reused
+    // report cannot skip storefront safety gates that previously always ran.
+    {
+      const measuredReport = report;
+      report = await withBrowser((browser) =>
+        applyPreSaveAuditValidation(browser, pages.home, password || undefined, measuredReport),
+      );
+    }
 
     const refreshed = await resolveShopAdmin(shopDomain);
     if (refreshed.ok) admin = refreshed.admin;

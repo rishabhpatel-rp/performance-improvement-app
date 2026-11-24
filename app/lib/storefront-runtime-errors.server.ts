@@ -9,10 +9,22 @@ export async function recordStorefrontRuntimeErrors(
   const sample = errors.slice(0, 10);
   if (!sample.length) return;
 
+  const identifierRedeclare = sample.some((e) => {
+    const msg =
+      typeof e === "string"
+        ? e
+        : e && typeof e === "object" && "message" in e
+          ? String((e as { message?: unknown }).message ?? "")
+          : JSON.stringify(e);
+    return /Identifier .+ has already been declared/i.test(msg);
+  });
+
   logAuditEvent("storefront_runtime_errors", {
     shop: shopDomain,
     count: sample.length,
     sample: sample[0],
+    // Sprint 1 §8.4 — theme JS deferred that shouldn't have been (Gate 4-C watch).
+    identifierRedeclare,
   });
 
   const store = await prisma.store.findUnique({ where: { shopDomain } });

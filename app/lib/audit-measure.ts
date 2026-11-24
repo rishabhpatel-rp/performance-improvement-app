@@ -38,6 +38,16 @@ export async function measurePage(
    */
   harvestOnly = false,
   isStopped?: () => boolean,
+  /**
+   * Set true only for the home page (first URL in the audit run).
+   *
+   * LongTask / TBT data is exclusively consumed by `buildHomeResourceTimingIndex`
+   * which only reads from `measured[0]` (the home page). Collecting it on PLP/PDP
+   * pages wastes 120 ms per page per pass with zero effect on audit accuracy.
+   */
+  collectLongTask = false,
+  /** Used by Sprint 4 scroll adapt — keep separate from LongTask collection. */
+  isHomePage = false,
 ): Promise<MeasuredPage> {
   const context = await browser.newContext();
   try {
@@ -198,7 +208,7 @@ export async function measurePage(
     // content actually renders before the page is measured.
     const interaction = harvestOnly
       ? { revealed: [] as string[], steps: 0, clicks: 0 }
-      : await simulateInteractions(page);
+      : await simulateInteractions(page, { isHomePage });
     const revealedByInteraction = interaction.revealed;
 
     // Let the page settle again, then assert no *new* scripts arrived because
@@ -431,7 +441,11 @@ export async function measurePage(
       if (measured && measured > (row.transferSize || 0)) row.transferSize = measured;
     }
 
-    if (!harvestOnly) {
+    // LongTask / TBT is only collected on the HOME PAGE (collectLongTask=true).
+    // `tbtContributionMs` feeds into confidence scoring exclusively via
+    // `buildHomeResourceTimingIndex(measured[0], ...)` — the home page result.
+    // Collecting it on PLP/PDP burns 120 ms × 2 pages × N passes for zero gain.
+    if (!harvestOnly && collectLongTask) {
       const longTaskData = await page
         .evaluate(() => {
           return new Promise<Array<{ start: number; duration: number }>>((resolve) => {
