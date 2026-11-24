@@ -143,9 +143,17 @@ export interface StoreWithConfigs extends StoreSummary {
   configs: StoreConfig[];
 }
 
+export interface PopupLeadRow {
+  id: string;
+  shopDomain: string;
+  email: string;
+  createdAt: Date | string;
+}
+
 export interface StoreWithDetails extends StoreWithConfigs {
   activities: StoreActivity[];
   performanceScript?: PerformanceScriptSummary | null;
+  popupLeads: PopupLeadRow[];
 }
 
 export interface InstallsByDayPoint {
@@ -182,6 +190,7 @@ export interface DashboardStats {
   totalOrders: number;
   auditsCompleted: number;
   auditFleet: AuditFleetSummary;
+  popupLeads: PopupLeadRow[];
   installsByDay: InstallsByDayPoint[];
   storesByCountry: CountryCount[];
   storesByPlan: PlanCount[];

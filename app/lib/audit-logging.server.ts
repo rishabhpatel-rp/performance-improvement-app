@@ -9,6 +9,7 @@ export type AuditLogEvent =
   | "audit_page_done"
   | "audit_drain_tick"
   | "audit_claim_skipped"
+  | "audit_obs"
   | "storefront_runtime_errors";
 
 export function logAuditEvent(event: AuditLogEvent, fields: Record<string, unknown>): void {

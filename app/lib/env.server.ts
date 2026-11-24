@@ -29,6 +29,14 @@ export interface AppEnv {
   AUDIT_MAX_EXTRA_PAGES: number;
   AUDIT_ETA_MINUTES_PER_SHOP: number;
   AUDIT_LAB_THROTTLE: string;
+  /** Skip pass 3 when pass 1/2 token sets match (Sprint 2). Default OFF — opt-in after soak. */
+  AUDIT_EARLY_PASS_TERMINATION: boolean;
+  /** Settle safety-net cap ms (Sprint 3). Default 40000 — prior working value. */
+  AUDIT_SETTLE_SAFETY_NET_MS: number;
+  /** Cap non-home scroll steps at 15 (Sprint 4). Default OFF — opt-in after soak. */
+  AUDIT_SCROLL_ADAPT: boolean;
+  /** Skip full Chromium audit when script fingerprint unchanged (Sprint 6). Default OFF. */
+  AUDIT_INCREMENTAL_REAUDIT: boolean;
 }
 
 let cached: AppEnv | null = null;
@@ -84,6 +92,11 @@ export function getEnv(): AppEnv {
     AUDIT_MAX_EXTRA_PAGES: num("AUDIT_MAX_EXTRA_PAGES", 5),
     AUDIT_ETA_MINUTES_PER_SHOP: num("AUDIT_ETA_MINUTES_PER_SHOP", 12),
     AUDIT_LAB_THROTTLE: str("AUDIT_LAB_THROTTLE"),
+    // Sprint 2–6 stay opt-in so prior audit accuracy/behavior is preserved by default.
+    AUDIT_EARLY_PASS_TERMINATION: str("AUDIT_EARLY_PASS_TERMINATION", "false") === "true",
+    AUDIT_SETTLE_SAFETY_NET_MS: num("AUDIT_SETTLE_SAFETY_NET_MS", 40_000),
+    AUDIT_SCROLL_ADAPT: str("AUDIT_SCROLL_ADAPT", "false") === "true",
+    AUDIT_INCREMENTAL_REAUDIT: str("AUDIT_INCREMENTAL_REAUDIT", "false") === "true",
   };
   return cached;
 }

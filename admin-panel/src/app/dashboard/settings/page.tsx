@@ -1,9 +1,25 @@
-import { redirect } from "next/navigation";
+import { requireAdmin } from "@/lib/auth";
+import { getDemoMode } from "@/lib/demo-mode";
+import { getStep2OfferPopupEnabled } from "@/lib/global-settings";
+import PopupControlCard from "@/components/popup-control-card";
 
-// Settings page is temporarily removed from the admin panel. The route
-// redirects rather than 404ing so any existing links/bookmarks still land
-// somewhere useful. Re-enable by restoring the previous page body (see git
-// history) once ready to bring Settings back.
+export const dynamic = "force-dynamic";
+
 export default async function SettingsPage() {
-  redirect("/dashboard");
+  const [session, enabled, demoMode] = await Promise.all([
+    requireAdmin(),
+    getStep2OfferPopupEnabled(),
+    getDemoMode(),
+  ]);
+
+  return (
+    <div className="space-y-6">
+      <h1 className="text-3xl font-bold">Settings</h1>
+      <PopupControlCard
+        initialEnabled={enabled}
+        canEdit={session?.role === "admin" && demoMode !== "on"}
+        demoMode={demoMode === "on"}
+      />
+    </div>
+  );
 }

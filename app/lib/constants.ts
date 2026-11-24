@@ -7,6 +7,7 @@ export const DEFAULT_DELAY_SCRIPTS: readonly string[] = ["wpm", "gtm"];
 export const FIRST_USER_DELAY_MS = 12_000;
 export const EVERY_TIME_DELAY_MS = 6_000;
 
+/** Default settle safety-net (prior working value). Override with AUDIT_SETTLE_SAFETY_NET_MS. */
 export const SETTLE_SAFETY_NET_MS = 40_000;
 
 export const QUEUE_ETA_MINUTES_PER_SHOP = 12;

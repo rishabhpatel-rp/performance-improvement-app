@@ -9,6 +9,7 @@ import {
   SETTLE_REQUEST_QUIET_MS,
 } from "./audit-timing.ts";
 import { SETTLE_SAFETY_NET_MS } from "./constants.ts";
+import { getEnv } from "./env.server.ts";
 import { logger } from "./logger.ts";
 import { type Page } from "playwright";
 import { AuditRunCancelledError } from "./audit-cancel.ts";
@@ -22,6 +23,20 @@ import {
   SCROLL_STEP_PX,
   SETTLE_STABLE_CHECKS,
 } from "./audit-core.ts";
+
+function settleSafetyNetMs(): number {
+  const fromEnv = getEnv().AUDIT_SETTLE_SAFETY_NET_MS;
+  return fromEnv > 0 ? fromEnv : SETTLE_SAFETY_NET_MS;
+}
+
+/** Effective max scroll steps (Sprint 4 — shorter PDPs/PLPs). */
+export function effectiveMaxScrollSteps(docHeight: number, isHomePage: boolean): number {
+  const naturalSteps = Math.ceil((docHeight || 0) / SCROLL_STEP_PX);
+  if (!getEnv().AUDIT_SCROLL_ADAPT || isHomePage) {
+    return MAX_SCROLL_STEPS;
+  }
+  return Math.min(Math.max(naturalSteps, MIN_SCROLL_STEPS), 15);
+}
 
 export async function waitForScriptsSettled(
   page: Page,
@@ -37,8 +52,9 @@ export async function waitForScriptsSettled(
   let lastCount = -1;
   let stable = 0;
   let lastChangeAt = started;
+  const safetyNetMs = settleSafetyNetMs();
 
-  while (Date.now() - started < SETTLE_SAFETY_NET_MS) {
+  while (Date.now() - started < safetyNetMs) {
     if (isStopped?.()) throw new AuditRunCancelledError();
     await page.waitForLoadState("networkidle", { timeout: NETWORK_IDLE_CAP_MS }).catch(() => {});
     await page.waitForTimeout(SETTLE_PROBE_GAP_MS);
@@ -442,16 +458,19 @@ export async function captureInitialFold(
  * `aria-controls` targets) so the caller can treat them as visible. */
 export async function simulateInteractions(
   page: Page,
+  opts?: { isHomePage?: boolean },
 ): Promise<{ revealed: string[]; steps: number; clicks: number }> {
   const revealed = new Set<string>();
+  const isHomePage = opts?.isHomePage ?? true;
 
   // Scroll the whole document, not a fixed number of steps. A measured home
   // page was 9440px tall, which the previous fixed 4 steps (3600px) left 58%
   // of unexercised — so scroll-gated code down there never ran and was
-  // wrongly classified as deferrable.
+  // wrongly classified as deferrable. Sprint 4: non-home pages cap at 15 steps.
   const docHeight = await page.evaluate(() => document.documentElement.scrollHeight).catch(() => 0);
+  const maxSteps = effectiveMaxScrollSteps(docHeight || 0, isHomePage);
   const steps = Math.min(
-    MAX_SCROLL_STEPS,
+    maxSteps,
     Math.max(MIN_SCROLL_STEPS, Math.ceil((docHeight || 0) / SCROLL_STEP_PX)),
   );
   let clicks = 0;

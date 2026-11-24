@@ -61,6 +61,12 @@ export interface AuditRunMeta {
   passesRun: number;
   passesPlanned: number;
   chromiumVersion?: string;
+  /** True when pass 3 was skipped because pass 1/2 tokens matched (Sprint 2). */
+  earlyPassTerminated?: boolean;
+  /** Sorted script-token fingerprint for incremental re-audit (Sprint 6). */
+  scriptListFingerprint?: string;
+  /** True when this report was reused without a full Chromium re-measure (Sprint 6). */
+  incrementalCacheHit?: boolean;
 }
 
 export interface FieldVitalsSummary {

@@ -30,6 +30,15 @@ import {
 } from "./audit-core.ts";
 import { measurePage } from "./audit-measure.ts";
 import {
+  collectTokensFromPass,
+  setDiff,
+  setsAreEqual,
+  summarizeGateFunnel,
+  summarizeSafetyNet,
+} from "./audit-obs.ts";
+import { logAuditEvent } from "./audit-logging.server.ts";
+import { buildScriptListFingerprint } from "./audit-fingerprint.ts";
+import {
   readPriorDeferTokens,
   selectorsOverlapFoldOnPage,
   selectorsVisibleOnPage,
@@ -152,6 +161,10 @@ export async function runHiddenAudit({
     // logic want one row per page, not one per pass.
     const measured: MeasuredPage[] = [];
     const seenPaths = new Set<string>();
+    const auditStartedAt = Date.now();
+    let passesRun = 0;
+    let earlyPassTerminated = false;
+    let plannedPasses = AUDIT_REPEAT_PASSES;
     try {
       // allSettled: one page failing to open must not abandon the others'
       // contexts (they are all closed in `finally`).
@@ -160,11 +173,23 @@ export async function runHiddenAudit({
         if (shouldStop && (await shouldStop())) throw new AuditRunCancelledError();
         const pageParallel = Math.max(1, getEnv().AUDIT_MAX_PARALLEL_PAGES);
         const measureOne = async (url: string) => {
-          const m = await measurePage(browser, url, password, pass > 0, () => {
-            if (signal?.aborted || (runDeadlineAt != null && Date.now() > runDeadlineAt))
-              return true;
-            return shouldStop?.() === true;
-          });
+          // LongTask / TBT data is only meaningful on the home page (urls[0]).
+          // Collecting it on PLP/PDP wastes 120 ms per page with zero accuracy impact
+          // because tbtContributionMs is only read from the home page result.
+          const isHomePage = url === urls[0];
+          const m = await measurePage(
+            browser,
+            url,
+            password,
+            pass > 0,
+            () => {
+              if (signal?.aborted || (runDeadlineAt != null && Date.now() > runDeadlineAt))
+                return true;
+              return shouldStop?.() === true;
+            },
+            isHomePage, // collectLongTask
+            isHomePage, // scroll adapt
+          );
           measuredAll.push(m);
           let path: string | undefined;
           try {
@@ -182,7 +207,7 @@ export async function runHiddenAudit({
           try {
             await onProgress?.({
               done,
-              total: urls.length * AUDIT_REPEAT_PASSES,
+              total: urls.length * plannedPasses,
               path,
             });
           } catch {
@@ -195,6 +220,7 @@ export async function runHiddenAudit({
           const batchResults = await Promise.allSettled(batch.map((url) => measureOne(url)));
           settled.push(...batchResults);
         }
+        passesRun = pass + 1;
         if (shouldStop && (await shouldStop())) throw new AuditRunCancelledError();
         const passFailed = measuredAll.length < (pass + 1) * urls.length;
         if (passFailed && pass === 0) {
@@ -202,6 +228,37 @@ export async function runHiddenAudit({
           throw failure && failure.status === "rejected"
             ? failure.reason
             : new Error("No pages could be audited.");
+        }
+        // Sprint 2 — early pass termination: if pass 1 and pass 2 token sets
+        // match, skip pass 3 (stable CDN URLs, no per-request nonces).
+        if (pass === 1 && AUDIT_REPEAT_PASSES >= 3 && getEnv().AUDIT_EARLY_PASS_TERMINATION) {
+          const pass1Tokens = collectTokensFromPass(measuredAll, urls.length, 0);
+          const pass2Tokens = collectTokensFromPass(measuredAll, urls.length, 1);
+          if (pass1Tokens.size > 0 && setsAreEqual(pass1Tokens, pass2Tokens)) {
+            earlyPassTerminated = true;
+            plannedPasses = 2;
+            try {
+              await onProgress?.({
+                done,
+                total: urls.length * plannedPasses,
+              });
+            } catch {
+              // progress is best-effort
+            }
+            logger.info(
+              `[Audit] Token set stable after pass 2 for ${shopDomain ?? "shop"} — skipping pass 3`,
+            );
+            logAuditEvent("audit_obs", {
+              shop: shopDomain ?? null,
+              eventDetail: "early_pass_termination",
+              pass1TokenCount: pass1Tokens.size,
+              pass2TokenCount: pass2Tokens.size,
+              tokenSetStable: true,
+              passesRun: 2,
+              passesPlanned: plannedPasses,
+            });
+            break;
+          }
         }
         if (pass < AUDIT_REPEAT_PASSES - 1) {
           await new Promise((r) => setTimeout(r, AUDIT_PASS_GAP_MS));
@@ -509,6 +566,38 @@ export async function runHiddenAudit({
         )}`,
       );
 
+      // Sprint 1 observability (§8.1–§8.3) — structured event for soak dashboards.
+      const safetyNet = summarizeSafetyNet(funnel);
+      const pass1Tokens = collectTokensFromPass(measuredAll, urls.length, 0);
+      const pass2Tokens = collectTokensFromPass(measuredAll, urls.length, 1);
+      const tokenSetStable =
+        AUDIT_REPEAT_PASSES >= 2 && pass1Tokens.size > 0
+          ? setsAreEqual(pass1Tokens, pass2Tokens)
+          : null;
+      const gateTokens = new Set<string>([...pSet, ...neverDefer, ...noise]);
+      const gateFunnel = summarizeGateFunnel(gateTokens);
+      logAuditEvent("audit_obs", {
+        shop: shopDomain ?? null,
+        pages: urls.length,
+        passes: passesRun,
+        passesPlanned: AUDIT_REPEAT_PASSES,
+        earlyPassTerminated,
+        safetyNetHits: safetyNet.hits,
+        safetyNetTotal: safetyNet.total,
+        safetyNetRate: Number(safetyNet.rate.toFixed(4)),
+        pass1TokenCount: pass1Tokens.size,
+        pass2TokenCount: pass2Tokens.size,
+        tokenSetStable,
+        tokensOnlyInPass1: setDiff(pass1Tokens, pass2Tokens).slice(0, 20),
+        tokensOnlyInPass2: setDiff(pass2Tokens, pass1Tokens).slice(0, 20),
+        gateByName: gateFunnel.byGate,
+        wouldGate4C: gateFunnel.wouldGate4C,
+        wouldGate4E: gateFunnel.wouldGate4E,
+        kept: pSet.size,
+        neverDefer: neverDefer.size,
+        noise: noise.size,
+      });
+
       // Build hashes change between theme versions, not between the pages of a
       // single run, so this is normally a no-op here. It exists so a report
       // emitted as `app.9pOKhaB_.js` stops silently matching after the merchant
@@ -633,6 +722,13 @@ export async function runHiddenAudit({
         hide: buildTemplateListBuckets(hideSelectorsByPage, pageRoles),
       };
 
+      const scriptListFingerprint = buildScriptListFingerprint([
+        ...pSet,
+        ...neverDefer,
+        ...noise,
+        ...selfScripts,
+      ]);
+
       return {
         deferArray: mergedDefer,
         delayEveryArray: [...new Set(delayEveryArray)].sort(),
@@ -662,6 +758,13 @@ export async function runHiddenAudit({
         scriptInventory,
         pageRoles,
         templateBuckets,
+        auditRunMeta: {
+          wallTimeMs: Date.now() - auditStartedAt,
+          passesRun,
+          passesPlanned: plannedPasses,
+          earlyPassTerminated,
+          scriptListFingerprint,
+        },
       };
     } finally {
       const contexts = new Set(measuredAll.map((m) => m.context));
