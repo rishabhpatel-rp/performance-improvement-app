@@ -14,6 +14,14 @@ const PROBE_PATHS = ["/collections", "/shop", "/catalog", "/products", "/search"
 
 type Fetched = { html: string; finalUrl: string } | null;
 
+export function isPasswordAuditPath(url: string): boolean {
+  try {
+    return /(^|\/)password\/?$/i.test(new URL(url).pathname);
+  } catch {
+    return false;
+  }
+}
+
 async function fetchWithSafeRedirects(url: string): Promise<Fetched> {
   let current = url;
   for (let hop = 0; hop < 3; hop += 1) {
@@ -88,7 +96,7 @@ export async function discoverCustomAuditPages(
   const extras: string[] = [];
   const addExtra = (candidate: string | undefined) => {
     const url = sameHost(candidate, host);
-    if (!url || extras.length >= MAX_EXTRA_PAGES) return;
+    if (!url || isPasswordAuditPath(url) || extras.length >= MAX_EXTRA_PAGES) return;
     const pathname = new URL(url).pathname;
     if (pathname === "/" || pathname === new URL(home).pathname) return;
     if (pathname === (plp && new URL(plp).pathname)) return;
@@ -125,9 +133,19 @@ export async function discoverCustomAuditPages(
     );
   }
 
+  if (isPasswordAuditPath(plp ?? "")) plp = undefined;
+  if (isPasswordAuditPath(pdp ?? "")) pdp = undefined;
+
   logger.info(
     `[custom-audit] Discovered pages: home=${new URL(home).pathname} plp=${plp ? new URL(plp).pathname : "none"} pdp=${pdp ? new URL(pdp).pathname : "none"} extras=${extras.length}`,
   );
 
-  return { home, plp, pdp, extras };
+  const withParams = (url: string | undefined) =>
+    url && !isPasswordAuditPath(url) ? appendPreviewParams(url, params) : undefined;
+  return {
+    home: appendPreviewParams(home, params),
+    plp: withParams(plp),
+    pdp: withParams(pdp),
+    extras: extras.map(withParams).filter((url): url is string => Boolean(url)),
+  };
 }

@@ -5,6 +5,7 @@ import {
   findPagesInStructuredData,
   findPagesInSitemap,
 } from "../app/lib/audit-discovery.ts";
+import { isPasswordAuditPath } from "../app/lib/custom-audit-discovery.server.ts";
 
 const HOME = "https://example.com/";
 
@@ -30,6 +31,12 @@ test("custom discovery: JSON-LD CollectionPage and Product provide PLP/PDP", () 
 test("custom discovery: cross-origin structured data is ignored", () => {
   const html = `<script type="application/ld+json">{"@type":"Product","url":"https://evil.test/hat"}</script>`;
   assert.equal(findPagesInStructuredData(html, HOME).pdp, undefined);
+});
+
+test("custom discovery: the password page is never audited as an extra page", () => {
+  assert.equal(isPasswordAuditPath("https://shop.myshopify.com/password"), true);
+  assert.equal(isPasswordAuditPath("https://shop.myshopify.com/password/"), true);
+  assert.equal(isPasswordAuditPath("https://shop.myshopify.com/collections/all"), false);
 });
 
 test("custom discovery: sitemap paths become candidates", () => {
